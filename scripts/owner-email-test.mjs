@@ -1,5 +1,7 @@
 // Private subprocess transport for the owner-only verification receipt.
 // Credentials arrive on stdin and are never placed on the command line.
+// Failures report the SMTP stage and response code only — never the password,
+// the username or the full SMTP URL.
 import net from 'node:net';
 import tls from 'node:tls';
 import {randomUUID} from 'node:crypto';
@@ -10,6 +12,13 @@ for await (const chunk of process.stdin) input+=chunk;
 let socket;
 let next;
 let reply;
+
+function fail(stage,code,message){
+  const error=new Error(message);
+  error.stage=stage;
+  error.code=code;
+  return error;
+}
 
 function attach(stream){
   if(socket&&socket._lfHandler)socket.removeListener('data',socket._lfHandler);
@@ -44,61 +53,67 @@ async function command(line){
   return reply();
 }
 
+function connect(stream,event,stage){
+  return new Promise((resolve,reject)=>{
+    stream.setTimeout(20000,()=>{stream.destroy();reject(fail(stage,0,'connection timed out'));});
+    stream.once(event,()=>resolve(stream));
+    stream.once('error',(error)=>reject(fail(stage,0,error.code||'connection failed')));
+  });
+}
+
+const guard=setTimeout(()=>{
+  try{socket?.destroy();}catch{/* ignore */}
+  process.stdout.write(JSON.stringify({ok:false,stage:'timeout',code:0,message:'no response within 25 seconds'}));
+  process.exit(1);
+},25000);
+
 try{
   const {smtpUrl,from,to,subject,text}=JSON.parse(input);
   const url=new URL(smtpUrl);
-  if(url.protocol!=='smtp:'&&url.protocol!=='smtps:')throw new Error('protocol');
+  if(url.protocol!=='smtp:'&&url.protocol!=='smtps:')throw fail('config',0,'unsupported protocol');
   const host=url.hostname;
   const port=Number(url.port||(url.protocol==='smtps:'?'465':'587'));
   const user=decodeURIComponent(url.username||'');
   const pass=decodeURIComponent(url.password||'');
   const secure=url.protocol==='smtps:';
 
-  const base=await new Promise((resolve,reject)=>{
-    const stream=secure
-      ?tls.connect({host,port,servername:host},()=>resolve(stream))
-      :net.connect({host,port},()=>resolve(stream));
-    stream.setTimeout(20000,()=>{stream.destroy();reject(new Error('timeout'));});
-    stream.once('error',reject);
-  });
+  const base=secure?tls.connect({host,port,servername:host}):net.connect({host,port});
   attach(base);
+  await connect(base,secure?'secureConnect':'connect','connect');
 
   let response=await reply();
-  if(response.code!==220)throw new Error('greeting');
+  if(response.code!==220)throw fail('greeting',response.code,'unexpected greeting');
 
   response=await command('EHLO leadflow.local');
-  if(response.code!==250)throw new Error('ehlo');
+  if(response.code!==250)throw fail('ehlo',response.code,'EHLO rejected');
 
   if(!secure&&/STARTTLS/i.test(response.text)){
     response=await command('STARTTLS');
-    if(response.code!==220)throw new Error('starttls');
-    const upgraded=await new Promise((resolve,reject)=>{
-      const stream=tls.connect({socket:base,servername:host},()=>resolve(stream));
-      stream.setTimeout(20000,()=>{stream.destroy();reject(new Error('timeout'));});
-      stream.once('error',reject);
-    });
+    if(response.code!==220)throw fail('starttls',response.code,'STARTTLS rejected');
+    const upgraded=tls.connect({socket:base,servername:host});
     attach(upgraded);
+    await connect(upgraded,'secureConnect','starttls');
     response=await command('EHLO leadflow.local');
-    if(response.code!==250)throw new Error('ehlo-tls');
+    if(response.code!==250)throw fail('ehlo-tls',response.code,'EHLO after STARTTLS rejected');
   }
 
   if(user){
     response=await command('AUTH LOGIN');
-    if(response.code!==334)throw new Error('auth');
+    if(response.code!==334)throw fail('auth',response.code,'AUTH LOGIN rejected');
     response=await command(Buffer.from(user).toString('base64'));
-    if(response.code!==334)throw new Error('auth-user');
+    if(response.code!==334)throw fail('auth-user',response.code,'username rejected');
     response=await command(Buffer.from(pass).toString('base64'));
-    if(response.code!==235)throw new Error('auth-pass');
+    if(response.code!==235)throw fail('auth-pass',response.code,'credentials rejected');
   }
 
   response=await command(`MAIL FROM:<${from}>`);
-  if(response.code!==250)throw new Error('mail-from');
+  if(response.code!==250)throw fail('mail-from',response.code,'sender rejected');
 
   response=await command(`RCPT TO:<${to}>`);
-  if(response.code!==250&&response.code!==251)throw new Error('rcpt');
+  if(response.code!==250&&response.code!==251)throw fail('rcpt',response.code,'recipient rejected');
 
   response=await command('DATA');
-  if(response.code!==354)throw new Error('data');
+  if(response.code!==354)throw fail('data',response.code,'DATA rejected');
 
   const messageId=`<${randomUUID()}@leadflow.local>`;
   const body=[
@@ -115,13 +130,21 @@ try{
   socket.write(body.split('\r\n').map((line)=>line.startsWith('.')?'.'+line:line).join('\r\n')+'\r\n.\r\n');
 
   response=await reply();
-  if(response.code!==250)throw new Error('queued');
+  if(response.code!==250)throw fail('queued',response.code,'message not accepted');
 
   try{await command('QUIT');}catch{/* server may close first */}
   socket.destroy();
+  clearTimeout(guard);
   process.stdout.write(JSON.stringify({ok:true,messageId}));
-}catch{
+}catch(error){
+  clearTimeout(guard);
   try{socket?.destroy();}catch{/* ignore */}
-  process.stderr.write('Owner email test failed (redacted)');
+  const detail=error&&typeof error==='object'?error:{};
+  process.stdout.write(JSON.stringify({
+    ok:false,
+    stage:String(detail.stage||'unknown'),
+    code:Number(detail.code||0),
+    message:String(detail.message||'failed').slice(0,120),
+  }));
   process.exitCode=1;
 }

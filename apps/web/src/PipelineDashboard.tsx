@@ -54,8 +54,36 @@ const cell: CSSProperties = {
   fontSize: "0.9rem",
 };
 
+const named: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+};
+
+/** HN stores titles HTML-escaped. Decode for display only; stored data is untouched. */
+function decode(value: string) {
+  return (value || "").replace(
+    /&(#x?[0-9a-f]+|[a-z]+);/gi,
+    (match, body: string) => {
+      if (body[0] === "#") {
+        const code =
+          body[1] === "x" || body[1] === "X"
+            ? parseInt(body.slice(2), 16)
+            : parseInt(body.slice(1), 10);
+        return Number.isFinite(code) && code > 0 && code <= 0x10ffff
+          ? String.fromCodePoint(code)
+          : match;
+      }
+      return named[body.toLowerCase()] ?? match;
+    },
+  );
+}
+
 function short(value: string, max = 120) {
-  const text = (value || "").trim();
+  const text = decode(value).trim();
   return text.length > max ? text.slice(0, max - 1) + "…" : text;
 }
 
@@ -185,6 +213,13 @@ export function PipelineDashboard() {
           </button>
         </div>
         {runMessage && <p role="status">{runMessage}</p>}
+        {emailTest && (
+          <p role="status">
+            <strong>Owner email test:</strong> {emailTest.status}
+            {emailTest.to ? ` → ${emailTest.to}` : ""}
+            {emailTest.error ? ` — ${emailTest.error}` : ""}
+          </p>
+        )}
       </section>
 
       <section aria-label="Pipeline stages" style={{ margin: "1.5rem 0" }}>
@@ -293,7 +328,20 @@ export function PipelineDashboard() {
                         {short((lead.reasoning || []).join(" · "), 160) || "—"}
                       </td>
                       <td style={cell}>{request?.message_id || "—"}</td>
-                      <td style={cell}>{emailTest?.status || "—"}</td>
+                      <td style={cell}>
+                        <div>{emailTest?.status || "—"}</div>
+                        {emailTest?.error && (
+                          <div
+                            style={{
+                              opacity: 0.7,
+                              fontSize: "0.78rem",
+                              marginTop: "0.2rem",
+                            }}
+                          >
+                            {emailTest.error}
+                          </div>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}

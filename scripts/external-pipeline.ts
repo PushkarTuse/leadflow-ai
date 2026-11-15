@@ -38,7 +38,7 @@ function executiveSummary(store:MemoryStore,run:{imported:number;duplicates:numb
         ]
       : ['  none']),
     '',
-    `Owner email test: ${emailTest.status}${emailTest.to?` → ${emailTest.to}`:''}`,
+    `Owner email test: ${emailTest.status}${emailTest.to?` → ${emailTest.to}`:''}${emailTest.error?` (${emailTest.error})`:''}`,
     'No email was sent to any external lead.',
   ].join('\n');
 }
@@ -46,6 +46,8 @@ function executiveSummary(store:MemoryStore,run:{imported:number;duplicates:numb
 /**
  * SAFE_OWNER_EMAIL_TEST: at most one clearly labelled receipt per run, addressed
  * only to OWNER_TEST_EMAIL. A discovered lead address can never be the recipient.
+ * Failure detail is limited to the SMTP stage and response code; credentials and
+ * the SMTP URL are never returned.
  */
 async function ownerEmailTest(enabled:boolean,get:(key:string,fallback?:string)=>string,store:MemoryStore):Promise<EmailTestState>{
   const at=new Date().toISOString();
@@ -73,10 +75,15 @@ async function ownerEmailTest(enabled:boolean,get:(key:string,fallback?:string)=
   if(!smtpUrl)
     return {status:'SKIPPED_NOT_CONFIGURED',at,to,messageId:'',error:'OWNER_TEST_SMTP_URL missing; receipt written to outputs/external/email-test-receipt.eml'};
   const result=spawnSync(process.execPath,['scripts/owner-email-test.mjs'],{input:JSON.stringify({smtpUrl,from,to,subject,text}),encoding:'utf8',timeout:30000,maxBuffer:200000});
-  if(result.status!==0)return {status:'FAILED',at,to,messageId:'',error:'SMTP delivery failed (redacted)'};
-  let messageId='';
-  try{messageId=String((JSON.parse(result.stdout) as {messageId?:string}).messageId||'');}catch{messageId='';}
-  return {status:'SENT',at,to,messageId,error:''};
+  let parsed:{ok?:boolean;messageId?:string;stage?:string;code?:number;message?:string}={};
+  try{parsed=JSON.parse(result.stdout||'{}');}catch{parsed={};}
+  if(result.status!==0||!parsed.ok){
+    const detail=parsed.stage
+      ?`SMTP ${parsed.stage} failed${parsed.code?` (code ${parsed.code})`:''}${parsed.message?` — ${parsed.message}`:''}`
+      :result.error?'SMTP transport could not start':'SMTP transport ended without a receipt';
+    return {status:'FAILED',at,to,messageId:'',error:detail.slice(0,200)};
+  }
+  return {status:'SENT',at,to,messageId:String(parsed.messageId||''),error:''};
 }
 
 async function main(){
