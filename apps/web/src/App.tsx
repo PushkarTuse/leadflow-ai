@@ -7,6 +7,12 @@ import { Demo } from "./Demo";
 import { Contact } from "./Contact";
 import { Packages } from "./Packages";
 import { Legal } from "./Legal";
+import { PipelineDashboard } from "./PipelineDashboard";
+
+// The local pipeline API only exists inside the Vite dev server, so the route
+// is compiled out of the production Cloudflare Pages bundle.
+const devOnly = import.meta.env.DEV;
+
 export function App() {
   const [menu, setMenu] = useState(false);
   const location = useLocation();
@@ -22,6 +28,7 @@ export function App() {
       "/demo": "Interactive property demo",
       "/services": "Services & packages",
       "/contact": "Let’s build your next step",
+      "/pipeline": "Local pipeline control",
       "/privacy": "Privacy — review draft",
       "/terms": "Terms — review draft",
     };
@@ -102,6 +109,7 @@ export function App() {
             }
           />
           <Route path="/contact" element={<Contact />} />
+          {devOnly && <Route path="/pipeline" element={<PipelineDashboard />} />}
           <Route path="/privacy" element={<Legal kind="privacy" />} />
           <Route path="/terms" element={<Legal kind="terms" />} />
           <Route
