@@ -2,6 +2,21 @@
 
 Implemented 16 November 2026 against `aditya91203/leadflow-leads` commit `52f8c49899dfcddc58d09e4bff92f9447163238d`. This is a disabled-by-default **pull** connector, not the proposed signed public ingestion endpoint. Recovery log: `HANDOFF_EXTERNAL_LEAD_INTEGRATION.md`. Original contract: `EXTERNAL_LEAD_INGESTION_CONTRACT.md`.
 
+**Local validation completed, 16 November:** API running on 127.0.0.1:8787; five real HN leads collected and verified via API plus local D1 SQL. `node scripts/validate-external-local.mjs` maps all five with original HN evidence and validates repeat deduplication in an in-memory Engine (5 imported, 0 invalid, 5 duplicates on replay). Three qualified for draft review, two remained NEW. Local token is self-chosen, GOOGLE_API_KEY empty. The local API only accepts loopback traffic. Production is disabled and has not been deployed/activated.
+
+The validation script expects the first API page to contain five HN rows (as collected in the otherwise empty database). It fetches real responses asynchronously then supplies those snapshots to the Apps Script-compatible synchronous adapter. The virtual HTTPS origin is only a transport key, not a hosted URL. Repeat after restarting the API with `npm run dev -- --ip 127.0.0.1 --port 8787` in the sibling leadflow-leads repo. No provider email or alert is sent by this script.
+
+## Future HTTPS hosting checklist — documentation only
+
+Cloudflare Workers + D1 is the native fit for this repo. Later, with explicit deployment authorization:
+
+1. Authenticate Wrangler to the intended account and review the current free-plan quotas. Create a remote D1 database with `npx wrangler d1 create leadflow`; replace the placeholder database_id in a reviewed deployment config, retaining binding `DB`. Local SQLite rows do not automatically upload.
+2. Apply migrations to that remote database with `npx wrangler d1 migrations apply leadflow --remote`. Use a fresh strong random API_TOKEN via `npx wrangler secret put API_TOKEN`; the local development token must not be reused publicly. Keep GOOGLE_API_KEY absent, DAILY_SEARCHES empty and source collection HN-only for the initial smoke check. Review the upstream daily cron: it currently collects all keyless feeds, so remove/defer that trigger for a staged first deployment. Update USER_AGENT to a real owner-approved contact.
+3. Deploy the reviewed Worker with Wrangler and confirm the HTTPS workers.dev origin, /health, unauthenticated 401, and authenticated /sources. Collect five HN rows remotely and verify original links before connecting Apps Script. No paid domain is necessary. Do not expose a laptop's dev server publicly as the production service.
+4. Upload the compatible Apps Script bundle separately and save origin/token privately. Leave EXTERNAL_LEADS_ENABLED=false until a later approved activation task. A hosted API alone does not activate the connector. Verify HTTP/Gemini budgets and source interval, then use a single bounded tick only when authorized. Maintain original email permissions.
+
+Reference: [Cloudflare D1 setup](https://developers.cloudflare.com/d1/get-started/) and [D1 Wrangler commands](https://developers.cloudflare.com/workers/wrangler/commands/d1/). No commands in this checklist were executed during local validation.
+
 ## Data path and mapping
 
 Apps Script source cycle → authenticated `GET /leads?sort=found_at&order=asc&limit=5&offset=N` → validated adapter → original HN Firebase item → existing Engine → Sheets → Gemini/rules scoring → qualified owner Telegram draft approval. No producer credentials are sent to HN. Collection is managed separately by the external API owner. Nonqualified rows remain in Sheets and do not trigger an alert. Gemini retains its existing opt-in/configuration and daily budget.

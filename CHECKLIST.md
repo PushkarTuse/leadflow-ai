@@ -3,6 +3,7 @@
 | External API integration (16 November) | Status | Next |
 |---|---|---|
 | Bounded pull adapter, HN original-evidence mapping, scheduled Engine path | Implemented, disabled by default; 16 focused tests pass | Local external API setup, then reachable HTTPS hosting/configuration and live ingestion verification; see HANDOFF_EXTERNAL_LEAD_INTEGRATION.md |
+| Local external API + real HN validation | Completed 16 November | Five HN records in local API/D1; five mapped, zero invalid, replay five duplicates; three in-memory draft-review candidates. Future HTTPS deployment/production activation deferred |
 
 ## P0.1 — Blueprint studio revision (15 November 2026)
 

@@ -4,6 +4,8 @@ This is the entry point for any AI (or human) picking up this repository. Read t
 
 ## External discovery integration — 16 November 2026
 
+**Continuation completed:** integration commit cc71818 pushed to GitHub; external API installed/running locally at 127.0.0.1:8787 with five real HN leads confirmed in API and SQLite. Repeatable `node scripts/validate-external-local.mjs` validated five canonical mappings and five duplicates on replay through the in-memory Engine. Three qualify for local draft review, two remain NEW. Production remains disabled; no hosting or live alerts/email. Co-founder repo has only ignored local setup artifacts, no tracked changes or push. Future HTTPS setup is documented in `docs/EXTERNAL_LEAD_API_SETUP.md`; recovery log has full evidence.
+
 Read `HANDOFF_EXTERNAL_LEAD_INTEGRATION.md` next. A disabled-by-default bounded pull connector now maps the co-founder's leadflow-leads API into the existing Apps Script Engine/Sheets/Gemini/Telegram discovery path. HN original text/time is enriched from the official API; producer scores and contact authority are discarded. Focused bundled runtime verification confirms Sheets + owner Telegram review with no EmailOutbox entry/send. No local API setup or live activation performed. Exact mapping, configuration, pagination limits and later setup: `docs/EXTERNAL_LEAD_API_SETUP.md`. Kapicks was not changed in this work.
 
 ## Kapicks portfolio update — 16 November 2026
