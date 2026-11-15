@@ -1,5 +1,9 @@
 # LeadFlow launch checklist
 
+| External one-shot trigger | Status | Remaining |
+|---|---|---|
+| `npm run external:run` and local config switch | Real provider check passed: five HN leads, three Gemini + two rules, two pending and two owner Telegram preview receipts | Hosted interactive approvals require HTTPS/CRM activation; production stays off, Gmail absent from local runner |
+
 | External API integration (16 November) | Status | Next |
 |---|---|---|
 | Bounded pull adapter, HN original-evidence mapping, scheduled Engine path | Implemented, disabled by default; 16 focused tests pass | Local external API setup, then reachable HTTPS hosting/configuration and live ingestion verification; see HANDOFF_EXTERNAL_LEAD_INTEGRATION.md |

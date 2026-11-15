@@ -1,5 +1,50 @@
 # External discovery connector — iteration one
 
+## One-shot local trigger and switches
+
+From `D:\freelance_personal\leadflow-ai`, run `npm run external:run -- --dry-run`. This performs real read requests to the loopback API and official HN API, uses rules scoring, persists independent local preview records to ignored `data/external-preview.json`, and writes review payloads to ignored `outputs/external/review-preview.json`. It never sends mail or Telegram messages. At most five rows are processed; subsequent runs advance the cursor and wrap at the end. Other source rows count as invalid unless explicitly allowlisted.
+
+For an optional provider-backed **local** run: copy `.env.external.example` to `.env.external`, set `EXTERNAL_LEADS_ENABLED=true`, and run `npm run external:run`. Turn it off with `EXTERNAL_LEADS_ENABLED=false`. It is one-shot, not a scheduler. The token is dev-token for localhost only; production origin/token validation is unchanged. No Gmail sender exists in this runner. Do not commit the filled .env.external or local state.
+
+Gemini requires `GEMINI_ENABLED=true`, the existing key/model, and the two existing free-tier/data-use approval flags set true. Telegram owner previews require `TELEGRAM_ENABLED=true`, bot token and matching private owner user/chat IDs. Copy existing secrets privately from Script Properties; never paste them into docs or console. Provider-backed state is separate (`data/external-pipeline.json`). Per-run HTTP budget is 16; no write-request retries occur. Gemini invalid/quota responses fall back to rules and record a warning. Inspect the reported method to verify actual Gemini success. Existing leads deduplicate without being re-scored; enable Gemini before the first provider-backed run if it must score those rows.
+
+Local Telegram notices explicitly say LOCAL EXTERNAL LEAD REVIEW PREVIEW and contain no inline callback buttons: the production bot already consumes callbacks, and local records do not exist in its Sheet. This avoids a competing poller or buttons that cannot work. Real interactive approval remains the hosted Engine/Sheets path after later HTTPS setup. The local validator `node scripts/validate-external-local.mjs` separately checks actual review payloads and simulated authenticated approve/defer/reject decisions. A sent local owner preview is not a production CRM approval request.
+
+Gemini-backed runs use separate `data/external-gemini.json` so prior rules-only preview records do not suppress first-time Gemini classification. Changing scoring mode switches local ledgers and may produce another owner preview for the same source; these are not shared with the production Sheet.
+
+Local state is locked during a run; crashes may leave `data/external-*.json.lock`. Stop any existing runner and inspect state before manually removing a stale lock. Uncertain Telegram sends persist FAILED and are not automatically resent; inspect the bot before any manual recovery. A successful local run with previews does not activate the production source. Production switch is the separate Script Property `EXTERNAL_LEADS_ENABLED`, default false; scheduled calls also require a reachable HTTPS origin, strong API token and DRY_RUN=false. No production settings are changed by this CLI.
+
+**Provider-backed check, 16 November:** owner explicitly authorized reading existing Script Properties into ignored .env.external. Both providers were already enabled and the Gemini approval flags already true. `npm run external:run` fetched/ingested five real HN records, with three method=gemini and two rules fallbacks (provider unavailable/quota/invalid-response category, not diagnosed more narrowly). Two records reached PENDING_APPROVAL. Both owner-only preview sends returned matching private chat receipts; the local requests are SENT with Telegram message IDs. Zero drafts/emails sent. State and credentials are ignored, not committed. No Google Sheet writes, production source enablement, callback polling or deployment occurred. This verifies local Gemini qualification and Telegram preview delivery, not production interactive approvals. To run again, use the same one-shot command; cursor/dedup prevent resending recorded alerts.
+
+## Browser Console quick checks
+
+Open `http://127.0.0.1:8787/` on the same computer, then DevTools → Console. The root is API documentation; these authenticated reads show actual records. The local-only token belongs in a request header, not in a URL. These commands inspect the source API; they do not trigger LeadFlow scoring or notifications.
+
+```javascript
+const localHeaders = {Authorization: 'Bearer dev-token'};
+fetch('http://127.0.0.1:8787/leads?source=hackernews', {headers: localHeaders})
+  .then(r => r.json()).then(data => console.table(data.leads));
+fetch('http://127.0.0.1:8787/leads?source=hackernews', {headers: localHeaders})
+  .then(r => r.json()).then(data => console.log(JSON.stringify(data.leads, null, 2)));
+fetch('http://127.0.0.1:8787/stats', {headers: localHeaders})
+  .then(r => r.json()).then(console.log);
+fetch('http://127.0.0.1:8787/sources', {headers: localHeaders})
+  .then(r => r.json()).then(console.log);
+fetch('http://127.0.0.1:8787/runs', {headers: localHeaders})
+  .then(r => r.json()).then(console.log);
+```
+
+Use `/leads` for all sources, `/leads?source=hackernews` for HN, `/stats` for counts, `/sources` for readiness, `/runs` for collection history, and `/health` for unauthenticated liveness. Keep Google Places disabled. To collect another bounded HN batch intentionally:
+
+```javascript
+fetch('http://127.0.0.1:8787/collect/hackernews', {
+  method: 'POST', headers: {...localHeaders, 'Content-Type': 'application/json'},
+  body: JSON.stringify({limit: 5})
+}).then(r => r.json()).then(console.log);
+```
+
+After collection, run the local one-shot CLI above to ingest the data into the separate LeadFlow local state. Collection alone does not populate the production Sheet.
+
 Implemented 16 November 2026 against `aditya91203/leadflow-leads` commit `52f8c49899dfcddc58d09e4bff92f9447163238d`. This is a disabled-by-default **pull** connector, not the proposed signed public ingestion endpoint. Recovery log: `HANDOFF_EXTERNAL_LEAD_INTEGRATION.md`. Original contract: `EXTERNAL_LEAD_INGESTION_CONTRACT.md`.
 
 **Local validation completed, 16 November:** API running on 127.0.0.1:8787; five real HN leads collected and verified via API plus local D1 SQL. `node scripts/validate-external-local.mjs` maps all five with original HN evidence and validates repeat deduplication in an in-memory Engine (5 imported, 0 invalid, 5 duplicates on replay). Three qualified for draft review, two remained NEW. Local token is self-chosen, GOOGLE_API_KEY empty. The local API only accepts loopback traffic. Production is disabled and has not been deployed/activated.
