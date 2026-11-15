@@ -4,6 +4,7 @@
 |---|---|---|
 | Bounded pull adapter, HN original-evidence mapping, scheduled Engine path | Implemented, disabled by default; 16 focused tests pass | Local external API setup, then reachable HTTPS hosting/configuration and live ingestion verification; see HANDOFF_EXTERNAL_LEAD_INTEGRATION.md |
 | Local external API + real HN validation | Completed 16 November | Five HN records in local API/D1; five mapped, zero invalid, replay five duplicates; three in-memory draft-review candidates. Future HTTPS deployment/production activation deferred |
+| Local token + integrated approval dry run | Completed 16 November | dev-token authentication verified after restart; 5 HN + 5 Arbeitnow in local SQLite; three review payloads and approve/defer/reject callbacks exercised internally; 16 focused tests pass; no provider sends |
 
 ## P0.1 — Blueprint studio revision (15 November 2026)
 

@@ -6,6 +6,10 @@ Implemented 16 November 2026 against `aditya91203/leadflow-leads` commit `52f8c4
 
 The validation script expects the first API page to contain five HN rows (as collected in the otherwise empty database). It fetches real responses asynchronously then supplies those snapshots to the Apps Script-compatible synchronous adapter. The virtual HTTPS origin is only a transport key, not a hosted URL. Repeat after restarting the API with `npm run dev -- --ip 127.0.0.1 --port 8787` in the sibling leadflow-leads repo. No provider email or alert is sent by this script.
 
+**Follow-up validation:** the owner's local API_TOKEN is now exactly `dev-token`, stored only in the sibling ignored .dev.vars. Restart Wrangler after changing secrets. Health and authenticated collection/read routes pass; local SQLite contains five HN plus five Arbeitnow rows. The overview at `/` is normal public API documentation. In Postman, set Bearer Token to the local token; browsing `/leads` directly without the header returns 401.
+
+The validator now accepts short tokens for the real loopback fetch while keeping the production adapter's 32-character policy intact through a dummy snapshot-transport token. The real-data dry run confirms 5 imported / 0 invalid, replay 5 duplicates; three reach PENDING_APPROVAL. It constructs the real Telegram review payload and simulates owner callbacks: approve → DRAFT_READY, review → DEFERRED, reject → REJECTED; unauthorized and replay callbacks fail. These review actions only affect the in-memory store. Gemini/Telegram/Gmail are not called; the live provider chain remains untested for this external source and production stays disabled.
+
 ## Future HTTPS hosting checklist — documentation only
 
 Cloudflare Workers + D1 is the native fit for this repo. Later, with explicit deployment authorization:
@@ -48,7 +52,7 @@ Code is already cloned to `D:\freelance_personal\leadflow-leads`. No install/DB/
 cd D:\freelance_personal\leadflow-leads
 npm ci
 Copy-Item .dev.vars.example .dev.vars
-# Edit .dev.vars privately: set API_TOKEN to a random 32+ character secret.
+# Local-only: set API_TOKEN=dev-token as requested by the owner.
 # GOOGLE_API_KEY stays empty. No subscription is needed for API_TOKEN or HN.
 npm run db:local
 npm run dev
@@ -81,4 +85,4 @@ Malformed/unsupported/disabled rows count as invalid and advance the page. HN pr
 
 16 focused adapter and actual bundled Apps Script tests pass. They cover input/host/token bounds, HN evidence mismatch, Places rejection, duplicate replay, Sheets persistence, owner Telegram notification, and an empty EmailOutbox with zero Gmail sends. TypeScript and automation bundle pass. Providers are simulated; no live collection, CRM update, Telegram delivery or email is claimed.
 
-Next session: run the local API sequence above, inspect one real HN row plus its original posting, then decide free hosting. Deploy and configure only after that. Run a bounded real pull and verify its SourceRuns counts, Sheet record, canonical HN link, internal score and owner draft notification. Re-run the same page and confirm no duplicate. Keep the public-site consented email flow separate.
+The local sequence and original HN mapping have now passed as recorded above. Remaining later work: approve HTTPS hosting, review free quotas, deploy the API and compatible Apps Script, configure private secrets, then authorize a bounded live integration test of SourceRuns/Sheets/Gemini/Telegram draft notification. Keep production disabled until explicitly authorized and preserve discovered-lead draft-only permissions. The current local dry run sends no emails or Telegram messages.
