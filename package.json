@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --config apps/web/vite.config.ts --host 127.0.0.1",
-    "build": "npm run typecheck && vite build --config apps/web/vite.config.ts && node scripts/finalize-web.mjs && npm run build:automation",
+    "build": "npm run typecheck && vite build --config apps/web/vite.config.ts && node scripts/finalize-web.mjs && npm run build:marketing && npm run build:automation",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview --config apps/web/vite.config.ts --host 127.0.0.1",
     "test": "vitest run",
@@ -13,18 +13,30 @@
     "test:contact": "playwright test --config playwright.live.config.ts",
     "build:automation": "node scripts/build-automation.mjs",
     "dry-run": "tsx scripts/cli.ts demo",
-    "hunter": "tsx scripts/cli.ts"
+    "hunter": "tsx scripts/cli.ts",
+    "dev:marketing": "vite --config apps/marketing/vite.config.ts",
+    "build:marketing": "vite build --config apps/marketing/vite.config.ts",
+    "preview:marketing": "vite preview --config apps/marketing/vite.config.ts --host 127.0.0.1 --port 4175",
+    "test:marketing": "playwright test --config playwright.marketing.config.ts",
+    "test:mobile": "playwright test --config playwright.mobile.config.ts"
   },
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
+    "@fontsource-variable/manrope": "^5.3.0",
+    "@fontsource-variable/plus-jakarta-sans": "^5.3.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@react-three/drei": "^10.7.9",
+    "@react-three/fiber": "^9.8.2",
     "@tailwindcss/vite": "^4.1.0",
+    "gsap": "^3.15.1",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.1.0",
     "tailwindcss": "^4.1.0",
+    "three": "^0.187.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
@@ -34,6 +46,7 @@
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/three": "^0.187.0",
     "@vitejs/plugin-react": "6.3.0",
     "esbuild": "^0.28.2",
     "tsx": "^4.19.0",

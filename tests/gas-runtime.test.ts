@@ -225,6 +225,14 @@ describe("built Apps Script runtime with mocked Google/Telegram services", () =>
     const callback={update_id:1,callback_query:{id:'cb',from:{id:7},message:{message_id:Number(row.message_id),chat:{id:99,type:'private'}},data:'send:'+row.nonce}};h.setUpdates([callback]);h.run('tick');expect(h.sent).toHaveLength(1);expect(h.sent[0]).toContain('To: owner@example.com');expect(h.records()[0].status).toBe('EMAIL_SENT');h.setUpdates([callback]);h.run('tick');expect(h.sent).toHaveLength(1);
     const edits=h.calls.filter(c=>c.method==='editMessageText');expect(edits).toHaveLength(1);expect(edits[0].body.text).toContain('SENT');expect(edits[0].body.reply_markup).toEqual({inline_keyboard:[]});
   });
+  it.each([
+    ['digital-marketing', 'Signal & Slate', '/#audit', 'Your Signal & Slate enquiry'],
+    ['web-app-dev', 'LeadFlow AI', '/contact', 'Your LeadFlow AI enquiry'],
+  ])('persists %s metadata through the compiled Apps Script, Sheet JSON and owner alert',(vertical,brand,path,subject)=>{
+    const h=harness();h.run('setup');for(const [key,value] of Object.entries({DRY_RUN:'false',INTAKE_ENABLED:'true',INTAKE_HMAC_SECRET:'test-only-secret-at-least-32-bytes',PUBLIC_SITE_URL:'https://dev.example.com',TELEGRAM_ENABLED:'true',TELEGRAM_BOT_TOKEN:'123:test-only',TELEGRAM_OWNER_USER_ID:'7',TELEGRAM_OWNER_CHAT_ID:'99'}))h.props.set(key,value);
+    const payload=JSON.stringify({submission_id:randomUUID(),name:'Synthetic Owner',email:'owner@example.com',business:'Synthetic Test Studio',goal:'We need a responsive website and structured enquiry form with Google Sheets.',budget:'I’d like guidance',consent:true,consent_version:'enquiry-email-v1',vertical,brand,site_url:'https://marketing.example.com'}),timestamp=Date.now(),nonce=randomUUID();const signature=createHmac('sha256',h.props.get('INTAKE_HMAC_SECRET')!).update(signatureMessage(timestamp,nonce,payload)).digest('hex');
+    const response=h.run('doPost',{postData:{contents:JSON.stringify({timestamp,nonce,payload,signature})}});expect(response.ok).toBe(true);h.run('tick');const rows=h.tabs.get('Leads')!.rows;const record=JSON.parse(String(rows[1][rows[0].indexOf('record_json')]));expect(record).toMatchObject({vertical,brand,source_url:'https://marketing.example.com'+path});expect(h.calls.find(c=>c.method==='sendMessage')?.body.text).toContain(subject);expect(h.sent).toHaveLength(0);
+  });
   it('rejects unsigned intake without creating a lead',()=>{const h=harness();h.run('setup');h.props.set('DRY_RUN','false');h.props.set('INTAKE_ENABLED','true');h.props.set('INTAKE_HMAC_SECRET','test-only-secret-at-least-32-bytes');expect(h.run('doPost',{postData:{contents:'{}'}}).ok).toBe(false);expect(h.records()).toHaveLength(0);});
   it("sets up idempotently, preserves original tabs and prevents HTTP in dry-run", () => {
     const h = harness();

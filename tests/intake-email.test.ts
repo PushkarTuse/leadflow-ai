@@ -46,3 +46,39 @@ describe('signed website intake',()=>{
   it.each([{success:false},{success:true,hostname:'evil.example',action:'contact'},{success:true,hostname:'example.com',action:'wrong'}])('rejects challenge mismatch %j',async challenge=>{const fetcher=vi.fn(async()=>Response.json(challenge)) as unknown as typeof fetch;expect((await handleContact(request({...enquiry(),turnstile_token:'x'}),env,fetcher)).status).toBe(403);expect(fetcher).toHaveBeenCalledTimes(1);});
   it('never reports received when Apps Script rejects the request',async()=>{const fetcher=vi.fn(async(url:unknown)=>Response.json(String(url).includes('siteverify')?{success:true,hostname:'example.com',action:'contact'}:{ok:false})) as unknown as typeof fetch;expect((await handleContact(request({...enquiry(),turnstile_token:'x'}),env,fetcher)).status).toBe(502);});
 });
+
+
+describe('Signal & Slate marketing intake',()=>{
+ const secret='test-only-marketing-signing-secret-long';
+ const env:ContactEnvironment={APPS_SCRIPT_URL:'https://script.google.com/macros/s/test-deployment/exec',INTAKE_HMAC_SECRET:secret,TURNSTILE_SECRET_KEY:'test-only',PUBLIC_SITE_URL:'https://marketing.example.com'};
+ const marketing=()=>({...enquiry(),vertical:'digital-marketing' as const,brand:'Signal & Slate' as const});
+ it.each([
+  ['digital-marketing','Signal & Slate','/#audit'],
+  ['web-app-dev','LeadFlow AI','/contact'],
+ ] as const)('retains signed %s brand/vertical and stamps the verified origin before CRM ingestion',async(vertical,brand,path)=>{
+  let leadInput:ReturnType<typeof inboundToLead>|undefined;
+  const fetcher=vi.fn(async(url:unknown,init?:RequestInit)=>{
+   if(String(url).includes('siteverify'))return Response.json({success:true,hostname:'marketing.example.com',action:'contact'});
+   const payload=verifyEnvelope(JSON.parse(String(init?.body)),secret,sign);
+   expect(payload).toMatchObject({vertical,brand,site_url:'https://marketing.example.com'});
+   leadInput=inboundToLead(payload,'https://development.example.com',now);
+   return Response.json({ok:true,lead_id:'lf_0123456789abcdef'});
+  }) as unknown as typeof fetch;
+  const request=new Request(env.PUBLIC_SITE_URL+'/api/contact',{method:'POST',headers:{origin:env.PUBLIC_SITE_URL,'content-type':'application/json'},body:JSON.stringify({...enquiry(),vertical,brand,site_url:'https://untrusted.example.com',turnstile_token:'test-token'})});
+  expect((await handleContact(request,env,fetcher)).status).toBe(200);
+  expect(leadInput).toMatchObject({vertical,brand,source_url:'https://marketing.example.com'+path,contact_permission_state:'EXPLICIT_OPT_IN'});
+  expect(leadInput?.owner_notes).toContain('vertical: '+vertical);
+ });
+ it('rejects mismatched or unsupported branding without weakening ordinary website intake',()=>{
+  expect(inboundSchema.safeParse(enquiry()).success).toBe(true);
+  expect(inboundSchema.safeParse({...enquiry(),vertical:'digital-marketing'}).success).toBe(false);
+  expect(inboundSchema.safeParse({...marketing(),brand:'Other brand'}).success).toBe(false);
+  expect(inboundSchema.safeParse({...marketing(),brand:'LeadFlow AI'}).success).toBe(false);
+  expect(inboundSchema.safeParse({...marketing(),vertical:'web-app-dev'}).success).toBe(false);
+ });
+ it('prepares a marketing-specific email but sends nothing until owner approval',()=>{
+  const store=new MemoryStore();const engine=new Engine(store,defaults,{now:()=>now});const lead=engine.ingest(inboundToLead(marketing(),'https://marketing.example.com',now)).lead;
+  const draft=draftEmail(lead);expect(draft.subject).toBe('Your Signal & Slate enquiry — next steps');expect(draft.body).toContain('monthly media budget');expect(draft.body).toContain('Regards,\nSignal & Slate');
+  let rows:EmailOutbox[]=[];const outbox={list:()=>rows,save:(row:EmailOutbox)=>{rows=rows.filter(r=>r.outbox_id!==row.outbox_id).concat(row)}};const flow=new EmailWorkflow(store,outbox,defaults,{now:()=>now},digest);flow.prepare(lead,'abcdefghijklmnopqrstuvwx');const send=vi.fn();flow.sendApproved(send);expect(send).not.toHaveBeenCalled();
+ });
+});

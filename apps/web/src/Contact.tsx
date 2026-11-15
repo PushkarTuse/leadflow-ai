@@ -1,3 +1,4 @@
+import { ProjectFields, projectGoal } from "./ProjectFields";
 import { useState, type FormEvent } from "react";
 import {
   ArrowUpRight,
@@ -8,7 +9,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { Link } from "react-router-dom";
-import { LiveContact } from './LiveContact';
+import { LiveContact } from "./LiveContact";
 import { contactSchema } from "../../../packages/core/enquiry";
 function allowedUrl(raw: string | undefined, host: string) {
   try {
@@ -28,7 +29,13 @@ const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
 )
   ? import.meta.env.VITE_CONTACT_EMAIL
   : "";
-export function Contact(){return import.meta.env.VITE_INTAKE_ENABLED==='true'?<LiveContact/>:<OfflineContact/>;}
+export function Contact() {
+  return import.meta.env.VITE_INTAKE_ENABLED === "true" ? (
+    <LiveContact />
+  ) : (
+    <OfflineContact />
+  );
+}
 function OfflineContact() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [brief, setBrief] = useState("");
@@ -36,12 +43,19 @@ function OfflineContact() {
   function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const d = new FormData(e.currentTarget);
+    if (String(d.get("goal") || "").trim().length < 20) {
+      setErrors({ goal: "Describe your project in at least 20 characters." });
+      return;
+    }
     const result = contactSchema.safeParse({
       name: d.get("name"),
       email: d.get("email"),
       business: d.get("business"),
-      goal: d.get("goal"),
-      budget: d.get("budget"),
+      goal: projectGoal(d),
+      budget:
+        d.get("budget") === "launch-budget"
+          ? "I’d like guidance"
+          : d.get("budget"),
       consent: d.get("consent") === "on",
     });
     if (!result.success) {
@@ -68,8 +82,8 @@ function OfflineContact() {
           next step?
         </h1>
         <p>
-          Tell us what you do, where enquiries get stuck and what a better
-          workflow would look like.
+          Tell us what you want to build, who it is for and what a successful
+          launch looks like.
         </p>
         <div className="contact-points">
           <p>
@@ -247,6 +261,7 @@ function OfflineContact() {
                     )}
                   </label>
                 ))}
+                <ProjectFields />
                 <label>
                   What would you like to improve?
                   <textarea
@@ -254,7 +269,7 @@ function OfflineContact() {
                     rows={4}
                     required
                     minLength={20}
-                    maxLength={2000}
+                    maxLength={1600}
                     placeholder="Your goal, current tools, pages or integrations, and ideal launch timing…"
                     aria-invalid={Boolean(errors.goal)}
                     aria-describedby="goal-error"
@@ -269,6 +284,9 @@ function OfflineContact() {
                   Indicative setup budget
                   <select name="budget" required>
                     <option value="">Choose a range</option>
+                    <option value="launch-budget">
+                      Under ₹15,000 — launch website
+                    </option>
                     <option>₹15,000–₹30,000</option>
                     <option>₹30,000–₹60,000</option>
                     <option>₹60,000+</option>

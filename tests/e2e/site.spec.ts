@@ -19,7 +19,7 @@ test("site renders, navigates, and fits the viewport", async ({
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: /A better website/ }),
+    page.getByRole("heading", { name: /From your idea/ }),
   ).toBeVisible();
   expect(
     await page.evaluate(
@@ -31,15 +31,15 @@ test("site renders, navigates, and fits the viewport", async ({
     fullPage: true,
   });
   await page.screenshot({path:`outputs/screenshots/home-${testInfo.project.name}-viewport.png`});
-  await page.getByRole("link", { name: "Try the live demo" }).click();
+  await page.getByRole("link", { name: "Explore sample experience" }).click();
   await expect(
     page.getByRole("heading", { name: "The visitor’s enquiry" }),
   ).toBeVisible();
   expect(errors).toEqual([]);
   if (testInfo.project.name === 'iphone') await page.getByRole('button', {name:'Open navigation'}).click();
-  await page.getByRole('link', {name:'How it works',exact:true}).click();
-  await expect(page).toHaveURL('/#how-it-works');
-  expect(await page.locator('#how-it-works').evaluate(e => Math.abs(e.getBoundingClientRect().top))).toBeLessThan(5);
+  await page.getByRole('link', {name:'Our work',exact:true}).click();
+  await expect(page).toHaveURL('/#work');
+  expect(await page.locator('#work').evaluate(e => Math.abs(e.getBoundingClientRect().top - parseFloat(getComputedStyle(e).scrollMarginTop)))).toBeLessThan(5);
   if (testInfo.project.name === 'iphone') await expect(page.getByRole('button', {name:'Open navigation'})).toHaveAttribute('aria-expanded','false');
 });
 test("sample enquiry changes score, approval creates a local draft, reset clears state", async ({
@@ -83,7 +83,7 @@ test("contact validates and truthfully prepares without submitting", async ({
 }) => {
   await page.goto("/contact");
   await page.getByRole("button", { name: "Prepare my brief" }).click();
-  await expect(page.getByText("Choose a budget range.")).toBeVisible();
+  await expect(page.getByText("Tell us a little more (at least 20 characters).")).toBeVisible();
   await page.getByLabel("Your name").fill("Sample Owner");
   await page.getByLabel("Email address").fill("sample@example.com");
   await page.getByLabel("Business / service").fill("Sample Practice");
@@ -103,6 +103,10 @@ test("contact validates and truthfully prepares without submitting", async ({
   ).toBeVisible();
 });
 test("key routes pass automated accessibility checks", async ({ page }) => {
+  test.setTimeout(60000);
+  // The decorative canvas is aria-hidden and has its own lifecycle test.
+  // Audit the accessible content in reduced-motion mode without GPU contention.
+  await page.emulateMedia({reducedMotion:'reduce'});
   const issues: unknown[] = [];
   for (const route of [
     "/",

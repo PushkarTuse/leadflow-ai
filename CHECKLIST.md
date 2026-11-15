@@ -1,5 +1,26 @@
 # LeadFlow launch checklist
 
+## P0.1 — Blueprint studio revision (15 November 2026)
+
+| Work | Status | Evidence / remaining |
+|---|---|---|
+| Ink/platinum/jade studio, services, work and packages | Implemented and browser tested | Distinct identity; local typography/artwork; bounded ₹5,999 / ₹18,999 / ₹44,999+ offers |
+| Four-stage procedural scroll journey | Browser tested | Blueprint → web/mobile/spatial → shield → finished interface; GSAP/spline/parallax; no remote models |
+| Accessibility and performance fallbacks | Browser tested | Route axe/overflow, keyboard, mobile/reduced-motion, pause, WebGL loss/retry and deferred scene loading |
+| Existing property demo and contact | Regression tested | Guided/free-form demo, consent, retry ID and package preselection retained |
+| Web/App intake segmentation | Integration tested; Apps Script v6 deployed | Matched signed web-app-dev/LeadFlow AI; trusted origin, CRM JSON and owner notes; old requests valid |
+| Automated verification | Passed | Strict build; 75 unit/integration; 15 studio + 2 contact + 8 marketing browser passes; 3 mobile-only WebGL cases skipped; audit zero vulnerabilities |
+| Release and Notion P0.1 notes | Verified | Cloudflare 0cf14a89 + compatible Apps Script v6; six routes/assets/health 200, malformed intake 400; live package preselection; Notion notes persisted after reload |
+| Physical-device frame rate, approved Bageera proof | Remaining | No physical iOS/60fps certification or fabricated testimonials |
+| Mobile 3D asset/scene loading and sharpness | Sharper release deployed; local and public checks pass | Both sites auto-load compact 3D on touch/low-core devices at up to DPR 2 with antialiasing and full-opacity canvas; 8 local + 8 live iPhone/Android Chromium checks pass. Physical Safari/Android performance confirmation remains open |
+| iPhone Reduce Motion explanation | Deployed; live WebKit verified | Owner confirmed the iPhone still view was caused by iOS Reduce Motion; 3D worked after disabling it. Both sites now present a prominent explanation and explicit override when that preference or Data Saver is on; 4/4 live iPhone WebKit checks pass |
+| External discovery producer contract | Documented; ingress not implemented | `docs/EXTERNAL_LEAD_INGESTION_CONTRACT.md` has exact input fields, JSON, variables, permission boundary and proposed signed endpoint. HN API poller exists; Google Places prospect export is excluded under standard terms |
+| Azure migration and domains | Separate roadmap work | Free Cloudflare retained; no purchases |
+
+Design and scope: `docs/STUDIO_BLUEPRINT.md`. Older sections below are historical snapshots.
+
+Current public studio: https://leadflow-agency.pages.dev (release https://0cf14a89.leadflow-agency.pages.dev). Screenshot: `outputs/screenshots/studio-blueprint-live.png`. P0.1 remains In Progress for founder portfolio/release review. This revision did not run a new live Gmail send or change secrets, test mode, triggers or the owner approval gate.
+
 Updated 14 November 2026, Asia/Kolkata. V3 authorizes live website intake and Gmail replies after explicit owner approval. Discovered opportunities remain draft-only/manual submission.
 
 | Work | Status | Evidence / remaining |
@@ -26,3 +47,28 @@ Updated 14 November 2026, Asia/Kolkata. V3 authorizes live website intake and Gm
 
 No mocked check counts as live verification. No prospect contacted, no domain purchased, no paid service enabled.
 
+
+## P0.1 storefront revision — 15 November 2026
+
+- Implemented: client-facing home/services, web/mobile/Unity/automation catalogue, central brand/offer config, three bounded starting packages, honest portfolio labels and quote form context.
+- Tested: 69 unit/integration tests, 10 desktop/mobile site checks, 2 contact boundary checks; build/typecheck passed. Route accessibility and no-overflow checks pass. Browser contact tests use simulated providers and do not constitute a new live Gmail send.
+- Remaining: approved Bageera walkthrough/testimonials; custom domain and Azure migration; Digital Marketing website. Live account configuration must be rechecked before broad outreach; old checklist rows above are historical.
+
+Storefront release verified 15 November 2026: https://leadflow-agency.pages.dev (release https://5b44ef4c.leadflow-agency.pages.dev). Revised homepage and package-to-contact selection observed live; /, /services, /contact and /demo returned HTTP 200. Malformed contact payload rejected with HTTP 400. P0.1 Notion progress and release note saved and reloaded. This revision did not send a new live email.
+
+## P0.2 — Signal & Slate priority build (15 November 2026)
+
+| Work | Status | Evidence / remaining |
+|---|---|---|
+| Standalone apps/marketing storefront | Implemented | React 19, dark slate/gold theme, four services, three monthly plans, audit CTA |
+| Procedural camera journey | Browser tested | Dial/noise → lenses/signals → telemetry bars → focal frame; lazy R3F/Drei/GSAP |
+| Accessibility and fallback | Browser tested | Mobile/reduced motion, pause, WebGL context loss, no-overflow and axe route checks |
+| Marketing intake metadata | 73 unit/integration tests passed | Signed brand/vertical and trusted origin, compiled GAS persistence, existing intake compatibility |
+| Branded approval draft | Implemented and mocked-runtime tested | Signal & Slate subject/signature; owner approval required |
+| CPL/ROAS and Bageera proof | Implemented honestly | Illustrative calculator; Bageera strategy concept, no fabricated results |
+| Live marketing origin, deployment and intake | Remaining | Choose host/origin, deploy compatible backend, configure widget/server secrets, owner smoke test |
+| Verified Bageera marketing results | Remaining | Founder-approved campaign evidence required |
+
+Setup and verification boundaries: docs/SIGNAL_AND_SLATE.md. No paid service or live account setting changed.
+
+Cloudflare release — 15 November 2026: Signal & Slate is public at https://signal-and-slate.pages.dev (deployment https://9c4fbda2.signal-and-slate.pages.dev). Separate free Pages project; assets and Functions uploaded. Live HTML, JS, CSS and favicon returned 200. Intake remains explicitly in local-brief mode until its Turnstile/server secrets and compatible Apps Script deployment are activated. /api/contact correctly returns 503 while unconfigured.

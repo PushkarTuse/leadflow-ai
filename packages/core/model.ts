@@ -27,6 +27,8 @@ export type Status = (typeof statuses)[number];
 export const inputSchema = z
   .object({
     source: z.enum(["manual", "csv", "gmail", "hn", "inbound"]),
+    vertical: z.enum(['digital-marketing', 'web-app-dev']).optional(),
+    brand: z.enum(['Signal & Slate', 'LeadFlow AI']).optional(),
     source_external_id: z.string().max(160).default(""),
     source_url: z
       .string()
@@ -68,6 +70,11 @@ export const inputSchema = z
   })
   .strict()
   .superRefine((x, ctx) => {
+    if (!((!x.vertical && !x.brand) ||
+      (x.vertical === 'digital-marketing' && x.brand === 'Signal & Slate') ||
+      (x.vertical === 'web-app-dev' && x.brand === 'LeadFlow AI'))) {
+      ctx.addIssue({code: 'custom', message: 'Supply a matching brand and service vertical', path: ['vertical']});
+    }
     if (
       x.stated_budget_min !== null &&
       x.stated_budget_max !== null &&

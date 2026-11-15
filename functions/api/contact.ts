@@ -20,7 +20,9 @@ export async function handleContact(request:Request,env:ContactEnvironment,fetch
     const challenge=await verification.json() as {success?:boolean;hostname?:string;action?:string};
     if(!verification.ok||!challenge.success||challenge.hostname!==new URL(env.PUBLIC_SITE_URL).hostname||challenge.action!=='contact')return json({ok:false,error:'Please complete the security check again.'},403);
     const {turnstile_token: _token,website: _trap,...enquiry}=parsed.data;
-    const payload=JSON.stringify(enquiry),timestamp=Date.now(),nonce=crypto.randomUUID();
+    // Stamp the verified server origin, never a caller-supplied source URL.
+    const {site_url:_untrustedSite,...details}=enquiry;
+    const payload=JSON.stringify({...details,...(enquiry.vertical?{site_url:configured.origin}:{} )}),timestamp=Date.now(),nonce=crypto.randomUUID();
     const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(env.INTAKE_HMAC_SECRET),{name:'HMAC',hash:'SHA-256'},false,['sign']);
     const digest=await crypto.subtle.sign('HMAC',key,new TextEncoder().encode(signatureMessage(timestamp,nonce,payload)));
     const signature=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');

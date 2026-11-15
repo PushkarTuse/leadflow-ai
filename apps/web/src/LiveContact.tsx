@@ -1,20 +1,244 @@
-import { useCallback, useState, type FormEvent } from 'react';
-import { ArrowUpRight, CheckCircle2, ShieldCheck } from 'lucide-react';
-import { Link } from 'react-router-dom';
-import { inboundSchema } from '../../../packages/core/intake';
-import { Turnstile } from './Turnstile';
+import { ProjectFields, projectGoal } from "./ProjectFields";
+import { useCallback, useState, type FormEvent } from "react";
+import { ArrowUpRight, CheckCircle2, ShieldCheck } from "lucide-react";
+import { Link } from "react-router-dom";
+import { inboundSchema } from "../../../packages/core/intake";
+import { Turnstile } from "./Turnstile";
 
-export function LiveContact(){
-  const [id,setId]=useState(()=>crypto.randomUUID());const [token,setToken]=useState('');const [resetKey,setResetKey]=useState(0);const [busy,setBusy]=useState(false);const [error,setError]=useState('');const [reference,setReference]=useState('');
-  const securityError=useCallback(()=>setError('The security check could not load. Please refresh and try again.'),[]);
-  async function submit(event:FormEvent<HTMLFormElement>){event.preventDefault();if(busy)return;setError('');const form=new FormData(event.currentTarget);
-    const enquiry=inboundSchema.safeParse({submission_id:id,name:form.get('name'),email:form.get('email'),business:form.get('business'),goal:form.get('goal'),budget:form.get('budget'),consent:form.get('consent')==='on',consent_version:'enquiry-email-v1'});
-    if(!enquiry.success){setError('Please complete your details, a project description of at least 20 characters, a budget range and consent.');return;}
-    if(!token){setError('Please complete the security check before sending.');return;}
+export function LiveContact() {
+  const [id, setId] = useState(() => crypto.randomUUID());
+  const [token, setToken] = useState("");
+  const [resetKey, setResetKey] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [reference, setReference] = useState("");
+  const securityError = useCallback(
+    () =>
+      setError(
+        "The security check could not load. Please refresh and try again.",
+      ),
+    [],
+  );
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy) return;
+    setError("");
+    const form = new FormData(event.currentTarget);
+    if (String(form.get("goal") || "").trim().length < 20) {
+      setError("Please describe your project in at least 20 characters.");
+      return;
+    }
+    const enquiry = inboundSchema.safeParse({
+      submission_id: id,
+      name: form.get("name"),
+      email: form.get("email"),
+      business: form.get("business"),
+      goal: projectGoal(form),
+      budget:
+        form.get("budget") === "launch-budget"
+          ? "I’d like guidance"
+          : form.get("budget"),
+      consent: form.get("consent") === "on",
+      consent_version: "enquiry-email-v1",
+      vertical: 'web-app-dev',
+      brand: 'LeadFlow AI',
+    });
+    if (!enquiry.success) {
+      setError(
+        "Please complete your details, a project description of at least 20 characters, a budget range and consent.",
+      );
+      return;
+    }
+    if (!token) {
+      setError("Please complete the security check before sending.");
+      return;
+    }
     setBusy(true);
-    try{const response=await fetch('/api/contact',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...enquiry.data,turnstile_token:token,website:form.get('website')||''}),signal:AbortSignal.timeout(35000)});const result=await response.json() as {ok?:boolean;reference?:string;error?:string};if(!response.ok||!result.ok||!result.reference)throw new Error(result.error||'Your enquiry could not be confirmed. Please retry.');setReference(result.reference);}
-    catch(e){setError(e instanceof Error&&e.name!=='TimeoutError'?e.message:'Delivery could not be confirmed. Please retry; your reference prevents a duplicate.');setToken('');setResetKey(k=>k+1);}
-    finally{setBusy(false);}
+    try {
+      const response = await fetch("/api/contact", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...enquiry.data,
+          turnstile_token: token,
+          website: form.get("website") || "",
+        }),
+        signal: AbortSignal.timeout(35000),
+      });
+      const result = (await response.json()) as {
+        ok?: boolean;
+        reference?: string;
+        error?: string;
+      };
+      if (!response.ok || !result.ok || !result.reference)
+        throw new Error(
+          result.error || "Your enquiry could not be confirmed. Please retry.",
+        );
+      setReference(result.reference);
+    } catch (e) {
+      setError(
+        e instanceof Error && e.name !== "TimeoutError"
+          ? e.message
+          : "Delivery could not be confirmed. Please retry; your reference prevents a duplicate.",
+      );
+      setToken("");
+      setResetKey((k) => k + 1);
+    } finally {
+      setBusy(false);
+    }
   }
-  return <div className="container page contact-page"><div className="contact-copy"><p className="eyebrow">LET’S BUILD SOMETHING USEFUL</p><h1>Tell us about<br/>your next step.</h1><p>Share your project goal and the tools you use. Your enquiry will be organized for the owner to review before replying.</p><div className="contact-points"><p><CheckCircle2 size={18}/> A focused scope, shaped around your needs</p><p><CheckCircle2 size={18}/> Clear pricing before work begins</p><p><CheckCircle2 size={18}/> Every email reviewed by the owner</p></div><div className="privacy-note"><ShieldCheck size={20}/><p>We use your details to respond to this project enquiry. AI may help organize the requirements and prepare a reply. <Link to="/privacy">Read our privacy information</Link>.</p></div></div><section className="contact-form-card"><p className="eyebrow">YOUR PROJECT ENQUIRY</p>{reference?<div className="brief-result" role="status"><CheckCircle2 size={32}/><h2>Your enquiry is received.</h2><p>It is in the owner’s review queue. We will reply to the email you provided after reviewing the details.</p><p>Reference: <strong>{reference}</strong></p><p className="fine-print">This confirms receipt, not a quote or delivery commitment.</p><button className="button secondary" onClick={()=>{setReference('');setId(crypto.randomUUID());setToken('');setResetKey(k=>k+1);}}>Send a different enquiry</button></div>:<form onSubmit={submit} noValidate aria-busy={busy}><label>Your name<input name="name" autoComplete="name" required minLength={2} maxLength={80}/></label><label>Email address<input name="email" type="email" autoComplete="email" required maxLength={160}/></label><label>Business / service<input name="business" autoComplete="organization" required minLength={2} maxLength={120}/></label><label>What would you like to improve?<textarea name="goal" rows={4} required minLength={20} maxLength={2000} placeholder="Your goal, current tools and preferred next step…"/></label><label>Indicative setup budget<select name="budget" required defaultValue=""><option value="">Choose a range</option><option>₹15,000–₹30,000</option><option>₹30,000–₹60,000</option><option>₹60,000+</option><option>I’d like guidance</option></select></label><label hidden>Website<input name="website" tabIndex={-1} autoComplete="off"/></label><label className="checkbox-label"><input name="consent" type="checkbox" required/><span>I agree to receive email about this enquiry, and to the processing described in the <Link to="/privacy">privacy information</Link>, including AI-assisted preparation of an owner-reviewed reply.</span></label><Turnstile siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY||''} resetKey={resetKey} onVerify={setToken} onError={securityError}/>{error&&<p className="form-error" role="alert">{error}</p>}<button className="button full" type="submit" disabled={busy}>{busy?'Sending your enquiry…':'Send my enquiry'}<ArrowUpRight size={17}/></button><p className="form-footnote">Owner-reviewed replies. No mailing-list subscription.</p></form>}</section></div>;
+  return (
+    <div className="container page contact-page">
+      <div className="contact-copy">
+        <p className="eyebrow">LET’S BUILD SOMETHING USEFUL</p>
+        <h1>
+          Tell us about
+          <br />
+          your next step.
+        </h1>
+        <p>
+          Share your project goal and the tools you use. We’ll review your
+          requirements and reply with a practical next step.
+        </p>
+        <div className="contact-points">
+          <p>
+            <CheckCircle2 size={18} /> A focused scope, shaped around your needs
+          </p>
+          <p>
+            <CheckCircle2 size={18} /> Clear pricing before work begins
+          </p>
+          <p>
+            <CheckCircle2 size={18} /> A direct conversation with the studio
+          </p>
+        </div>
+        <div className="privacy-note">
+          <ShieldCheck size={20} />
+          <p>
+            We use your details to respond to this project enquiry. AI may help
+            organize the requirements and prepare a reply.{" "}
+            <Link to="/privacy">Read our privacy information</Link>.
+          </p>
+        </div>
+      </div>
+      <section className="contact-form-card">
+        <p className="eyebrow">YOUR PROJECT ENQUIRY</p>
+        {reference ? (
+          <div className="brief-result" role="status">
+            <CheckCircle2 size={32} />
+            <h2>Your enquiry is received.</h2>
+            <p>
+              We have your project details. We will reply to the email you
+              provided after reviewing the details.
+            </p>
+            <p>
+              Reference: <strong>{reference}</strong>
+            </p>
+            <p className="fine-print">
+              This confirms receipt, not a quote or delivery commitment.
+            </p>
+            <button
+              className="button secondary"
+              onClick={() => {
+                setReference("");
+                setId(crypto.randomUUID());
+                setToken("");
+                setResetKey((k) => k + 1);
+              }}
+            >
+              Send a different enquiry
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={submit} noValidate aria-busy={busy}>
+            <label>
+              Your name
+              <input
+                name="name"
+                autoComplete="name"
+                required
+                minLength={2}
+                maxLength={80}
+              />
+            </label>
+            <label>
+              Email address
+              <input
+                name="email"
+                type="email"
+                autoComplete="email"
+                required
+                maxLength={160}
+              />
+            </label>
+            <label>
+              Business / service
+              <input
+                name="business"
+                autoComplete="organization"
+                required
+                minLength={2}
+                maxLength={120}
+              />
+            </label>
+            <ProjectFields />
+            <label>
+              What would you like to improve?
+              <textarea
+                name="goal"
+                rows={4}
+                required
+                minLength={20}
+                maxLength={1600}
+                placeholder="Your goal, current tools and preferred next step…"
+              />
+            </label>
+            <label>
+              Indicative setup budget
+              <select name="budget" required defaultValue="">
+                <option value="">Choose a range</option>
+                <option value="launch-budget">
+                  Under ₹15,000 — launch website
+                </option>
+                <option>₹15,000–₹30,000</option>
+                <option>₹30,000–₹60,000</option>
+                <option>₹60,000+</option>
+                <option>I’d like guidance</option>
+              </select>
+            </label>
+            <label hidden>
+              Website
+              <input name="website" tabIndex={-1} autoComplete="off" />
+            </label>
+            <label className="checkbox-label">
+              <input name="consent" type="checkbox" required />
+              <span>
+                I agree to receive email about this enquiry, and to the
+                processing described in the{" "}
+                <Link to="/privacy">privacy information</Link>, including
+                AI-assisted preparation of an owner-reviewed reply.
+              </span>
+            </label>
+            <Turnstile
+              siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY || ""}
+              resetKey={resetKey}
+              onVerify={setToken}
+              onError={securityError}
+            />
+            {error && (
+              <p className="form-error" role="alert">
+                {error}
+              </p>
+            )}
+            <button className="button full" type="submit" disabled={busy}>
+              {busy ? "Sending your enquiry…" : "Send my enquiry"}
+              <ArrowUpRight size={17} />
+            </button>
+            <p className="form-footnote">
+              Owner-reviewed replies. No mailing-list subscription.
+            </p>
+          </form>
+        )}
+      </section>
+    </div>
+  );
 }

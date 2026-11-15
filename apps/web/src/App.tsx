@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { ArrowUpRight, Menu, X } from "lucide-react";
+import { studio } from "./studio";
 import { Home } from "./Home";
 import { Demo } from "./Demo";
 import { Contact } from "./Contact";
@@ -17,7 +18,7 @@ export function App() {
       window.scrollTo(0, 0);
     }
     const titles: Record<string, string> = {
-      "/": "Make every enquiry count.",
+      "/": "Web, mobile & interactive development studio",
       "/demo": "Interactive property demo",
       "/services": "Services & packages",
       "/contact": "Let’s build your next step",
@@ -25,22 +26,22 @@ export function App() {
       "/terms": "Terms — review draft",
     };
     document.title =
-      (titles[location.pathname] || "Page not found") + " | LeadFlow AI";
+      (titles[location.pathname] || "Page not found") + " | " + studio.name;
   }, [location.pathname, location.hash]);
   return (
-    <>
+    <div className={location.pathname === '/demo' ? 'demo-shell' : 'engineering-shell'}>
       <a className="skip" href="#main">
         Skip to content
       </a>
       <header className="site-header">
         <div className="container header-inner">
-          <Link className="brand" to="/" aria-label="LeadFlow AI home">
+          <Link className="brand" to="/" aria-label={studio.name + " home"}>
             <span className="brand-icon" aria-hidden="true">
               <i />
               <i />
               <i />
             </span>
-            leadflow<span className="brand-ai">AI</span>
+            {studio.name}
           </Link>
           <button
             className="menu-toggle icon-button"
@@ -59,11 +60,8 @@ export function App() {
             <NavLink to="/" end>
               Home
             </NavLink>
-            <Link to="/#how-it-works">How it works</Link>
-            <NavLink to="/demo">
-              Live demo <span className="tiny-dot" />
-            </NavLink>
-            <NavLink to="/services">Services</NavLink>
+            <NavLink to="/services">Services & pricing</NavLink>
+            <Link to="/#work">Our work</Link>
             <Link to="/#about">About</Link>
             <Link className="button small" to="/contact">
               Let’s talk <ArrowUpRight size={16} />
@@ -80,29 +78,25 @@ export function App() {
             element={
               <div className="container page">
                 <div className="page-intro">
-                  <p className="eyebrow">SMALL SCOPE. USEFUL OUTCOMES.</p>
-                  <h1>
-                    A clear place
-                    <br />
-                    to start.
-                  </h1>
+                  <p className="eyebrow">WEB · MOBILE · UNITY · AUTOMATION</p>
+                  <h1>Services with a clear starting point.</h1>
                   <p>
-                    Choose the foundation. We’ll shape the details around your
-                    business.
+                    From a focused website to a custom product. Agree the scope,
+                    costs and acceptance checks before work begins.
                   </p>
                 </div>
                 <Packages />
                 <section className="note-panel">
-                  <h2>Know what you’re signing up for.</h2>
+                  <h2>Need something more specific?</h2>
                   <p>
-                    Every quote defines pages, integrations, revisions and
-                    acceptance checks. Domain and third-party costs are
-                    separate. Maintenance starts at an illustrative
-                    ₹2,000–₹5,000/month for agreed updates and basic monitoring;
-                    response hours and limits are written into the scope.
-                    Free-tier infrastructure has limits and does not include a
-                    24/7 SLA.
+                    E-commerce with Razorpay, UPI or Stripe, custom CMS portals,
+                    production mobile apps, Unity 3D/AR and AI integrations
+                    receive a tailored quote. We define payment flows, devices,
+                    assets, security controls and recurring costs together.
                   </p>
+                  <Link className="text-link" to="/contact">
+                    Request a custom scope <ArrowUpRight size={16} />
+                  </Link>
                 </section>
               </div>
             }
@@ -126,24 +120,25 @@ export function App() {
       <footer>
         <div className="container footer-top">
           <Link className="brand" to="/">
-            leadflow<span className="brand-ai">AI</span>
+            {studio.name}
           </Link>
-          <p>Thoughtful websites. Better follow-through.</p>
+          <p>Websites. Apps. Interactive experiences.</p>
           <Link to="/contact">
             Build something useful <ArrowUpRight size={16} />
           </Link>
         </div>
         <div className="container footer-bottom">
           <span>
-            © {new Date().getFullYear()} LeadFlow AI · Working brand · India
+            © {new Date().getFullYear()} {studio.name} · Development studio ·
+            India
           </span>
           <div>
             <Link to="/privacy">Privacy</Link>
             <Link to="/terms">Terms</Link>
-            <span>Human decisions, always.</span>
+            <span>Built with care. Yours to own.</span>
           </div>
         </div>
       </footer>
-    </>
+    </div>
   );
 }

@@ -12,12 +12,20 @@ Open **http://127.0.0.1:5173**. Node 22.18+ or 24 is recommended. With VITE_INTA
 
 ## What works now
 
+The development studio now has an ink/jade/platinum design and procedural blueprint-to-product 3D journey, with reduced-motion/mobile fallback. See [Studio design, offers and verification](docs/STUDIO_BLUEPRINT.md). The owner’s latest introductory scopes supersede the earlier pricing experiment; live publication status is recorded in CHECKLIST.md.
+
+Mobile 3D now loads automatically with a compact object budget and sharp up-to-2× pixel rendering on both storefronts. Reduced-motion and Save-Data still show an optional still view, with a visible explanation and “View 3D anyway” override. Run `npm run test:mobile` for iPhone/Android Chromium coverage of automatic loading, pixel density, canvas bounds, scroll, rotation and recovery; set `SCENE_TEST_WEBKIT=true` to include iPhone WebKit, and `SCENE_LIVE=true` to run read-only checks against the public sites. See [verification](docs/VERIFICATION.md) for engine/device limits and [external lead-source contract](docs/EXTERNAL_LEAD_INGESTION_CONTRACT.md) for the other AI's data handoff.
+
 - Responsive agency website: home, services, property demo, contact, privacy and terms.
 - Interactive enquiry → structured summary → score breakdown → mock CRM → owner alert → reviewed response simulation. No data leaves the demo.
 - Private local Opportunity Hunter: manual JSON and CSV import, scoring, deduplication, permission checks, owner decisions, proposal drafts, audit and CSV export.
 - Apps Script bundle implementing Sheets, selected-label Gmail, optional HN, Gemini extraction with strict evidence validation and deterministic fallback, and private Telegram approval polling.
 - Protected website intake, Gemini-assisted draft planning, persistent email review queue and Gmail delivery after explicit Telegram owner approval. Discovered opportunities still require manual submission.
 - Six-step guided demo with keyboard controls, mobile layouts and a direct enquiry CTA.
+
+## Signal & Slate — Digital Marketing storefront
+
+`apps/marketing` is a separate React 19 app with a procedural R3F/GSAP scroll journey, still/mobile fallback, pricing and growth-audit form. Run `npm run dev:marketing` (port 5175), `npm run build:marketing`, or `npm run preview:marketing`. The root production build now includes both storefronts. Marketing delivery uses its own public configuration flags and remains explicitly local until its origin, Turnstile and compatible backend are activated. See [Signal & Slate setup](docs/SIGNAL_AND_SLATE.md).
 
 ## Five-minute walkthrough
 

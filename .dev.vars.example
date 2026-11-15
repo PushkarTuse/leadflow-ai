@@ -1,0 +1,6 @@
+# Cloudflare server-side secrets/settings. Copy to .dev.vars for local Wrangler only.
+# Production secrets are set through Wrangler secret put / Cloudflare dashboard.
+APPS_SCRIPT_URL=
+INTAKE_HMAC_SECRET=
+TURNSTILE_SECRET_KEY=
+PUBLIC_SITE_URL=

@@ -1,74 +1,68 @@
 import { ArrowUpRight, Check } from "lucide-react";
 import { Link } from "react-router-dom";
-const packages = [
-  {
-    name: "Launch Website",
-    label: "A strong first impression",
-    price: "₹15,000",
-    suffix: "starting scope",
-    items: [
-      "Up to 5 responsive pages",
-      "Clear calls to action & enquiry form",
-      "Basic SEO & owner handover",
-    ],
-    featured: false,
-  },
-  {
-    name: "Website + Smart Enquiries",
-    label: "The LeadFlow AI workflow",
-    price: "₹25,000",
-    suffix: "illustrative starting scope",
-    items: [
-      "Everything in Launch Website",
-      "Structured intake & Sheets CRM",
-      "Owner alerts & reviewed follow-ups",
-    ],
-    featured: true,
-  },
-  {
-    name: "Custom Automation",
-    label: "Connect the work behind the scenes",
-    price: "Let’s scope it",
-    suffix: "projects typically ₹20,000–₹60,000",
-    items: [
-      "A defined business workflow",
-      "API & tool integrations",
-      "Testing, documentation & handover",
-    ],
-    featured: false,
-  },
-];
+import { offers } from "./studio";
 export function Packages() {
   return (
-    <div className="packages">
-      {packages.map((p) => (
-        <article
-          className={"package " + (p.featured ? "featured" : "")}
-          key={p.name}
-        >
-          {p.featured && (
-            <span className="recommended">OUR SIGNATURE OFFER</span>
-          )}
-          <p className="package-kicker">{p.label}</p>
-          <h3>{p.name}</h3>
-          <div className="price">{p.price}</div>
-          <p className="price-caption">{p.suffix}</p>
-          <ul>
-            {p.items.map((i) => (
-              <li key={i}>
-                <Check size={16} />
-                {i}
-              </li>
-            ))}
-          </ul>
-          <Link
-            className={"button " + (p.featured ? "" : "secondary")}
-            to="/contact"
+    <div>
+      <div className="packages">
+        {offers.map((p) => (
+          <article
+            className={"package " + (p.featured ? "featured" : "")}
+            key={p.id}
           >
-            Discuss your project <ArrowUpRight size={16} />
-          </Link>
-        </article>
-      ))}
+            {p.featured && (
+              <span className="recommended">A LITTLE MORE POSSIBILITY</span>
+            )}
+            <p className="package-kicker">{p.label}</p>
+            <h3>{p.name}</h3>
+            <div className="price">
+              {p.price}
+              <span className="starting"> onwards</span>
+            </div>
+            <p className="price-caption">
+              One-time development fee · agreed scope
+            </p>
+            <p>{p.scope}</p>
+            <ul>
+              {p.items.map((i) => (
+                <li key={i}>
+                  <Check size={16} />
+                  {i}
+                </li>
+              ))}
+            </ul>
+            <p className="package-limit">{p.excludes}</p>
+            <Link
+              className={"button " + (p.featured ? "" : "secondary")}
+              to={"/contact?tier=" + p.id}
+            >
+              Discuss {p.name}
+              <ArrowUpRight size={16} />
+            </Link>
+          </article>
+        ))}
+      </div>
+      <div className="pricing-terms">
+        <h3>Clear costs. Clear ownership.</h3>
+        <p>
+          Starting prices are planning estimates, confirmed in a written quote.
+          You supply approved copy, images and brand assets. Launchpad includes
+          one first-year domain up to ₹800; Growth includes up to ₹1,200.
+          You approve the name and own the account. Premium names, any excess,
+          renewals, hosting usage, payment fees, paid plugins, app-store accounts
+          and applicable taxes are additional. Custom domain costs are quoted.
+        </p>
+        <p>
+          Defect support covers agreed functionality during business hours. New
+          features and content changes need a separate scope. Ongoing care,
+          backups and response times are agreed separately. Security controls
+          depend on the agreed architecture; provider encryption is not a certification.
+          Scale’s 90-day priority support has written hours and response targets.
+          Source and account
+          handover are included in every package, subject to third-party
+          licences.
+        </p>
+      </div>
     </div>
   );
 }

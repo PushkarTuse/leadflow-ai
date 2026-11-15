@@ -15,11 +15,15 @@ const questions={outcome:'What is the most important action a visitor or user sh
 export function draftEmail(lead:Lead,plan?:DraftPlan){
   if(lead.source!=='inbound'||lead.contact_permission_state!=='EXPLICIT_OPT_IN'||!lead.contact_email||!lead.consent_at)throw new Error('Consented inbound email required');
   if(plan&&!lead.raw_description.includes(plan.summary_quote))throw new Error('Draft summary must quote the enquiry exactly');
+  const marketing=lead.vertical==='digital-marketing'&&lead.brand==='Signal & Slate';
+  const brand=marketing?'Signal & Slate':'LeadFlow AI';
   const focus=plan?.focus|| (lead.skills.includes('api')?'api':lead.skills.includes('automation')?'automation':'enquiry');
   const proposal={website:'start with the pages and the main action visitors need to take',enquiry:'map the enquiry journey, the information to capture and the owner’s next step',automation:'map one workflow and its existing tools before building the integration',api:'confirm the API contracts, access permissions and a single complete integration',clarify:'clarify the goal and define one useful first milestone'}[focus];
   const selected=Array.from(new Set<keyof typeof questions>(plan?.question_codes||['outcome','tools','timing']));
-  const body=`Hello ${lead.client_name_if_public||'there'},\n\nThanks for your enquiry about ${lead.title.replace(/^Website enquiry: /,'')}. You mentioned: “${plan?.summary_quote||lead.raw_description.slice(0,240)}”\n\nA useful first step would be to ${proposal}. We can agree the deliverables and acceptance checks before starting work.\n\n${selected.map((key,i)=>`${i+1}. ${questions[key]}`).join('\n')}\n\nAfter clarifying those points, we can discuss a scoped proposal. Final pricing, external service costs and delivery dates will be agreed separately.\n\nRegards,\nLeadFlow AI\n\nYou requested contact about this enquiry. Reply if you would prefer no further follow-up.`;
-  return {subject:'Your LeadFlow AI enquiry — next steps',body};
+  const nextStep=marketing?'review your offer, audience, current acquisition channels and measurement setup':proposal;
+  const ask=marketing?['What counts as a qualified enquiry or a successful sale for your business?','Which ad, analytics and website tools are you currently using?','What monthly media budget would you consider, separately from management fees?']:selected.map(key=>questions[key]);
+  const body=`Hello ${lead.client_name_if_public||'there'},\n\nThanks for your enquiry about ${lead.title.replace(/^(?:Website|Signal & Slate) enquiry: /,'')}. You mentioned: “${plan?.summary_quote||lead.raw_description.slice(0,240)}”\n\nA useful first step would be to ${nextStep}. We can agree the deliverables and acceptance checks before starting work.\n\n${ask.map((question,i)=>`${i+1}. ${question}`).join('\n')}\n\nAfter clarifying those points, we can discuss a scoped proposal. Final pricing, external service costs and delivery dates will be agreed separately.\n\nRegards,\n${brand}\n\nYou requested contact about this enquiry. Reply if you would prefer no further follow-up.`;
+  return {subject:`Your ${brand} enquiry — next steps`,body};
 }
 export function emailContent(row:Pick<EmailOutbox,'recipient'|'subject'|'body'>){return JSON.stringify({to:row.recipient,subject:row.subject,body:row.body});}
 export class EmailWorkflow {
