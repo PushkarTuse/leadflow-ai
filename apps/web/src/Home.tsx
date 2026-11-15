@@ -1,4 +1,5 @@
-import { ArrowUpRight, ArrowDown, ArrowRight, Code2, Smartphone, Box, Workflow, ShieldCheck, ScanLine } from 'lucide-react';
+import { ArrowUpRight, ArrowDown, ArrowRight, Code2, Smartphone, Box, Workflow, ShieldCheck } from 'lucide-react';
+import { KapicksGallery } from '../../shared/KapicksGallery';
 import { Link } from 'react-router-dom';
 import { Packages } from './Packages';
 import { StudioJourney } from './StudioJourney';
@@ -50,7 +51,7 @@ export function Home() {
     <section className="engineering-work" id="work"><div className="container section">
       <div className="section-heading"><div><p className="eyebrow">04 / SELECTED WORK & EXPLORATIONS</p><h2>Less telling.<br/><em>More showing.</em></h2></div><p>Projects and clearly labelled concepts.<br/>A glimpse of what we can build together.</p></div>
       <div className="engineering-work-grid">
-        <article className="engineering-work-card"><div className="bageera-cover"><div className="photo-frame"><i/><i/><i/></div><span className="work-tag">PHOTOGRAPHY / WEB</span><div className="bageera-wordmark">Bageera<span>STORIES, THROUGH A DIFFERENT LENS.</span></div><ScanLine className="work-corner" size={24} strokeWidth={1}/></div><div className="work-description"><div><h3>Bageera</h3><p>Photography website project. Visual direction shown here; approved project details and a public walkthrough are pending review.</p></div><Link to="/contact?service=Website" aria-label="Discuss a portfolio website"><ArrowUpRight size={24}/></Link></div></article>
+        <article className="engineering-work-card"><div className="bageera-cover"><KapicksGallery/><span className="work-tag">KAPICKS / WILDLIFE PHOTOGRAPHY</span></div><div className="work-description"><div><h3>Kapicks</h3><p>Explore the live wildlife photography portfolio and its collection of nature stories.</p></div><a href="https://www.kapicks.com/" target="_blank" rel="noopener noreferrer" aria-label="Visit Kapicks photography website"><ArrowUpRight size={24}/></a></div></article>
         <article className="engineering-work-card"><div className="product-cover"><span className="work-tag">INTERACTIVE CONCEPT / SIMULATED DATA</span><div className="product-mock"><span><i/> LEADFLOW / ENQUIRY INTELLIGENCE</span><div className="mock-line"/><p>A good enquiry.<br/>A clear next step.</p><div className="mock-score"><b>95</b><span>/ 100<br/>SAMPLE MATCH SCORE</span><ArrowUpRight size={28}/></div></div><span className="product-note">EXPLORE. QUALIFY. REVIEW.</span></div><div className="work-description"><div><h3>A smarter enquiry experience</h3><p>Try a fictional property business. Structured leads, explainable scores and a reviewed response. No messages sent.</p><Link className="text-link" to="/demo">Explore sample experience <ArrowUpRight size={16}/></Link></div></div></article>
       </div>
     </div></section>

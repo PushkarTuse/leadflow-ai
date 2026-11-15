@@ -121,6 +121,7 @@
 .engineering-work-card {min-width:0}
 .bageera-cover,.product-cover {position:relative;height:390px;overflow:hidden;border:1px solid #4f5d42;background:#202e1d}
 .bageera-cover {background:radial-gradient(ellipse at 72% 80%,#60604766,transparent 45%),linear-gradient(135deg,#252e1c,#151d14);display:flex;align-items:center;padding:40px}
+.bageera-cover {padding:0;display:block}.bageera-cover .kapicks-gallery {height:100%}.bageera-cover .work-tag {text-shadow:0 1px 8px #000;background:#102016b8;padding:7px 9px}
 .work-tag {position:absolute;top:25px;left:26px;z-index:2;font:8px 'IBM Plex Mono',monospace;letter-spacing:.05em;color:#c0c5ab}
 .photo-frame {position:absolute;right:0;top:15%;height:90%;width:75%;transform:rotate(-16deg);border:1px solid #bcc69b55;background:linear-gradient(110deg,#1d2d1688,#bbc99b22);overflow:hidden}
 .photo-frame i {position:absolute;display:block;border:1px solid #b6c79655;border-radius:50%;width:260px;height:400px;transform:rotate(38deg);left:27%;top:20%}
@@ -251,3 +252,4 @@
   .studio-canvas {position:fixed;width:100%;right:0;top:auto;bottom:44px;height:min(52svh,440px);opacity:1}
   .studio-vignette {background:linear-gradient(180deg,#0a100ecc 0%,transparent 22%,transparent 74%,#0a100eee 100%)}
 }
+.bageera-cover:has(.kapicks-gallery) {padding:0}

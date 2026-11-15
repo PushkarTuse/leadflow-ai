@@ -12,6 +12,7 @@ import {
   Layers,
 } from "lucide-react";
 import { Journey } from "./Journey";
+import { KapicksGallery } from "../../shared/KapicksGallery";
 import { AuditForm } from "./AuditForm";
 import { plans, services } from "./content";
 const icons = [Target, Search, ChartNoAxesCombined, Layers];
@@ -200,32 +201,22 @@ export function App() {
           <div className="proof-layout">
             <article className="bageera-card">
               <div className="bageera-visual">
-                <div className="viewfinder">
-                  <i />
-                  <i />
-                  <i />
-                  <i />
-                  <span>B.</span>
-                  <p>
-                    THE ART OF
-                    <br />
-                    BEING SEEN.
-                  </p>
-                </div>
-                <span className="kicker">BAGEERA / PHOTOGRAPHY</span>
+                <KapicksGallery />
+                <span className="kicker">KAPICKS / WILDLIFE PHOTOGRAPHY</span>
               </div>
               <div className="bageera-copy">
-                <p className="kicker">PORTFOLIO SPOTLIGHT · STRATEGY CONCEPT</p>
+                <p className="kicker">PORTFOLIO SPOTLIGHT · LIVE WEBSITE</p>
                 <h3>
                   A sharper frame
                   <br />
                   for a creative brand.
                 </h3>
                 <p>
-                  Bageera is a photography website project in our portfolio. Our
-                  proposed growth direction connects a considered social
-                  presence with a clear enquiry path.
+                  Kapicks is a live wildlife photography portfolio. Our proposed
+                  growth direction connects a considered social presence with a
+                  clear path for interested visitors.
                 </p>
+                <a className="kapicks-visit" href="https://www.kapicks.com/" target="_blank" rel="noopener noreferrer">Visit Kapicks <ArrowUpRight size={16}/></a>
                 <div className="case-tags">
                   <span>Content pillars</span>
                   <span>Local discovery</span>

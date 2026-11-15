@@ -1,5 +1,13 @@
 # Verification record — 14 November 2026
 
+## Kapicks portfolio update — 16 November 2026
+
+The Kapicks cards on both sites use two optimized local WebP versions of publicly displayed, watermarked Kapicks photographs, plus a direct link to https://www.kapicks.com/. The marketing growth narrative remains explicitly proposed. Focused production build and deployed asset/link checks are recorded in the current release; no full browser suite or live form submission was run for this content-only change.
+
+Initial deployments: studio https://7d99f136.leadflow-agency.pages.dev and marketing https://f9aea27d.signal-and-slate.pages.dev. Both stable domains returned HTTP 200 for the homepage, tiger/bee-eater WebP assets and the compiled JS containing the Kapicks link. A subsequent CSS-only mobile padding correction is included in the final release; no intake or Apps Script settings were modified.
+
+Final releases after the mobile padding correction: studio https://aae9ca99.leadflow-agency.pages.dev and marketing https://00ab2204.signal-and-slate.pages.dev. `npm run build` passed, and both stable domains again returned 200 for the homepage and both images; their current bundles contain the Kapicks outbound link. No full test suite was run, as this change only affects the portfolio cards.
+
 ## Mobile preference release — 16 November 2026
 
 Studio https://b4b0af4e.leadflow-agency.pages.dev and marketing https://d03c5861.signal-and-slate.pages.dev were published to their stable Pages domains. Strict `npm run build` passed. The local mobile suite passed 11/12 on its first run; the one iPhone WebKit failure asserted canvas bounds immediately after a landscape resize, before the resize observer settled. The corrected assertion waits for the canvas to fit, and its targeted rerun passed. Studio e2e passed 14/16 before updating two assertions for the renamed button; both targeted reruns passed. Marketing e2e exposed the new preference notice covering the opened mobile menu; raising the header stacking order fixed it and the targeted iPhone test passed. Marketing desktop WebGL and context-loss checks passed on rerun. After deployment, the **four live iPhone WebKit checks passed** against the stable domains for automatic 3D, scroll/rotation/quality bounds, pause/recovery and Reduce Motion/Data Saver override. These are browser engine checks; the owner separately confirmed a physical iPhone Safari works with Reduce Motion disabled. Sustained hardware frame rate remains unmeasured. No production form or email was sent in this release.

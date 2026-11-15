@@ -2,6 +2,12 @@
 
 This is the entry point for any AI (or human) picking up this repository. Read this file first, then open the latest capsule.
 
+## Kapicks portfolio update — 16 November 2026
+
+The old Bageera placeholder in both public storefronts has been replaced with **Kapicks**, linking to https://www.kapicks.com/. Each card displays two locally hosted, compressed, watermarked images from the live Kapicks gallery (tiger and bee-eater) with accessible previous/next controls. The marketing card still labels its growth direction as a proposal; it does not claim verified campaign results. This is a portfolio presentation update only; no intake, email, or approval settings changed. See `docs/VERIFICATION.md` for the focused build and release check.
+
+Published to https://leadflow-agency.pages.dev/ and https://signal-and-slate.pages.dev/ on 16 November. Immutable release URLs are recorded in `docs/VERIFICATION.md`.
+
 ## Mobile 3D preference release — 16 November 2026
 
 Published the clearer preference notice to both stable Cloudflare Pages sites. Immutable releases: studio https://b4b0af4e.leadflow-agency.pages.dev and marketing https://d03c5861.signal-and-slate.pages.dev. Live iPhone WebKit tests passed **4/4**: normal mobile 3D starts without a tap and survives scroll, rotation, pause and context recovery; Reduce Motion and Data Saver show a clearly labeled still view with a prominent keyboard-accessible override. The duplicate small control is hidden while the notice appears. The marketing mobile menu stays above the notice. Local strict production build passed. No forms, email, credentials or approval rules changed. Existing mobile tabs may need a reload.
