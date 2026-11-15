@@ -89,6 +89,8 @@ The private loop is **live and verified end-to-end**. A consented website enquir
 
 ## Rules for the next AI
 
+Owner standing instruction (16 November 2026): after completing authorized work, review, commit and push LeadFlow project changes to `PushkarTuse/leadflow-ai`, then verify remote success. Keep secrets, local databases and ignored artifacts out of Git. Do not push to the co-founder's `aditya91203/leadflow-leads` repository without separate explicit authorization. A Git push does not authorize production deployment or connector activation.
+
 1. **Do not claim a live result you have not seen evidence for.** Mocked tests are not live delivery.
 2. **Never set `EMAIL_TEST_MODE=false`** without the owner's explicit instruction.
 3. **Never retry an `UNCERTAIN` email.** Check Gmail Sent first, then reconcile manually.
