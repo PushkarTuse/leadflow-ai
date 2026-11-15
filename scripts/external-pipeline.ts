@@ -10,6 +10,21 @@ import {pullExternalLeads} from '../apps/automation/external-leads';
 interface EmailTestState{status:string;at:string;to:string;messageId:string;error:string}
 const emptyEmailTest:EmailTestState={status:'DISABLED',at:'',to:'',messageId:'',error:''};
 
+/** Turns a redacted SMTP stage into an actionable next step. Never includes credentials. */
+function smtpHint(stage:string,code:number):string{
+  if(stage==='auth-pass'&&(code===535||code===534))
+    return 'Gmail and most providers require a 16-character App Password with 2-Step Verification enabled; an account password will not work';
+  if(stage==='auth')return 'The server did not offer AUTH LOGIN; check the port and TLS mode';
+  if(stage==='auth-user')return 'The SMTP username was rejected; it is usually the full email address';
+  if(stage==='mail-from')return 'OWNER_TEST_EMAIL_FROM must match the SMTP username';
+  if(stage==='rcpt')return 'The relay rejected the recipient address';
+  if(stage==='connect')return 'Nothing accepted the connection on that host and port';
+  if(stage==='starttls')return 'STARTTLS was refused; try smtps:// on port 465';
+  if(stage==='greeting')return 'The host answered but not as an SMTP server';
+  if(stage==='timeout')return 'The relay did not respond; check the host and port';
+  return '';
+}
+
 /** Structured owner digest. Contains no credentials and no lead contact details. */
 function executiveSummary(store:MemoryStore,run:{imported:number;duplicates:number;invalid:number},emailTest:EmailTestState){
   const leads=store.leads();
@@ -78,10 +93,12 @@ async function ownerEmailTest(enabled:boolean,get:(key:string,fallback?:string)=
   let parsed:{ok?:boolean;messageId?:string;stage?:string;code?:number;message?:string}={};
   try{parsed=JSON.parse(result.stdout||'{}');}catch{parsed={};}
   if(result.status!==0||!parsed.ok){
-    const detail=parsed.stage
-      ?`SMTP ${parsed.stage} failed${parsed.code?` (code ${parsed.code})`:''}${parsed.message?` — ${parsed.message}`:''}`
+    const stage=String(parsed.stage||'');
+    const hint=smtpHint(stage,Number(parsed.code||0));
+    const detail=stage
+      ?`SMTP ${stage} failed${parsed.code?` (code ${parsed.code})`:''}${parsed.message?` — ${parsed.message}`:''}${hint?`. ${hint}`:''}`
       :result.error?'SMTP transport could not start':'SMTP transport ended without a receipt';
-    return {status:'FAILED',at,to,messageId:'',error:detail.slice(0,200)};
+    return {status:'FAILED',at,to,messageId:'',error:detail.slice(0,300)};
   }
   return {status:'SENT',at,to,messageId:String(parsed.messageId||''),error:''};
 }

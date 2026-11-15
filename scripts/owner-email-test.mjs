@@ -20,6 +20,11 @@ function fail(stage,code,message){
   return error;
 }
 
+/** A bare % in a password would make decodeURIComponent throw; fall back to the raw value. */
+function decode(value){
+  try{return decodeURIComponent(value);}catch{return value;}
+}
+
 function attach(stream){
   if(socket&&socket._lfHandler)socket.removeListener('data',socket._lfHandler);
   socket=stream;
@@ -73,8 +78,8 @@ try{
   if(url.protocol!=='smtp:'&&url.protocol!=='smtps:')throw fail('config',0,'unsupported protocol');
   const host=url.hostname;
   const port=Number(url.port||(url.protocol==='smtps:'?'465':'587'));
-  const user=decodeURIComponent(url.username||'');
-  const pass=decodeURIComponent(url.password||'');
+  const user=decode(url.username||'');
+  const pass=decode(url.password||'');
   const secure=url.protocol==='smtps:';
 
   const base=secure?tls.connect({host,port,servername:host}):net.connect({host,port});
