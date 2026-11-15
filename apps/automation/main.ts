@@ -1,4 +1,5 @@
 import { z } from "zod";
+import {externalOrigin, pullExternalLeads} from './external-leads';
 import { configSchema, inputSchema, dedupKey, hash } from "../../packages/core/model";
 import { assess } from "../../packages/core/scoring";
 import { inboundToLead, verifyEnvelope } from "../../packages/core/intake";
@@ -95,11 +96,10 @@ function spend(kind: string, limit: number) {
 const http: Http = {
   json(url: string, request: HttpRequest = {}) {
     if (dry()) throw new Error("Dry-run mode blocks external HTTP calls");
-    if (
-      !/^https:\/\/(api\.telegram\.org|generativelanguage\.googleapis\.com|hacker-news\.firebaseio\.com)\//.test(
-        url,
-      )
-    )
+    const standardAllowed = /^https:\/\/(api\.telegram\.org|generativelanguage\.googleapis\.com|hacker-news\.firebaseio\.com)\//.test(url);
+    const externalAllowed = !standardAllowed && enabled('EXTERNAL_LEADS_ENABLED') &&
+      url.startsWith(externalOrigin(setting('EXTERNAL_LEADS_API_ORIGIN')) + '/leads?');
+    if (!standardAllowed && !externalAllowed)
       throw new Error("HTTP host not allowed");
     const attempts =
       request.retrySafe === false || request.method === "post" ? 1 : 3;
@@ -461,6 +461,19 @@ export function tick() {
               : counts.imported++;
           }
           return counts;
+        });
+      if (enabled('EXTERNAL_LEADS_ENABLED'))
+        runSource('external-leads',store,()=>{
+          const result=pullExternalLeads(http,{
+            origin:setting('EXTERNAL_LEADS_API_ORIGIN'),token:setting('EXTERNAL_LEADS_API_TOKEN'),
+            offset:integer('EXTERNAL_LEADS_OFFSET',0,0,1000000),
+            limit:integer('EXTERNAL_LEADS_BATCH_SIZE',5,1,5),
+            allowedSources:setting('EXTERNAL_LEADS_SOURCES','hackernews').split(',').map(s=>s.trim()),
+          },lead=>engine.ingest(lead),guard);
+          // Flush CRM before checkpointing; interrupted pages replay through Engine dedup.
+          SpreadsheetApp.flush();
+          properties().setProperty('EXTERNAL_LEADS_OFFSET',String(result.nextOffset));
+          return {imported:result.imported,duplicates:result.duplicates,invalid:result.invalid};
         });
       properties().setProperty("last_source_cycle", now());
     }

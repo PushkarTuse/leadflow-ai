@@ -1,5 +1,9 @@
 # LeadFlow launch checklist
 
+| External API integration (16 November) | Status | Next |
+|---|---|---|
+| Bounded pull adapter, HN original-evidence mapping, scheduled Engine path | Implemented, disabled by default; 16 focused tests pass | Local external API setup, then reachable HTTPS hosting/configuration and live ingestion verification; see HANDOFF_EXTERNAL_LEAD_INTEGRATION.md |
+
 ## P0.1 — Blueprint studio revision (15 November 2026)
 
 | Work | Status | Evidence / remaining |

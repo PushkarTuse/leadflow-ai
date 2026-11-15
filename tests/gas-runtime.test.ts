@@ -2,6 +2,7 @@ import { buildSync } from "esbuild";
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import { fixtures } from "../fixtures/leads";
+import {inputSchema} from '../packages/core/model';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { signatureMessage } from '../packages/core/intake';
 
@@ -73,6 +74,7 @@ function harness() {
   const tabs = new Map<string, FakeSheet>();
   const calls: { method: string; body: Record<string, unknown> }[] = [];
   let updates: unknown[] = [];
+  let sourceReply: ((url:string)=>unknown)|undefined;
   let prompt = "";
   let uuid = 0;
   let locked = false;
@@ -158,6 +160,10 @@ function harness() {
     },
     UrlFetchApp: {
       fetch: (url: string, request: { payload: string }) => {
+        if(sourceReply && !url.startsWith('https://api.telegram.org/')) {
+          const data=sourceReply(url);
+          return {getResponseCode:()=>200,getContentText:()=>JSON.stringify(data)};
+        }
         const method = url.split("/").pop()!;
         const body = JSON.parse(request.payload) as Record<string, unknown>;
         calls.push({ method, body });
@@ -193,6 +199,7 @@ function harness() {
     run,
     records,
     sent,
+    setSourceReply:(reply:(url:string)=>unknown)=>{sourceReply=reply;},
     setUpdates: (x: unknown[]) => {
       updates = x;
     },
@@ -202,6 +209,23 @@ function harness() {
   };
 }
 describe("built Apps Script runtime with mocked Google/Telegram services", () => {
+  it('pulls external HN into Sheets and owner review without creating an email outbox entry',()=>{
+    const h=harness();h.run('setup');
+    for(const [k,v] of Object.entries({DRY_RUN:'false',EXTERNAL_LEADS_ENABLED:'true',
+      EXTERNAL_LEADS_API_ORIGIN:'https://scout.example.com',EXTERNAL_LEADS_API_TOKEN:'x'.repeat(40),
+      TELEGRAM_ENABLED:'true',TELEGRAM_BOT_TOKEN:'123:token',TELEGRAM_OWNER_CHAT_ID:'99',TELEGRAM_OWNER_USER_ID:'99'}))h.props.set(k,v);
+    const fixture=inputSchema.parse(fixtures(new Date().toISOString())[0]);
+    h.setSourceReply(url=>url.includes('/leads?')?{ok:true,total:1,count:1,offset:0,leads:[{
+      source:'hackernews',source_id:'12345',category:'company_hiring',name:'Company',title:'React website developer',
+      url:'https://news.ycombinator.com/item?id=12345',found_at:new Date().toISOString()}]}:
+      {id:12345,type:'job',title:fixture.title,text:fixture.raw_description,time:Math.floor(Date.now()/1000)});
+    h.run('tick');expect(h.records()).toHaveLength(1);
+    expect(h.records()[0].status).toBe('PENDING_APPROVAL');
+    expect(h.calls.some(c=>c.method==='sendMessage')).toBe(true);
+    expect(h.tabs.get('EmailOutbox')!.rows).toHaveLength(1);expect(h.sent).toHaveLength(0);
+    expect(h.props.get('EXTERNAL_LEADS_OFFSET')).toBe('0');
+    h.props.delete('last_source_cycle');h.run('tick');expect(h.records()).toHaveLength(1);
+  });
   it('preserves full diagnostic logs while continuing beyond the operational row limit',()=>{
     const h=harness();h.run('setup');const log=h.tabs.get('SourceRuns')!;
     for(let i=0;i<5001;i++)log.rows.push(['run_'+i,'tick','','','OK',0,0,0,0,'']);

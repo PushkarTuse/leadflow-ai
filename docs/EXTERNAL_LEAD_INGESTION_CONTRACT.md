@@ -1,5 +1,7 @@
 # External lead producer → LeadFlow: integration contract
 
+**Implementation update, 16 November 2026:** iteration one uses a disabled-by-default authenticated **pull** connector in `apps/automation/external-leads.ts`, scheduled by the existing Apps Script source cycle. See `EXTERNAL_LEAD_API_SETUP.md` for the actual mapping, limitations and activation steps, and root `HANDOFF_EXTERNAL_LEAD_INTEGRATION.md` for the recovery log. The proposed public signed HTTP ingress below remains unimplemented. No sender permissions or inbound flow changed.
+
 Status: **design/handoff, 15 November 2026**. This document describes the existing engine and a proposed discovery ingress. **The proposed HTTP endpoint does not exist or accept requests yet.** Do not point an external producer at `/api/contact` or at the current Apps Script `doPost`: those accept only consented website enquiries. The existing HN job-story poller already uses the official HN Firebase API when `HN_ENABLED` is enabled.
 
 ## What to give Claude

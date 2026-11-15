@@ -2,6 +2,10 @@
 
 This is the entry point for any AI (or human) picking up this repository. Read this file first, then open the latest capsule.
 
+## External discovery integration — 16 November 2026
+
+Read `HANDOFF_EXTERNAL_LEAD_INTEGRATION.md` next. A disabled-by-default bounded pull connector now maps the co-founder's leadflow-leads API into the existing Apps Script Engine/Sheets/Gemini/Telegram discovery path. HN original text/time is enriched from the official API; producer scores and contact authority are discarded. Focused bundled runtime verification confirms Sheets + owner Telegram review with no EmailOutbox entry/send. No local API setup or live activation performed. Exact mapping, configuration, pagination limits and later setup: `docs/EXTERNAL_LEAD_API_SETUP.md`. Kapicks was not changed in this work.
+
 ## Kapicks portfolio update — 16 November 2026
 
 The old Bageera placeholder in both public storefronts has been replaced with **Kapicks**, linking to https://www.kapicks.com/. Each card displays two locally hosted, compressed, watermarked images from the live Kapicks gallery (tiger and bee-eater) with accessible previous/next controls. The marketing card still labels its growth direction as a proposal; it does not claim verified campaign results. This is a portfolio presentation update only; no intake, email, or approval settings changed. See `docs/VERIFICATION.md` for the focused build and release check.
