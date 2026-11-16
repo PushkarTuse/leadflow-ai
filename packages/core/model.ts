@@ -36,7 +36,7 @@ export const inputSchema = z
       .string()
       .max(2000)
       .refine(
-        (v) => !v || /^https:\/\/[^\s/@]+(?:[/:?#][^\s]*)?$/i.test(v),
+        (v) => !v || /^https:\/\/[^\s/@]+(?:[/:?#][^\s@]*)?$/i.test(v),
         "Use an HTTPS source URL without credentials",
       )
       .default(""),

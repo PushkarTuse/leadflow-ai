@@ -25,7 +25,7 @@ export function externalOrigin(value:string):string {
 
 /** One official HN parent read. Missing or failed parents do not fail the candidate. */
 const HN_THREAD_FETCH_BUDGET = 1;
-const SAFE_LINK = /^https?:\/\/[^\s/@]+(?:[/:?#][^\s]*)?$/i;
+const SAFE_LINK = /^https?:\/\/[^\s/@]+(?:[/:?#][^\s@]*)?$/i;
 
 function decodeEntities(value:string):string {
   return value

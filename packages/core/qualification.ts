@@ -35,7 +35,7 @@ const httpsUrl = z
   .string()
   .max(2000)
   .refine(
-    (value) => /^https:\/\/[^\s/@]+(?:[/:?#][^\s]*)?$/i.test(value),
+    (value) => /^https:\/\/[^\s/@]+(?:[/:?#][^\s@]*)?$/i.test(value),
     "Use a credential-free HTTPS URL",
   );
 
@@ -43,7 +43,7 @@ const safeHttpUrl = z
   .string()
   .max(2000)
   .refine(
-    (value) => /^https?:\/\/[^\s/@]+(?:[/:?#][^\s]*)?$/i.test(value),
+    (value) => /^https?:\/\/[^\s/@]+(?:[/:?#][^\s@]*)?$/i.test(value),
     "Use a credential-free HTTP(S) URL",
   );
 
@@ -401,7 +401,7 @@ const CONTEXT_ONLY_REASONS = new Set<string>([
 ]);
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const URL_PATTERN = /^https:\/\/[^\s/@]+(?:[/:?#][^\s]*)?$/i;
+const URL_PATTERN = /^https:\/\/[^\s/@]+(?:[/:?#][^\s@]*)?$/i;
 
 function priorityBand(score: number): Priority {
   if (score >= 85) return "HIGH";

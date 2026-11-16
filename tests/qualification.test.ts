@@ -68,6 +68,17 @@ describe("Stage B: HN discovery evidence preservation", () => {
     ]);
   });
 
+  it("rejects credential-bearing URLs in contact_link_targets at the schema boundary", () => {
+    const lead = externalToLead(baseRow, baseItem);
+    const context = lead.discovery_context!;
+    expect(() =>
+      discoveryContextSchema.parse({
+        ...context,
+        contact_link_targets: ["https://user:pass@example.com/x"],
+      }),
+    ).toThrow();
+  });
+
   it("preserves parent and thread metadata when a thread is supplied", () => {
     const thread = {
       id: 999,
