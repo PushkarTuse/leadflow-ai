@@ -164,7 +164,7 @@ function localPipeline(): Plugin {
                 json(code, body);
               };
 
-              const child = spawn("npm", ["run", "external:run"], {
+              const child = spawn("npm run external:run", {
                 cwd: repoRoot,
                 env: process.env,
                 shell: true,
@@ -181,17 +181,31 @@ function localPipeline(): Plugin {
               const timer = setTimeout(() => child.kill(), 180000);
               child.on("close", (code) => {
                 clearTimeout(timer);
-                finish(code === 0 ? 200 : 500, {
-                  status: code === 0 ? "completed" : "error",
-                  code,
-                  output,
-                });
-              });
-              child.on("error", () => {
-                clearTimeout(timer);
+                if (code === 0) {
+                  finish(200, { status: "completed", code, output });
+                  return;
+                }
+                const tail = output.trim().slice(-3000);
+                console.error(
+                  `[external-pipeline] "npm run external:run" exited with code ${code}.\n${tail || "(no output captured)"}`,
+                );
                 finish(500, {
                   status: "error",
-                  error: "Could not start the external runner",
+                  code,
+                  output,
+                  error: `Pipeline exited with code ${code}.${
+                    tail
+                      ? ` Last output:\n${tail}`
+                      : " No output was captured; see the terminal running npm run dev."
+                  }`,
+                });
+              });
+              child.on("error", (err) => {
+                clearTimeout(timer);
+                console.error("[external-pipeline] could not start:", err);
+                finish(500, {
+                  status: "error",
+                  error: `Could not start the external runner: ${err.message}`,
                 });
               });
               return;

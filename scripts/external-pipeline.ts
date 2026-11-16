@@ -207,4 +207,9 @@ async function main(){
       gmail:'BLOCKED — no sender adapter; owner receipt only',state:file,alerts:alerts.length},null,2));
   }finally{await lock.close();await unlink(file+'.lock');}
 }
-main().catch(()=>{console.error('External run failed. Check API/configuration/local state; credentials and source text are redacted.');process.exitCode=1;});
+main().catch((err:unknown)=>{
+  // Runner error messages are written to be credential-free; still bound the length.
+  const message=err instanceof Error?err.message:String(err);
+  console.error(`External run failed: ${message.slice(0,300)}`);
+  process.exitCode=1;
+});
