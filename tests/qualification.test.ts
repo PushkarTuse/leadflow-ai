@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { inputSchema } from "../packages/core/model";
+import { hash, inputSchema } from "../packages/core/model";
+import {
+  externalToLead,
+  pullExternalLeads,
+} from "../apps/automation/external-leads";
 import {
   CAPABILITY_LIST_VERSION,
   QUALIFICATION_POLICY_VERSION,
