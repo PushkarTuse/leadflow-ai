@@ -39,6 +39,14 @@ const httpsUrl = z
     "Use a credential-free HTTPS URL",
   );
 
+const safeHttpUrl = z
+  .string()
+  .max(2000)
+  .refine(
+    (value) => /^https?:\/\/[^\s/@]+(?:[/:?#][^\s]*)?$/i.test(value),
+    "Use a credential-free HTTP(S) URL",
+  );
+
 /* ------------------------------------------------------------------ */
 /* 1. Discovery context (preserved source evidence)                    */
 /* ------------------------------------------------------------------ */
@@ -72,7 +80,7 @@ export const discoveryContextSchema = z
     fetched_at: z.string().datetime(),
     tags: z.array(z.string().min(1).max(60)).max(20).default([]),
     location: z.string().max(240).default(""),
-    contact_link_targets: z.array(httpsUrl).max(10).default([]),
+    contact_link_targets: z.array(safeHttpUrl).max(10).default([]),
     deleted: z.boolean().default(false),
     dead: z.boolean().default(false),
     source_hash: z.string().min(8).max(64),
