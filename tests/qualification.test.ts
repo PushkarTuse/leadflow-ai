@@ -418,7 +418,11 @@ function negationCase() {
 function missingDateCase() {
   const base = fixedProjectCase();
   return {
-    ctx: base.ctx,
+    ctx: context({
+      original_title: base.ctx.original_title,
+      decoded_text: base.ctx.decoded_text,
+      published_at: null,
+    }),
     record: record({
       ...base.record,
       confidence_score: 0.85,
