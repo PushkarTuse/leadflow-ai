@@ -1,5 +1,9 @@
 # LeadFlow launch checklist
 
+| Strict freelance qualification | Status | Next |
+|---|---|---|
+| Eight-stage eligibility/evidence/scoring design | Specification complete; not implemented | Follow docs/FREELANCE_LEAD_QUALIFICATION_SPEC.md stages A–H; shadow evaluation before enforcement; preserve inbound email and prior decisions |
+
 | External one-shot trigger | Status | Remaining |
 |---|---|---|
 | `npm run external:run` and local config switch | Real provider check passed: five HN leads, three Gemini + two rules, two pending and two owner Telegram preview receipts | Hosted interactive approvals require HTTPS/CRM activation; production stays off, Gmail absent from local runner |

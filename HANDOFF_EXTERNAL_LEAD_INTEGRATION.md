@@ -1,5 +1,9 @@
 # External lead integration recovery log
 
+## 2026-11-16 — Strict qualification design handoff
+
+Created `docs/FREELANCE_LEAD_QUALIFICATION_SPEC.md` at the owner's request for a specification only. Reviewed actual scoring/ingestion/schema/workflow interfaces plus the current dashboard/local middleware. Current assess rewards broad hiring/skill keywords and does not require independent paid buyer demand; extraction only requests generic hiring/skills/timeline. externalToLead drops HN parent context/paragraph boundaries and non-HN bodies are incomplete summaries. The new design specifies eight stages, hard gates, seller/employee/unpaid exclusions, incomplete versus rejected outcomes, exact final JSON schema and evidence offsets, deterministic scoring/confidence, model extraction boundaries, conservative fallback, example classifications, evaluation targets and exact staged file/function changes for Aider. No runtime code, secrets, source data or production settings modified. Implementation is pending; do not claim these filters are active. Repository already had seven committed dashboard/SMTP updates ahead of origin at inspection; documentation push also synchronizes that existing history under the standing push instruction.
+
 ## 2026-11-16 — Initial inspection
 
 Read `docs/EXTERNAL_LEAD_INGESTION_CONTRACT.md` completely and inspected existing automation adapters/runtime. Cloned co-founder repository read-only into `D:/freelance_personal/leadflow-leads` at HEAD `52f8c49899dfcddc58d09e4bff92f9447163238d`. No dependency install, database creation, source collection or hosting performed there.

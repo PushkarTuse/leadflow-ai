@@ -2,6 +2,10 @@
 
 This is the entry point for any AI (or human) picking up this repository. Read this file first, then open the latest capsule.
 
+## Strict freelance qualification specification — 16 November 2026
+
+Read `docs/FREELANCE_LEAD_QUALIFICATION_SPEC.md` before changing discovery scoring. This design-only brief replaces broad keyword fit with mandatory buyer/independent-engagement/paid-intent/scope gates, exact evidence JSON, deterministic 0–100 scoring, Gemini/fallback parity, precision/recall evaluation and a sequential Aider migration plan. Preserve inbound enquiry/email behavior and existing owner decisions. No classifier or provider setting was changed in this documentation task; implementation/enforcement is pending.
+
 ## External discovery integration — 16 November 2026
 
 **New trigger:** `npm run external:run -- --dry-run` pulls real local API records through the existing adapter into persistent local preview state, scores and builds owner review payloads. `.env.external.example` documents the local EXTERNAL_LEADS_ENABLED switch and optional Gemini/Telegram credentials; production remains independently disabled. Console endpoint/collection examples are in `docs/EXTERNAL_LEAD_API_SETUP.md`. Telegram preview notices intentionally have no inline actions because production owns bot callbacks. Hosted interactive approvals remain a later HTTPS/CRM activation step.
