@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { discoveryContextSchema } from "./qualification";
 import type { DiscoveryContext, QualificationRecord } from "./qualification";
 
 export const permissions = [
@@ -68,6 +69,7 @@ export const inputSchema = z
     consent_at: z.string().datetime().optional(),
     consent_version: z.string().max(40).default(''),
     owner_notes: z.string().max(2000).default(""),
+    discovery_context: discoveryContextSchema.optional(),
   })
   .strict()
   .superRefine((x, ctx) => {
