@@ -36,6 +36,9 @@ function smtpHint(stage:string,code:number):string{
   if(stage==='auth-user')return 'The SMTP username was rejected; check the username in OWNER_TEST_SMTP_URL';
   if(stage==='mail-from')return 'OWNER_TEST_EMAIL_FROM must be an address the SMTP provider allows you to send from';
   if(stage==='rcpt')return 'The relay rejected the recipient address';
+  if(stage==='queued'&&(code===550||code===554))
+    return 'The provider accepted the connection and credentials but rejected the message. OWNER_TEST_EMAIL_FROM must be on a domain verified with the provider; Resend requires a verified domain, and its onboarding@resend.dev sender only delivers to the account owner address';
+  if(stage==='queued')return 'The provider rejected the message after accepting the envelope; check the From address and the provider dashboard for a suppression or policy reason';
   if(stage==='connect')return 'Nothing accepted the connection on that host and port';
   if(stage==='starttls')return 'STARTTLS was refused; try smtps:// on port 465';
   if(stage==='greeting')return 'The host answered but not as an SMTP server';
