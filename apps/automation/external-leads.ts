@@ -110,7 +110,7 @@ export function externalToLead(raw:unknown, hnItem?:unknown, hnThread?:unknown):
       published_at:item.time?new Date(item.time*1000).toISOString():null,
       collected_at:row.found_at,
       fetched_at:row.found_at,
-      tags:[],
+      tags:[row.category],
       location:'',
       contact_link_targets:hnLinkTargets(rawText),
       deleted:Boolean(item.deleted),
