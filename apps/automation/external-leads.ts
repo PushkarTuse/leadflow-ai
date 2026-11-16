@@ -1,6 +1,7 @@
 import {z} from 'zod';
 import {hash, inputSchema, type LeadInput} from '../../packages/core/model';
 import {cleanText} from '../../packages/core/scoring';
+import {discoveryContextSchema, type DiscoveryContext} from '../../packages/core/qualification';
 import type {Http} from './adapters';
 
 export const externalSources = ['hackernews','osm','remoteok','arbeitnow','jobicy'] as const;
@@ -22,14 +23,34 @@ export function externalOrigin(value:string):string {
   return value;
 }
 
+/** Decode HN HTML into paragraph-preserving plain text without touching the raw original. */
+function hnDecodedText(html:string):string {
+  return html
+    .replace(/<\s*p\s*>/gi,'\n\n')
+    .replace(/<\s*br\s*\/?\s*>/gi,'\n')
+    .replace(/<[^>]*>/g,'')
+    .replace(/&#x([0-9a-f]+);/gi,(_,h:string)=>String.fromCodePoint(parseInt(h,16)))
+    .replace(/&#(\d+);/g,(_,d:string)=>String.fromCodePoint(Number(d)))
+    .replace(/&quot;/g,'"')
+    .replace(/&apos;/g,"'")
+    .replace(/&lt;/g,'<')
+    .replace(/&gt;/g,'>')
+    .replace(/&amp;/g,'&')
+    .replace(/[ \t]+\n/g,'\n')
+    .replace(/\n{3,}/g,'\n\n')
+    .trim();
+}
+
 export function externalToLead(raw:unknown, hnItem?:unknown):LeadInput {
   const row=rowSchema.parse(raw);
   const hn=row.source==='hackernews';
   let title=cleanText(row.title || row.name), description='', posted_at:string|undefined;
+  let discovery_context:DiscoveryContext|undefined;
   if(hn){
     if(!/^[1-9]\d{0,14}$/.test(row.source_id))throw new Error('Invalid HN id');
     const item=z.object({id:z.number().int().positive(),type:z.enum(['comment','job']),
       text:z.string().optional(),title:z.string().optional(),time:z.number().int().positive(),
+      by:z.string().optional(),parent:z.number().int().positive().optional(),
       dead:z.boolean().optional(),deleted:z.boolean().optional()}).parse(hnItem);
     if(String(item.id)!==row.source_id || item.dead || item.deleted)throw new Error('Unavailable HN item');
     description=cleanText(item.text || item.title || '');
@@ -37,6 +58,41 @@ export function externalToLead(raw:unknown, hnItem?:unknown):LeadInput {
     if(row.category==='freelance_request' && !/^seeking freelancer\b/i.test(description))
       throw new Error('HN hiring intent mismatch');
     posted_at=new Date(item.time*1000).toISOString();
+    const rawText=item.text || '';
+    const decoded=hnDecodedText(rawText || item.title || '');
+    const truncated=decoded.length>12000;
+    const hrefs:string[]=[];
+    const hrefRe=/href\s*=\s*"([^"]+)"/gi;
+    let hm:RegExpExecArray|null;
+    while((hm=hrefRe.exec(rawText))){
+      if(/^https:\/\/[^\s/@]+(?:[/:?#][^\s]*)?$/i.test(hm[1])) hrefs.push(hm[1]);
+      if(hrefs.length>=10) break;
+    }
+    discovery_context=discoveryContextSchema.parse({
+      provider:'hackernews',
+      provider_record_id:String(item.id),
+      original_url:`https://news.ycombinator.com/item?id=${item.id}`,
+      item_type:item.type,
+      author_handle:item.by || '',
+      parent_id:item.parent?String(item.parent):'',
+      thread_id:'',
+      thread_title:'',
+      thread_date:null,
+      original_title:item.title || '',
+      raw_text:rawText.length>20000?rawText.slice(0,20000):rawText,
+      decoded_text:truncated?decoded.slice(0,12000):decoded,
+      published_at:new Date(item.time*1000).toISOString(),
+      collected_at:row.found_at,
+      fetched_at:row.found_at,
+      tags:[],
+      location:'',
+      contact_link_targets:hrefs,
+      deleted:Boolean(item.deleted),
+      dead:Boolean(item.dead),
+      source_hash:hash(rawText || item.title || ''),
+      truncated,
+      complete:!truncated,
+    });
   }else{
     // These are observed fields, not a fabricated project brief or a claimed original body.
     description=cleanText(`Listing title: ${title}\nListed business: ${row.name}\nListed location: ${[row.city,row.country].filter(Boolean).join(', ')}`);
@@ -51,6 +107,7 @@ export function externalToLead(raw:unknown, hnItem?:unknown):LeadInput {
     contact_permission_state:'UNKNOWN',contact_email:'',
     contact_channel:'Review original listing instructions manually',
     owner_notes:`External leadflow-leads; provider=${row.source}; category=${row.category}. ${hn?'Original HN text/time verified via official API.':'Incomplete listing summary; original description/date unavailable; verify fit and source terms manually. OSM attribution: © OpenStreetMap contributors, ODbL (https://www.openstreetmap.org/copyright).'} Producer score/status/contact fields ignored. No opt-in or sending authority.`,
+    ...(discovery_context?{discovery_context}:{}),
   });
 }
 
