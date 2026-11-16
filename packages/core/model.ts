@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { DiscoveryContext, QualificationRecord } from "./qualification";
 
 export const permissions = [
   "UNKNOWN",
@@ -151,6 +152,13 @@ export interface Lead extends LeadInput, Assessment {
   updated_at: string;
   last_activity_at: string;
   next_followup_at: string;
+  /**
+   * Stage A: optional discovery qualification record. Absent on legacy and
+   * inbound records; nothing in the live pipeline produces or consumes it yet.
+   */
+  qualification?: QualificationRecord;
+  /** Stage A: optional preserved discovery evidence context. */
+  discovery_context?: DiscoveryContext;
 }
 export interface Activity {
   event_id: string;
