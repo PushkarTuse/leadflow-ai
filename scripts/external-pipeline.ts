@@ -10,13 +10,31 @@ import {pullExternalLeads} from '../apps/automation/external-leads';
 interface EmailTestState{status:string;at:string;to:string;messageId:string;error:string}
 const emptyEmailTest:EmailTestState={status:'DISABLED',at:'',to:'',messageId:'',error:''};
 
-/** Turns a redacted SMTP stage into an actionable next step. Never includes credentials. */
+/**
+ * Validates the URL shape only. The host, port and TLS mode are provider-neutral;
+ * credentials are never returned, logged or echoed. Returns null when the value
+ * is missing or cannot be used as an SMTP endpoint.
+ */
+function parseSmtpUrl(value:string):{host:string;port:number;secure:boolean}|null{
+  if(!value)return null;
+  let url:URL;
+  try{url=new URL(value);}catch{return null;}
+  if(url.protocol!=='smtp:'&&url.protocol!=='smtps:')return null;
+  if(!url.hostname||/\s/.test(url.hostname))return null;
+  if(url.pathname&&url.pathname!=='/')return null;
+  if(url.search||url.hash)return null;
+  const port=Number(url.port||(url.protocol==='smtps:'?'465':'587'));
+  if(!Number.isInteger(port)||port<1||port>65535)return null;
+  return {host:url.hostname,port,secure:url.protocol==='smtps:'};
+}
+
+/** Turns a redacted SMTP stage into an actionable next step. Never includes credentials or a provider name. */
 function smtpHint(stage:string,code:number):string{
   if(stage==='auth-pass'&&(code===535||code===534))
-    return 'Gmail and most providers require a 16-character App Password with 2-Step Verification enabled; an account password will not work';
-  if(stage==='auth')return 'The server did not offer AUTH LOGIN; check the port and TLS mode';
-  if(stage==='auth-user')return 'The SMTP username was rejected; it is usually the full email address';
-  if(stage==='mail-from')return 'OWNER_TEST_EMAIL_FROM must match the SMTP username';
+    return 'The SMTP provider rejected the credentials. Check the username and the password or API key in OWNER_TEST_SMTP_URL; many providers require an app-specific password or API key rather than an account password';
+  if(stage==='auth')return 'The server did not offer a supported AUTH mechanism; check the port and TLS mode';
+  if(stage==='auth-user')return 'The SMTP username was rejected; check the username in OWNER_TEST_SMTP_URL';
+  if(stage==='mail-from')return 'OWNER_TEST_EMAIL_FROM must be an address the SMTP provider allows you to send from';
   if(stage==='rcpt')return 'The relay rejected the recipient address';
   if(stage==='connect')return 'Nothing accepted the connection on that host and port';
   if(stage==='starttls')return 'STARTTLS was refused; try smtps:// on port 465';
@@ -61,6 +79,7 @@ function executiveSummary(store:MemoryStore,run:{imported:number;duplicates:numb
 /**
  * SAFE_OWNER_EMAIL_TEST: at most one clearly labelled receipt per run, addressed
  * only to OWNER_TEST_EMAIL. A discovered lead address can never be the recipient.
+ * The SMTP endpoint is read from OWNER_TEST_SMTP_URL and is provider-neutral.
  * Failure detail is limited to the SMTP stage and response code; credentials and
  * the SMTP URL are never returned.
  */
@@ -87,8 +106,8 @@ async function ownerEmailTest(enabled:boolean,get:(key:string,fallback?:string)=
   ].join('\n');
   await writeFile('outputs/external/email-test-receipt.eml',
     `To: ${to}\r\nFrom: ${from}\r\nSubject: ${subject}\r\nDate: ${new Date().toUTCString()}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${text}\r\n`);
-  if(!smtpUrl)
-    return {status:'SKIPPED_NOT_CONFIGURED',at,to,messageId:'',error:'OWNER_TEST_SMTP_URL missing; receipt written to outputs/external/email-test-receipt.eml'};
+  if(!parseSmtpUrl(smtpUrl))
+    return {status:'SKIPPED_NOT_CONFIGURED',at,to,messageId:'',error:'OWNER_TEST_SMTP_URL missing or invalid; receipt written to outputs/external/email-test-receipt.eml'};
   const result=spawnSync(process.execPath,['scripts/owner-email-test.mjs'],{input:JSON.stringify({smtpUrl,from,to,subject,text}),encoding:'utf8',timeout:30000,maxBuffer:200000});
   let parsed:{ok?:boolean;messageId?:string;stage?:string;code?:number;message?:string}={};
   try{parsed=JSON.parse(result.stdout||'{}');}catch{parsed={};}
