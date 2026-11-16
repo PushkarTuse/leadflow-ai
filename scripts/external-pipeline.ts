@@ -155,7 +155,12 @@ async function main(){
     const network:Http={json(url,request){
       if(++httpCount>16)throw new Error('Local per-run HTTP budget reached');
       const result=spawnSync(process.execPath,['scripts/external-http.mjs'],{input:JSON.stringify({url,request}),encoding:'utf8',timeout:20000,maxBuffer:2000000});
-      if(result.status!==0)throw new Error('Provider request failed (redacted); interrupted batch will deduplicate on retry');
+      if(result.status!==0){
+        // external-http.mjs writes only a safe, credential-free detail to stderr
+        // (HTTP status or network error code). Bound and flatten it before use.
+        const detail=(result.stderr||'').replace(/[\r\n]+/g,' ').trim().slice(0,200);
+        throw new Error(`Provider request failed${detail?` (${detail})`:''}; interrupted batch will deduplicate on retry`);
+      }
       return JSON.parse(result.stdout);
     }};
     const origin='https://local-runner.example.com',transportToken='local-adapter-transport-placeholder-only';
