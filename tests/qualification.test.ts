@@ -304,7 +304,8 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(audit.breakdown.timeline).toBe(10);
     expect(audit.breakdown.contact_path).toBe(10);
     expect(audit.breakdown.freshness).toBe(5);
-  );
+  });
+  });
 
   it("Case 2: Paid freelancer Python API → CONSULTING MEDIUM 80", () => {
     const { record, audit } = classify(
@@ -452,7 +453,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.eligibility_state).toBe("REJECTED");
     expect(record.rejection_reason).toBe("UNPAID_OR_EQUITY_ONLY");
     expect(record.quality_score).toBe(0);
-  );
+  });
 
   it("Case 12: Equity-only cofounder → REJECTED UNPAID_OR_EQUITY_ONLY", () => {
     const { record } = classify(
