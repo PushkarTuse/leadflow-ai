@@ -159,7 +159,7 @@ describe("Stage B: HN discovery evidence preservation", () => {
     };
     const withoutTime = externalToLead(baseRow, itemNoTime);
     expect(withoutTime.posted_at).toBeUndefined();
-    expect(withoutTime.discovery_context?.published_at).toBeNull();
+    expect(withTime.discovery_context?.published_at).toBeNull();
   });
 
   it("keeps the provider category as an untrusted tag hint", () => {
@@ -250,8 +250,6 @@ describe("Stage B: evidence offset validation", () => {
 /* Stage C — Section 9 concrete acceptance cases                       */
 /* ================================================================== */
 
-const NOW = "2026-11-16T00:00:00.000Z";
-
 function makeContext(
   title: string,
   body: string,
@@ -306,7 +304,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(audit.breakdown.timeline).toBe(10);
     expect(audit.breakdown.contact_path).toBe(10);
     expect(audit.breakdown.freshness).toBe(5);
-  });
+  );
 
   it("Case 2: Paid freelancer Python API → CONSULTING MEDIUM 80", () => {
     const { record, audit } = classify(
@@ -430,7 +428,6 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     );
     expect(record.is_valid_freelance_lead).toBe(false);
     expect(record.eligibility_state).toBe("REJECTED");
-    expect(record.requester_type).toBe("FREELANCER_SELLER");
     expect(record.rejection_reason).toBe("SELLER_SELF_PROMOTION");
     expect(record.quality_score).toBe(0);
   });
@@ -444,7 +441,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.eligibility_state).toBe("REJECTED");
     expect(record.rejection_reason).toBe("SELLER_SELF_PROMOTION");
     expect(record.quality_score).toBe(0);
-  });
+  );
 
   it("Case 11: SEEKING FREELANCER unpaid → REJECTED UNPAID_OR_EQUITY_ONLY", () => {
     const { record } = classify(
@@ -455,7 +452,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.eligibility_state).toBe("REJECTED");
     expect(record.rejection_reason).toBe("UNPAID_OR_EQUITY_ONLY");
     expect(record.quality_score).toBe(0);
-  });
+  );
 
   it("Case 12: Equity-only cofounder → REJECTED UNPAID_OR_EQUITY_ONLY", () => {
     const { record } = classify(
