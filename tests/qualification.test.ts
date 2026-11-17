@@ -6,7 +6,12 @@ import {
   discoveryContextSchema,
   locateEvidence,
   validateQualificationEvidence,
+  prefilterDiscovery,
+  extractRuleEvidence,
+  scoreFreelanceQualification,
+  defaultQualificationPolicy,
   type QualificationRecord,
+  type DiscoveryContext,
 } from "../packages/core/qualification";
 
 const NOW = "2026-11-16T00:00:00.000Z";
@@ -237,5 +242,433 @@ describe("Stage B: evidence offset validation", () => {
       ],
     } as QualificationRecord;
     expect(() => validateQualificationEvidence(missing, context)).toThrow();
+  });
+});
+
+
+/* ================================================================== */
+/* Stage C — Section 9 concrete acceptance cases                       */
+/* ================================================================== */
+
+const NOW = "2026-11-16T00:00:00.000Z";
+
+function makeContext(
+  title: string,
+  body: string,
+  overrides: Partial<DiscoveryContext> = {},
+): DiscoveryContext {
+  return discoveryContextSchema.parse({
+    provider: "hackernews",
+    provider_record_id: "test-" + hash(title + body),
+    original_url: "https://news.ycombinator.com/item?id=99999",
+    item_type: "comment",
+    author_handle: "test-author",
+    original_title: title,
+    raw_text: body,
+    decoded_text: body,
+    published_at: NOW,
+    collected_at: NOW,
+    fetched_at: NOW,
+    source_hash: hash(body || title),
+    ...overrides,
+  });
+}
+
+function classify(title: string, body: string, overrides: Partial<DiscoveryContext> = {}) {
+  const context = makeContext(title, body, overrides);
+  const evidence = extractRuleEvidence(canonicalEvidence(context), context);
+  return scoreFreelanceQualification(evidence, context, NOW);
+}
+
+describe("Stage C — Section 9: concrete acceptance cases", () => {
+  it("Case 1: Full-spec React contractor project → CLIENT_PROJECT HIGH 100", () => {
+    const { record, audit } = classify(
+      "",
+      "We need an independent React contractor to deliver our checkout with Stripe integration and tests. Fixed budget USD 4,000. Deadline in four weeks. Apply using this form: https://example.com/apply.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(true);
+    expect(record.eligibility_state).toBe("ELIGIBLE");
+    expect(record.lead_type).toBe("CLIENT_PROJECT");
+    expect(record.engagement_type).toBe("FIXED_PROJECT");
+    expect(record.requester_type).not.toBe("FREELANCER_SELLER");
+    expect(record.budget_signal.kind).toBe("AMOUNT_STATED");
+    expect(record.priority).toBe("HIGH");
+    expect(record.quality_score).toBe(100);
+    expect(record.confidence_score).toBe(0.95);
+    expect(record.rejection_reason).toBeNull();
+    expect(audit.method).toBe("rules");
+    // Verify: 20+15+20+15+5+10+10+5 = 100
+    expect(audit.breakdown.buyer_demand).toBe(20);
+    expect(audit.breakdown.engagement).toBe(15);
+    expect(audit.breakdown.paid_intent).toBe(20);
+    expect(audit.breakdown.scope).toBe(15);
+    expect(audit.breakdown.service_fit).toBe(5);
+    expect(audit.breakdown.timeline).toBe(10);
+    expect(audit.breakdown.contact_path).toBe(10);
+    expect(audit.breakdown.freshness).toBe(5);
+  });
+
+  it("Case 2: Paid freelancer Python API → CONSULTING MEDIUM 80", () => {
+    const { record, audit } = classify(
+      "",
+      "Seeking a paid freelancer to improve our Python API performance. Rates negotiable. Email engineering@example.com.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(true);
+    expect(record.eligibility_state).toBe("ELIGIBLE");
+    expect(record.priority).toBe("MEDIUM");
+    expect(record.quality_score).toBe(80);
+    expect(record.rejection_reason).toBeNull();
+    // 20+15+15+10+5+0+10+5 = 80
+    expect(audit.breakdown.buyer_demand).toBe(20);
+    expect(audit.breakdown.engagement).toBe(15);
+    expect(audit.breakdown.paid_intent).toBe(15);
+    expect(audit.breakdown.scope).toBe(10);
+    expect(audit.breakdown.service_fit).toBe(5);
+    expect(audit.breakdown.timeline).toBe(0);
+    expect(audit.breakdown.contact_path).toBe(10);
+    expect(audit.breakdown.freshness).toBe(5);
+  });
+
+  it("Case 3: Independent React contractor (bare) → CONTRACT_ROLE LOW 60", () => {
+    const { record, audit } = classify(
+      "",
+      "We are hiring an independent React contractor.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(true);
+    expect(record.eligibility_state).toBe("ELIGIBLE");
+    expect(record.lead_type).toBe("CONTRACT_ROLE");
+    expect(record.budget_signal.kind).toBe("COMMERCIAL_HIRING");
+    expect(record.priority).toBe("LOW");
+    expect(record.quality_score).toBe(60);
+    expect(record.confidence_score).toBe(0.85);
+    expect(record.rejection_reason).toBeNull();
+    // 20+15+10+5+5+0+0+5 = 60
+    expect(audit.breakdown.buyer_demand).toBe(20);
+    expect(audit.breakdown.engagement).toBe(15);
+    expect(audit.breakdown.paid_intent).toBe(10);
+    expect(audit.breakdown.scope).toBe(5);
+    expect(audit.breakdown.service_fit).toBe(5);
+    expect(audit.breakdown.timeline).toBe(0);
+    expect(audit.breakdown.contact_path).toBe(0);
+    expect(audit.breakdown.freshness).toBe(5);
+  });
+
+  it("Case 4: Agency subcontracting WordPress → AGENCY_BUYER HIGH 100", () => {
+    const { record } = classify(
+      "",
+      "Our agency needs a paid subcontractor to migrate one WordPress site including redirect tests. USD 2,000 fixed fee; finish this month; reply by email to agency@example.com.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(true);
+    expect(record.eligibility_state).toBe("ELIGIBLE");
+    expect(record.requester_type).toBe("AGENCY_BUYER");
+    expect(record.engagement_type).toBe("FIXED_PROJECT");
+    expect(record.priority).toBe("HIGH");
+    expect(record.quality_score).toBe(100);
+  });
+
+  it("Case 5: Fractional CTO consulting → FOUNDER HIGH 85", () => {
+    const { record, audit } = classify(
+      "",
+      "Our startup seeks a paid fractional CTO for architecture consulting. Flexible start, DM me here.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(true);
+    expect(record.eligibility_state).toBe("ELIGIBLE");
+    expect(record.requester_type).toBe("FOUNDER");
+    expect(record.priority).toBe("HIGH");
+    expect(record.quality_score).toBe(85);
+    // 20+15+15+10+5+5+10+5 = 85
+    expect(audit.breakdown.buyer_demand).toBe(20);
+    expect(audit.breakdown.engagement).toBe(15);
+    expect(audit.breakdown.paid_intent).toBe(15);
+    expect(audit.breakdown.scope).toBe(10);
+    expect(audit.breakdown.service_fit).toBe(5);
+    expect(audit.breakdown.timeline).toBe(5);
+    expect(audit.breakdown.contact_path).toBe(10);
+    expect(audit.breakdown.freshness).toBe(5);
+  });
+
+  it("Case 6: Sendery | iOS Engineer | Tokyo | Full-time → REJECTED FULL_TIME_ONLY", () => {
+    const { record } = classify(
+      "Sendery | iOS Engineer | Tokyo | Full-time, salary and benefits.",
+      "Sendery | iOS Engineer | Tokyo | Full-time, salary and benefits.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(record.eligibility_state).toBe("REJECTED");
+    expect(record.rejection_reason).toBe("FULL_TIME_ONLY");
+    expect(record.quality_score).toBe(0);
+    expect(record.priority).toBe("REJECTED");
+  });
+
+  it("Case 7: Clad | Software Engineer | NYC. Full-time employment only. → REJECTED FULL_TIME_ONLY", () => {
+    const { record } = classify(
+      "Clad | Software Engineer | NYC.",
+      "Clad | Software Engineer | NYC. Full-time employment only.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(record.eligibility_state).toBe("REJECTED");
+    expect(record.rejection_reason).toBe("FULL_TIME_ONLY");
+    expect(record.quality_score).toBe(0);
+    expect(record.priority).toBe("REJECTED");
+  });
+
+  it("Case 8: Clad | Software Engineer | NYC (no body) → REVIEW_INCOMPLETE INSUFFICIENT_CONTEXT", () => {
+    const { record } = classify(
+      "Clad | Software Engineer | NYC.",
+      "",
+    );
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(record.eligibility_state).toBe("REVIEW_INCOMPLETE");
+    expect(record.rejection_reason).toBe("INSUFFICIENT_CONTEXT");
+    expect(record.quality_score).toBe(0);
+    expect(record.priority).toBe("REJECTED");
+  });
+
+  it("Case 9: Seller available for projects → REJECTED SELLER_SELF_PROMOTION", () => {
+    const { record } = classify(
+      "",
+      "Location: Estonia. I am available for projects. Technologies: React.js.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(record.eligibility_state).toBe("REJECTED");
+    expect(record.requester_type).toBe("FREELANCER_SELLER");
+    expect(record.rejection_reason).toBe("SELLER_SELF_PROMOTION");
+    expect(record.quality_score).toBe(0);
+  });
+
+  it("Case 10: SEEKING FREELANCE Egypt seller → REJECTED SELLER_SELF_PROMOTION", () => {
+    const { record } = classify(
+      "SEEKING FREELANCE",
+      "SEEKING FREELANCE — Egypt. React developer, USD 50/hour. Contact me.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(record.eligibility_state).toBe("REJECTED");
+    expect(record.rejection_reason).toBe("SELLER_SELF_PROMOTION");
+    expect(record.quality_score).toBe(0);
+  });
+
+  it("Case 11: SEEKING FREELANCER unpaid → REJECTED UNPAID_OR_EQUITY_ONLY", () => {
+    const { record } = classify(
+      "",
+      "SEEKING FREELANCER. Need a logo for a volunteer event; unpaid.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(record.eligibility_state).toBe("REJECTED");
+    expect(record.rejection_reason).toBe("UNPAID_OR_EQUITY_ONLY");
+    expect(record.quality_score).toBe(0);
+  });
+
+  it("Case 12: Equity-only cofounder → REJECTED UNPAID_OR_EQUITY_ONLY", () => {
+    const { record } = classify(
+      "",
+      "We need a cofounder to build our app for equity only.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(record.eligibility_state).toBe("REJECTED");
+    expect(record.rejection_reason).toBe("UNPAID_OR_EQUITY_ONLY");
+    expect(record.quality_score).toBe(0);
+  });
+
+  it("Case 13: Product promotion newsletter → REJECTED NO_CLIENT_NEED", () => {
+    const { record } = classify(
+      "",
+      "Our product makes SEO easy. Join our newsletter.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(record.eligibility_state).toBe("REJECTED");
+    expect(record.rejection_reason).toBe("NO_CLIENT_NEED");
+    expect(record.quality_score).toBe(0);
+  });
+
+  it("Case 14: Aggregator job list → REJECTED AGGREGATOR_ONLY", () => {
+    const { record } = classify(
+      "",
+      "Here are 50 remote developer jobs.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(record.eligibility_state).toBe("REJECTED");
+    expect(record.rejection_reason).toBe("AGGREGATOR_ONLY");
+    expect(record.quality_score).toBe(0);
+  });
+
+  it("Case 15: 'Need React help' → REVIEW_INCOMPLETE ENGAGEMENT_UNCLEAR", () => {
+    const { record } = classify(
+      "",
+      "Need React help.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(record.eligibility_state).toBe("REVIEW_INCOMPLETE");
+    expect(record.rejection_reason).toBe("ENGAGEMENT_UNCLEAR");
+    expect(record.quality_score).toBe(0);
+    expect(record.priority).toBe("REJECTED");
+  });
+
+  it("Case 16: Employee payroll contract → REJECTED EMPLOYMENT_CONTRACT_ONLY", () => {
+    const { record } = classify(
+      "",
+      "We need a six-month developer on employee payroll; contract position.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(record.eligibility_state).toBe("REJECTED");
+    expect(record.rejection_reason).toBe("EMPLOYMENT_CONTRACT_ONLY");
+    expect(record.quality_score).toBe(0);
+  });
+
+  it("Case 17: Mixed post with isolated contract unit → ELIGIBLE HIGH 85", () => {
+    const { record, audit } = classify(
+      "",
+      "We hire full-time; alternatively an independent paid contractor can deliver only the React checkout with integration tests. Email us.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(true);
+    expect(record.eligibility_state).toBe("ELIGIBLE");
+    expect(record.priority).toBe("HIGH");
+    expect(record.quality_score).toBe(85);
+    // 20+15+15+15+5+0+10+5 = 85
+    expect(audit.breakdown.buyer_demand).toBe(20);
+    expect(audit.breakdown.engagement).toBe(15);
+    expect(audit.breakdown.paid_intent).toBe(15);
+    expect(audit.breakdown.scope).toBe(15);
+    expect(audit.breakdown.service_fit).toBe(5);
+    expect(audit.breakdown.timeline).toBe(0);
+    expect(audit.breakdown.contact_path).toBe(10);
+    expect(audit.breakdown.freshness).toBe(5);
+  });
+
+  it("Case 18: Negated unpaid — 'Not seeking unpaid' buyer → ELIGIBLE MEDIUM 80", () => {
+    const { record } = classify(
+      "",
+      "Not seeking unpaid collaboration. We need a paid independent Python contractor to optimize our API; reply here.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(true);
+    expect(record.eligibility_state).toBe("ELIGIBLE");
+    expect(record.priority).toBe("MEDIUM");
+    expect(record.quality_score).toBe(80);
+  });
+
+  it("Case 19: Stale post (45 days old) → REJECTED STALE_OR_CLOSED", () => {
+    const staleDate = new Date(Date.parse(NOW) - 45 * 86400000).toISOString();
+    const { record } = classify(
+      "",
+      "We need an independent React contractor to deliver our checkout with Stripe integration and tests. Fixed budget USD 4,000. Deadline in four weeks. Apply using this form: https://example.com/apply.",
+      { published_at: staleDate },
+    );
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(record.eligibility_state).toBe("REJECTED");
+    expect(record.rejection_reason).toBe("STALE_OR_CLOSED");
+    expect(record.quality_score).toBe(0);
+  });
+
+  it("Case 20: No publication date → ELIGIBLE LOW, freshness capped at 64", () => {
+    const { record } = classify(
+      "",
+      "We need an independent React contractor to deliver our checkout with Stripe integration and tests. Fixed budget USD 4,000. Deadline in four weeks. Apply using this form: https://example.com/apply.",
+      { published_at: null },
+    );
+    expect(record.is_valid_freelance_lead).toBe(true);
+    expect(record.eligibility_state).toBe("ELIGIBLE");
+    expect(record.priority).toBe("LOW");
+    expect(record.quality_score).toBe(64);
+  });
+});
+
+describe("Stage C — Mandatory gate invariants", () => {
+  it("adding technology keywords cannot promote a gate failure", () => {
+    // A seller post stays rejected even with many tech keywords
+    const { record } = classify(
+      "",
+      "SEEKING FREELANCE — I am available. React, TypeScript, Node.js, Python, API, iOS, Swift, Java, WordPress, automation.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(record.rejection_reason).toBe("SELLER_SELF_PROMOTION");
+    expect(record.quality_score).toBe(0);
+  });
+
+  it("seller rate doesn't change direction", () => {
+    const { record } = classify(
+      "",
+      "I am available for projects. USD 100/hour. React developer. Contact me.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(record.rejection_reason).toBe("SELLER_SELF_PROMOTION");
+  });
+
+  it("non-eligible records always have score=0 and priority=REJECTED", () => {
+    for (const text of [
+      "SEEKING FREELANCE — developer available",
+      "Full-time iOS engineer, salary and benefits",
+      "Here are 50 remote developer jobs",
+      "Build our app for equity only",
+    ]) {
+      const { record } = classify("", text);
+      expect(record.quality_score).toBe(0);
+      expect(record.priority).toBe("REJECTED");
+      expect(record.is_valid_freelance_lead).toBe(false);
+    }
+  });
+
+  it("eligible records have non-null evidence for mandatory fields", () => {
+    const { record } = classify(
+      "",
+      "We need an independent React contractor to deliver our checkout. Fixed budget USD 4,000. Deadline in four weeks.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(true);
+    const fields = new Set(record.evidence_quotes.map(q => q.field));
+    expect(fields.has("intent")).toBe(true);
+    expect(fields.has("payment")).toBe(true);
+  });
+
+  it("prefilterDiscovery rejects non-allowed sources", () => {
+    const ctx = makeContext("test", "test body", { provider: "arbeitnow" });
+    const result = prefilterDiscovery(ctx, NOW);
+    expect(result.pass).toBe(false);
+    expect(result.reason).toBe("SOURCE_NOT_ALLOWED");
+  });
+
+  it("prefilterDiscovery rejects dead posts", () => {
+    const ctx = makeContext("test", "test body", { dead: true });
+    const result = prefilterDiscovery(ctx, NOW);
+    expect(result.pass).toBe(false);
+    expect(result.reason).toBe("SOURCE_UNAVAILABLE");
+  });
+
+  it("prefilterDiscovery passes fresh valid sources", () => {
+    const ctx = makeContext("test", "test body");
+    const result = prefilterDiscovery(ctx, NOW);
+    expect(result.pass).toBe(true);
+    expect(result.reason).toBeNull();
+  });
+
+  it("clause-level analysis: 'No unpaid work; seeking a paid contractor' is buyer", () => {
+    const { record } = classify(
+      "",
+      "No unpaid work; seeking a paid contractor for our React project. Reply here.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(true);
+    expect(record.rejection_reason).toBeNull();
+    expect(record.eligibility_state).toBe("ELIGIBLE");
+  });
+
+  it("evidence quotes validate against canonical text", () => {
+    const ctx = makeContext("Title", "We need an independent React contractor.");
+    const evidence = extractRuleEvidence(canonicalEvidence(ctx), ctx);
+    const { record } = scoreFreelanceQualification(evidence, ctx, NOW);
+    // All evidence quotes should have valid offsets
+    const canonical = canonicalEvidence(ctx);
+    for (const eq of record.evidence_quotes) {
+      expect(canonical.slice(eq.start, eq.end)).toBe(eq.quote);
+    }
+  });
+});
+
+describe("Stage C — Job posting rejection patterns", () => {
+  it.each([
+    "Acme | Senior Software Engineer | San Francisco | Full-time",
+    "Startup | iOS Engineer | Remote | Competitive salary",
+    "Corp | Full-Stack Engineer | NYC | Benefits included",
+    "Company | Backend Engineer | Berlin | Visa sponsorship",
+  ])("rejects classic job posting: %s", (title) => {
+    const { record } = classify(title, title);
+    expect(record.is_valid_freelance_lead).toBe(false);
+    expect(["FULL_TIME_ONLY", "EMPLOYMENT_CONTRACT_ONLY"]).toContain(record.rejection_reason);
+    expect(record.quality_score).toBe(0);
   });
 });
