@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   qualificationCounts,
+  qualificationMethod,
   qualificationState,
   type LeadRow,
 } from "../apps/web/src/PipelineDashboard";
@@ -65,5 +66,11 @@ describe("qualification dashboard view", () => {
     expect(
       qualificationState(row("invalid", "ELIGIBLE", "HIGH", false)),
     ).toBe("NEEDS_REQUALIFICATION");
+  });
+
+  it("shows OpenAI-compatible provider attribution", () => {
+    const candidate = row("provider", "REJECTED");
+    candidate.qualification_audit = { method: "openai-compatible" };
+    expect(qualificationMethod(candidate)).toBe("openai-compatible");
   });
 });

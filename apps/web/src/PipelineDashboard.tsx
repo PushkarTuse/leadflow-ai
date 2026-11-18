@@ -85,9 +85,11 @@ export function qualificationCounts(rows: LeadRow[]) {
   return counts;
 }
 
-function qualificationMethod(row: LeadRow) {
+export function qualificationMethod(row: LeadRow) {
   const method = row.qualification_audit?.method;
-  return method === "rules" || method === "gemini" ? method : "—";
+  return method === "rules" || method === "gemini" || method === "openai-compatible"
+    ? method
+    : "—";
 }
 
 interface RequestRow {
@@ -108,6 +110,7 @@ interface StatusPayload {
   offset: number;
   store: { rows: LeadRow[]; requestRows: RequestRow[] };
   emailTest: EmailTest | null;
+  stateFile?: string | null;
 }
 
 interface TogglePayload {
@@ -378,8 +381,11 @@ export function PipelineDashboard() {
         {!loading && !error && rows.length === 0 && (
           <p role="status">
             No local leads yet. Run the pipeline to populate
-            data/external-gemini.json.
+            the latest local pipeline state.
           </p>
+        )}
+        {!loading && !error && status?.stateFile && (
+          <p>Latest state: <code>data/{status.stateFile}</code></p>
         )}
         {!loading && !error && rows.length > 0 && (
           <div style={{ overflowX: "auto" }}>

@@ -2,14 +2,18 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
-import { readFile, writeFile, rename } from "node:fs/promises";
+import { readFile, writeFile, rename, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const envFile = path.join(repoRoot, ".env.external");
-const stateFile = path.join(repoRoot, "data", "external-gemini.json");
+const stateFiles = [
+  "external-pipeline.json",
+  "external-gemini.json",
+  "external-openai.json",
+].map((name) => path.join(repoRoot, "data", name));
 const emptyState = {
   offset: 0,
   store: { rows: [], events: [], draftRows: [], requestRows: [] },
@@ -62,6 +66,27 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+async function readLatestState() {
+  const candidates = await Promise.all(
+    stateFiles.map(async (file) => {
+      try {
+        return { file, modified: (await stat(file)).mtimeMs };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      }
+    }),
+  );
+  const latest = candidates
+    .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
+    .sort((a, b) => b.modified - a.modified)[0];
+  if (!latest) return { ...emptyState, stateFile: null };
+  return {
+    ...JSON.parse(await readFile(latest.file, "utf8")),
+    stateFile: path.basename(latest.file),
+  };
+}
+
 /**
  * Development-only middleware. `apply: "serve"` keeps it out of the production
  * build, so Cloudflare Pages behaviour is unchanged.
@@ -96,9 +121,9 @@ function localPipeline(): Plugin {
               req.method === "GET"
             ) {
               try {
-                return json(200, JSON.parse(await readFile(stateFile, "utf8")));
+                return json(200, await readLatestState());
               } catch {
-                return json(200, emptyState);
+                return json(500, { error: "Local pipeline state could not be read" });
               }
             }
 
