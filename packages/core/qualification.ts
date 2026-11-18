@@ -1,13 +1,11 @@
 import { z } from "zod";
 
 /**
- * Stage A: qualification schemas, versioning and cross-field validation only.
- *
- * This module deliberately contains no scoring engine, no ingestion, no Gemini
- * call and no routing. Nothing here is wired into the live pipeline yet.
+ * Shared qualification schemas, versioning and cross-field validation.
+ * Discovery scoring and routing are orchestrated by the core workflow.
  */
 
-export const QUALIFICATION_SCHEMA_VERSION = "freelance.v1";
+export const QUALIFICATION_SCHEMA_VERSION = "freelance.v2";
 export const QUALIFICATION_RULES_VERSION = "rules.v1";
 export const QUALIFICATION_PROMPT_VERSION = "prompt.v1";
 export const CAPABILITY_LIST_VERSION = "capabilities.v1";
@@ -684,7 +682,7 @@ export const qualificationAuditSchema = z
     policy_version: z.string().min(1).max(40),
     source_hash: z.string().min(8).max(64),
     classified_at: z.string().datetime(),
-    method: z.enum(["rules", "gemini"]),
+    method: z.enum(["rules", "gemini", "openai-compatible"]),
     reasons: z.array(z.enum(rejectionReasons)).max(20),
     missing_fields: z.array(z.string().min(1).max(60)).max(20),
     breakdown: z.record(z.string().min(1).max(40), z.number().int().min(0).max(100)),

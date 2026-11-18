@@ -43,6 +43,20 @@ describe('external discovery pull',()=>{
     expect(()=>externalToLead(row,{...item,id:999})).toThrow();
     expect(()=>externalToLead(row,{...item,text:'SEEKING WORK: I build websites'})).toThrow();
   });
+  it('keeps local-business prospects and non-HN company hiring out of the freelance CRM',()=>{
+    const hiring={...row,category:'company_hiring'};
+    const local={...row,category:'local_business'};
+    const http:Http={json:url=>url.includes('/leads?')?page([hiring,local]):item};
+    let ingested=0;
+    expect(pullExternalLeads(http,options,()=>{ingested++;return {duplicate:false};})).toMatchObject({imported:1,invalid:1});
+    expect(ingested).toBe(1);
+
+    const boardOptions={...options,allowedSources:['arbeitnow']};
+    const boardRow={...row,source:'arbeitnow',category:'company_hiring'};
+    const boardHttp:Http={json:url=>url.includes('/leads?')?page([boardRow]):undefined};
+    expect(pullExternalLeads(boardHttp,boardOptions,()=>{ingested++;return {duplicate:false};})).toMatchObject({imported:0,invalid:1});
+    expect(ingested).toBe(1);
+  });
   it('keeps non-HN identities namespaced with incomplete evidence notes',()=>{
     const lead=externalToLead({...row,source:'arbeitnow',source_id:'company-job',category:'company_hiring',name:'Company',title:'React engineer'});
     expect(lead.source).toBe('csv');expect(lead.source_external_id).toBe('arbeitnow:company-job');

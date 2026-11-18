@@ -4,7 +4,7 @@ import {randomBytes} from 'node:crypto';
 import {Engine,canRouteDiscoveryLead,isDiscoveryCandidate,notification} from '../packages/core/workflow';
 import {MemoryStore} from '../packages/core/memory-store';
 import {configSchema} from '../packages/core/model';
-import {classifyGemini,classifyGeminiDiscovery,type Http} from '../apps/automation/adapters';
+import {classifyGemini,classifyDiscoveryAI,openAICompletionEndpoint,type Http} from '../apps/automation/adapters';
 import {pullExternalLeads} from '../apps/automation/external-leads';
 
 interface EmailTestState{status:string;at:string;to:string;messageId:string;error:string}
@@ -180,12 +180,22 @@ async function main(){
   let token=get('EXTERNAL_LEADS_API_TOKEN');
   if(!token&&!requalifyAll){const vars=await readFile('../leadflow-leads/.dev.vars','utf8');token=vars.split(/\r?\n/).find(l=>l.startsWith('API_TOKEN='))?.slice(10).trim()||'';}
   if(!token&&!requalifyAll)throw new Error('Local API token missing');
-  const gemini=!preview&&on('GEMINI_ENABLED'),telegram=!preview&&on('TELEGRAM_ENABLED')&&allowDiscoveryNotifications;
+  const aiProvider=get('AI_PROVIDER','gemini');
+  if(aiProvider!=='gemini'&&aiProvider!=='openai')throw new Error('AI_PROVIDER must be gemini or openai');
+  const aiEnabled=!preview&&(aiProvider==='gemini'
+    ? on('AI_ENABLED')||on('GEMINI_ENABLED')
+    : on('AI_ENABLED'));
+  const telegram=!preview&&on('TELEGRAM_ENABLED')&&allowDiscoveryNotifications;
   const safeEmailTest=!preview&&on('SAFE_OWNER_EMAIL_TEST')&&!requalificationRun;
-  if(gemini&&(!get('GEMINI_API_KEY')||!get('GEMINI_MODEL')||!on('GEMINI_FREE_TIER_CONFIRMED')||!on('GEMINI_DATA_USE_APPROVED')))throw new Error('Complete approved Gemini settings first');
+  const aiApiKey=aiProvider==='gemini'?(get('AI_API_KEY')||get('GEMINI_API_KEY')):get('AI_API_KEY');
+  const aiModel=aiProvider==='gemini'?(get('AI_MODEL')||get('GEMINI_MODEL')):get('AI_MODEL');
+  const aiBaseUrl=get('AI_API_BASE_URL','https://api.openai.com/v1');
+  if(aiEnabled&&aiProvider==='gemini'&&(!aiApiKey||!aiModel||!on('GEMINI_FREE_TIER_CONFIRMED')||!on('GEMINI_DATA_USE_APPROVED')))throw new Error('Complete approved Gemini settings first');
+  if(aiEnabled&&aiProvider==='openai'&&(!aiApiKey||!aiModel||!on('AI_DATA_USE_APPROVED')))throw new Error('Set AI_API_KEY, AI_MODEL and AI_DATA_USE_APPROVED=true before using the OpenAI-compatible provider');
+  if(aiEnabled&&aiProvider==='openai')openAICompletionEndpoint(aiBaseUrl);
   if(telegram&&(!/^\d+:[\w-]+$/.test(get('TELEGRAM_BOT_TOKEN'))||!/^\d+$/.test(get('TELEGRAM_OWNER_CHAT_ID'))||get('TELEGRAM_OWNER_CHAT_ID')!==get('TELEGRAM_OWNER_USER_ID')))throw new Error('Private Telegram owner settings missing or mismatched');
   const limit=Number(get('EXTERNAL_LEADS_BATCH_SIZE','5'));if(!Number.isInteger(limit)||limit<1||limit>5)throw new Error('Batch must be 1–5');
-  const file=preview?'data/external-preview.json':gemini?'data/external-gemini.json':'data/external-pipeline.json';
+  const file=preview?'data/external-preview.json':aiEnabled?`data/external-${aiProvider}.json`:'data/external-pipeline.json';
   await mkdir('data',{recursive:true});await mkdir('outputs/external',{recursive:true});
   const lock=await open(file+'.lock','wx');
   try{
@@ -213,18 +223,21 @@ async function main(){
       if(request?.headers)throw new Error('No token may be sent to HN');return network.json(url);
     }};
     const config=configSchema.parse({ownerUserId:get('TELEGRAM_OWNER_USER_ID','local-owner'),ownerChatId:get('TELEGRAM_OWNER_CHAT_ID','local-owner')});
-    const engine=new Engine(store,config,undefined,gemini?input=>{
+    const engine=new Engine(store,config,undefined,aiEnabled?input=>{
       if (input.discovery_context) {
-        const res = classifyGeminiDiscovery(network, input.discovery_context, {
+        const res = classifyDiscoveryAI(network, input.discovery_context, {
           enabled: true,
-          freeTierConfirmed: true,
+          provider: aiProvider,
+          freeTierConfirmed: aiProvider==='gemini',
           dataUseApproved: true,
-          apiKey: get('GEMINI_API_KEY'),
-          model: get('GEMINI_MODEL'),
+          apiKey: aiApiKey,
+          model: aiModel,
+          baseUrl: aiBaseUrl,
         });
-        return { discoverySignals: res.signals, warning: res.warning };
+        return { discoverySignals: res.signals, warning: res.warning, method: res.method };
       }
-      return classifyGemini(network,input,{enabled:true,freeTierConfirmed:true,dataUseApproved:true,apiKey:get('GEMINI_API_KEY'),model:get('GEMINI_MODEL')});
+      if(aiProvider==='gemini')return classifyGemini(network,input,{enabled:true,freeTierConfirmed:true,dataUseApproved:true,apiKey:aiApiKey,model:aiModel});
+      return {warning:'OpenAI-compatible extraction is limited to discovery; local rules used'};
     }:undefined);
     let requalified=0,requalificationSkipped=0;
     let result:{imported:number;duplicates:number;invalid:number;nextOffset:number};
@@ -289,7 +302,7 @@ async function main(){
     await save();await writeFile('outputs/external/review-preview.json',JSON.stringify(alerts,null,2));
     console.log(JSON.stringify({mode:preview?'DRY RUN — real reads, local rules, preview only':requalificationRun?'LOCAL REQUALIFICATION — NOTIFICATIONS SUPPRESSED':`LOCAL ONE-SHOT — ${qualificationMode.toUpperCase()}`,...result,requalified,requalification_skipped_missing_context:requalificationSkipped,
       total:store.leads().length,pending:store.leads().filter(l=>l.status==='PENDING_APPROVAL').length,
-      gemini_attempted:gemini,methods:store.leads().map(l=>({id:l.lead_id,method:l.method,warning:l.extractionWarning})),
+      ai_attempted:aiEnabled,ai_provider:aiProvider,gemini_attempted:aiEnabled&&aiProvider==='gemini',methods:store.leads().map(l=>({id:l.lead_id,method:l.method,warning:l.extractionWarning})),
       telegram:requalificationRun?'suppressed during requalification':qualificationMode==='shadow'?'suppressed by shadow mode':telegram?'owner preview notifications + executive summary':'local payloads only',
       telegram_summary:summaryStatus,
       email_test:emailTest,

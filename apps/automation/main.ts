@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {externalOrigin, pullExternalLeads} from './external-leads';
+import {pullLocalBusinesses, saveLocalBusinessFollowup} from './local-business-sync';
 import { configSchema, inputSchema, dedupKey, hash } from "../../packages/core/model";
 import { assess } from "../../packages/core/scoring";
 import { inboundToLead, verifyEnvelope } from "../../packages/core/intake";
@@ -14,7 +15,8 @@ import {
 } from "../../packages/core/workflow";
 import {
   classifyGemini,
-  classifyGeminiDiscovery,
+  classifyDiscoveryAI,
+  openAICompletionEndpoint,
   planEmailGemini,
   gmailToLead,
   hnSources,
@@ -100,9 +102,17 @@ const http: Http = {
   json(url: string, request: HttpRequest = {}) {
     if (dry()) throw new Error("Dry-run mode blocks external HTTP calls");
     const standardAllowed = /^https:\/\/(api\.telegram\.org|generativelanguage\.googleapis\.com|hacker-news\.firebaseio\.com)\//.test(url);
-    const externalAllowed = !standardAllowed && enabled('EXTERNAL_LEADS_ENABLED') &&
-      url.startsWith(externalOrigin(setting('EXTERNAL_LEADS_API_ORIGIN')) + '/leads?');
-    if (!standardAllowed && !externalAllowed)
+    let externalAllowed = false;
+    if (!standardAllowed && (enabled('EXTERNAL_LEADS_ENABLED') || enabled('LOCAL_BUSINESS_SYNC_ENABLED'))) {
+      const externalBase = externalOrigin(setting('EXTERNAL_LEADS_API_ORIGIN'));
+      const externalPath = url.startsWith(externalBase) ? url.slice(externalBase.length) : "";
+      externalAllowed = externalPath.startsWith('/leads?') || /^\/leads\/[1-9]\d*$/.test(externalPath);
+    }
+    let aiAllowed = false;
+    if (!standardAllowed && !externalAllowed && discoveryAIEnabled() && setting("AI_PROVIDER", "gemini") === "openai") {
+      aiAllowed = url === openAICompletionEndpoint(setting("AI_API_BASE_URL", "https://api.openai.com/v1"));
+    }
+    if (!standardAllowed && !externalAllowed && !aiAllowed)
       throw new Error("HTTP host not allowed");
     const attempts =
       request.retrySafe === false || request.method === "post" ? 1 : 3;
@@ -154,20 +164,24 @@ function runtime() {
     maxAgeDays: integer("MAX_AGE_DAYS", 30, 1, 365),
   });
   const engine = new Engine(store, config, { now }, (input) => {
-    if (dry() || !enabled("GEMINI_ENABLED"))
-      return { warning: "Gemini disabled; local rules used" };
-    spend("gemini", integer("DAILY_GEMINI_LIMIT", 10, 1, 100));
     if (input.discovery_context) {
-      const extraction = classifyGeminiDiscovery(
+      if (dry() || !discoveryAIEnabled())
+        return { warning: "AI disabled; local rules used" };
+      spend("ai", integer("DAILY_AI_LIMIT", 10, 1, 100));
+      const extraction = classifyDiscoveryAI(
         http,
         input.discovery_context,
-        aiOptions(),
+        discoveryAIOptions(),
       );
       return {
         discoverySignals: extraction.signals,
         warning: extraction.warning,
+        method: extraction.method,
       };
     }
+    if (dry() || !enabled("GEMINI_ENABLED"))
+      return { warning: "Gemini disabled; local rules used" };
+    spend("gemini", integer("DAILY_GEMINI_LIMIT", 10, 1, 100));
     return classifyGemini(http, input, aiOptions());
   });
   const outbox=new SheetOutbox(store);
@@ -177,6 +191,21 @@ function runtime() {
 function hex(bytes:number[]){return bytes.map(b=>(b&255).toString(16).padStart(2,'0')).join('');}
 function digest(value:string){return hex(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,value,Utilities.Charset.UTF_8));}
 function aiOptions(){return {enabled:enabled('GEMINI_ENABLED'),freeTierConfirmed:enabled('GEMINI_FREE_TIER_CONFIRMED'),dataUseApproved:enabled('GEMINI_DATA_USE_APPROVED'),apiKey:setting('GEMINI_API_KEY'),model:setting('GEMINI_MODEL')};}
+const discoveryAIEnabled=()=>setting('AI_PROVIDER','gemini')==='gemini'
+  ? enabled('AI_ENABLED')||enabled('GEMINI_ENABLED')
+  : enabled('AI_ENABLED');
+function discoveryAIOptions(){
+  const provider=setting('AI_PROVIDER','gemini');
+  return {
+    enabled:discoveryAIEnabled(),
+    provider,
+    freeTierConfirmed:provider==='gemini'&&enabled('GEMINI_FREE_TIER_CONFIRMED'),
+    dataUseApproved:provider==='gemini'?enabled('GEMINI_DATA_USE_APPROVED'):enabled('AI_DATA_USE_APPROVED'),
+    apiKey:provider==='gemini'?(setting('AI_API_KEY')||setting('GEMINI_API_KEY')):setting('AI_API_KEY'),
+    model:provider==='gemini'?(setting('AI_MODEL')||setting('GEMINI_MODEL')):setting('AI_MODEL'),
+    baseUrl:setting('AI_API_BASE_URL','https://api.openai.com/v1'),
+  };
+}
 export function doGet(){return ContentService.createTextOutput(JSON.stringify({ok:true,service:'LeadFlow intake',version:2})).setMimeType(ContentService.MimeType.JSON);}
 export function connectTelegramOwner(){return locked(()=>{
   deadline=Date.now()+20000;const token=setting('TELEGRAM_BOT_TOKEN');if(dry()||!/^\d+:[\w-]+$/.test(token))throw new Error('Save a valid BotFather token and set DRY_RUN=false first');
@@ -354,9 +383,9 @@ export function setup() {
     const store = new SheetStore(new GasTables(book));
     store.upsert("Settings", "key", {
       key: "schema_version",
-      value: "2",
+      value: "3",
       notes:
-        "Engine tables use immutable IDs. Use menu actions; record_json is authoritative.",
+        "Engine tables use immutable IDs. Local Businesses is a separate manual-outreach queue; record_json is authoritative for Leads.",
     });
     store.upsert("Settings", "key", {
       key: "configuration",
@@ -367,7 +396,7 @@ export function setup() {
     book.getSheetByName("Leads")?.hideColumns(tableHeaders.Leads.length);
     updateDashboard(store);
     try{onOpen();}catch{/* The editor can run setup before a Sheet UI is open. Reload the Sheet to attach its menu. */}
-    return "Schema v2 ready. Original workbook tabs preserved. No network calls or triggers installed.";
+    return "Schema v3 ready. Original workbook tabs preserved. No network calls or triggers installed.";
   });
 }
 export function onOpen() {
@@ -378,6 +407,8 @@ export function onOpen() {
     .addItem("Import ManualInbox", "importManualInbox")
     .addItem("Import legacy Leads CRM", "importLegacyCRM")
     .addSeparator()
+    .addItem("Sync local business prospects", "syncLocalBusinessProspects")
+    .addItem("Save selected local business follow-up", "saveSelectedLocalBusinessFollowup")
     .addItem("Run one bounded cycle", "tick")
     .addItem("Update selected lead", "updateSelectedLead")
     .addItem("Reprocess selected lead", "reprocessSelectedLead")
@@ -389,6 +420,58 @@ export function onOpen() {
     .addItem("Install 10-minute trigger", "installTriggers")
     .addItem("Remove triggers", "removeTriggers")
     .addToUi();
+}
+export function syncLocalBusinessProspects() {
+  return locked(() => {
+    if (dry()) throw new Error("Set DRY_RUN=false before syncing local-business records");
+    if (!enabled("LOCAL_BUSINESS_SYNC_ENABLED")) throw new Error("Set LOCAL_BUSINESS_SYNC_ENABLED=true to enable the manual sync");
+    deadline = Date.now() + integer("MAX_RUN_SECONDS", 45, 10, 120) * 1000;
+    const store = new SheetStore(new GasTables(spreadsheet()));
+    let result: ReturnType<typeof pullLocalBusinesses> | undefined;
+    runSource("local-business-sync", store, () => {
+      result = pullLocalBusinesses(
+        http,
+        { origin: setting("EXTERNAL_LEADS_API_ORIGIN"), token: setting("EXTERNAL_LEADS_API_TOKEN") },
+        (row) => store.upsertLocalBusiness(row),
+        guard,
+      );
+      return {
+        imported: result.imported,
+        duplicates: result.duplicates,
+        invalid: result.invalid + result.excluded,
+      };
+    });
+    if (!result) return "Local-business sync failed; inspect SourceRuns for the safe error code.";
+    SpreadsheetApp.flush();
+    return `Local Businesses updated: ${result.imported} new, ${result.duplicates} refreshed, ${result.excluded} Google Places records excluded, ${result.invalid} invalid.`;
+  });
+}
+export function saveSelectedLocalBusinessFollowup() {
+  return locked(() => {
+    if (dry()) throw new Error("Set DRY_RUN=false before saving local-business campaign status");
+    if (!enabled("LOCAL_BUSINESS_SYNC_ENABLED")) throw new Error("Set LOCAL_BUSINESS_SYNC_ENABLED=true to enable the manual sync");
+    deadline = Date.now() + integer("MAX_RUN_SECONDS", 45, 10, 120) * 1000;
+    const book = spreadsheet();
+    const tab = book.getActiveSheet();
+    if (!tab || tab.getName() !== "Local Businesses") throw new Error("Select a row in the Local Businesses tab first");
+    const rowIndex = tab.getActiveRange()?.getRow();
+    if (!rowIndex || rowIndex < 2) throw new Error("Select a Local Businesses data row");
+    const values = tab.getRange(rowIndex, 1, 1, tableHeaders["Local Businesses"].length).getValues()[0];
+    const record = Object.fromEntries(tableHeaders["Local Businesses"].map((header, index) => [header, values[index]]));
+    const store = new SheetStore(new GasTables(book));
+    let result: ReturnType<typeof saveLocalBusinessFollowup> | undefined;
+    runSource("local-business-outreach-update", store, () => {
+      result = saveLocalBusinessFollowup(
+        http,
+        { origin: setting("EXTERNAL_LEADS_API_ORIGIN"), token: setting("EXTERNAL_LEADS_API_TOKEN") },
+        { apiId: String(record.api_id ?? ""), status: String(record.campaign_status ?? ""), notes: String(record.campaign_notes ?? "") },
+        guard,
+      );
+      return { imported: 1, duplicates: 0, invalid: 0 };
+    });
+    if (!result) return "Follow-up update failed; inspect SourceRuns for the safe error code.";
+    return `Saved local-business status ${result.status} to API record ${result.apiId}.`;
+  });
 }
 export function installTriggers() {
   return locked(() => {

@@ -246,6 +246,7 @@ export class Engine {
       signals?: Signals;
       discoverySignals?: DiscoverySignals;
       warning?: string;
+      method?: "gemini" | "openai-compatible";
     },
   ) {}
   log(
@@ -396,6 +397,7 @@ export class Engine {
 
     let extractorWarning = "";
     let usedDiscoveryExtraction = false;
+    let extractionMethod: "gemini" | "openai-compatible" = "gemini";
     if (prefilterResult.pass && this.extractor && !injectionPattern.test(canonical)) {
       try {
         const extResult = this.extractor(input);
@@ -407,6 +409,7 @@ export class Engine {
           );
           ruleEvidence = merged.evidence;
           usedDiscoveryExtraction = merged.used;
+          extractionMethod = extResult.method ?? "gemini";
         }
         if (extResult?.warning) extractorWarning = extResult.warning;
       } catch {
@@ -420,7 +423,7 @@ export class Engine {
       now,
       policy,
     );
-    if (usedDiscoveryExtraction) audit.method = "gemini";
+    if (usedDiscoveryExtraction) audit.method = extractionMethod;
     if (extractorWarning) {
       audit.warnings.push(extractorWarning.slice(0, 240));
     } else if (!prefilterResult.pass && prefilterResult.reason) {

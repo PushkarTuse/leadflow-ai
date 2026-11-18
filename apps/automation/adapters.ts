@@ -17,7 +17,7 @@ import {
 } from "../../packages/core/qualification";
 
 export interface HttpRequest {
-  method?: "get" | "post";
+  method?: "get" | "post" | "patch";
   headers?: Record<string, string>;
   body?: unknown;
   retrySafe?: boolean;
@@ -165,6 +165,7 @@ export function classifyGeminiDiscovery(
   ].join("\u001f"));
   const cacheKey = [
     sourceThreadHash,
+    "gemini",
     options.model,
     qualificationVersions.schema_version,
     qualificationVersions.rules_version,
@@ -233,6 +234,164 @@ export function classifyGeminiDiscovery(
       warning: discoveryFailureWarning(error),
     };
   }
+}
+
+const openAIResponse = z.object({
+  choices: z.array(z.object({
+    message: z.object({ content: z.string() }),
+  })).min(1),
+});
+
+export function openAICompletionEndpoint(value = "https://api.openai.com/v1"): string {
+  const match = /^https:\/\/([^/?#]+)(\/[^?#]*)?$/i.exec(value);
+  if (!match) throw new Error("Invalid AI_API_BASE_URL");
+  const authority = match[1];
+  const path = match[2] || "";
+  const host = authority.toLowerCase();
+  const privateIpv4 =
+    /^(?:10\.|127\.|169\.254\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(host);
+  const validHost =
+    /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(host);
+  if (
+    !validHost ||
+    host === "localhost" ||
+    /\.(?:localhost|local|internal)$/i.test(host) ||
+    privateIpv4 ||
+    !/^\/(?:[a-zA-Z0-9._~-]+(?:\/[a-zA-Z0-9._~-]+)*)?\/?$/.test(path) ||
+    path.split("/").some((part) => part === "." || part === "..")
+  ) {
+    throw new Error("AI_API_BASE_URL must be a public HTTPS origin/path without credentials, port, query or fragment");
+  }
+  return `https://${host}${path.replace(/\/+$/, "")}/chat/completions`;
+}
+
+function openAIFailureWarning(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  const status = Number(message.match(/\bHTTP\s+(\d{3})\b/)?.[1] || 0);
+  if (status === 401 || status === 403) return `AI provider authentication/access failure (HTTP ${status}); deterministic rules used`;
+  if (status === 404) return "AI model or compatible endpoint not found (HTTP 404); verify AI_MODEL and AI_API_BASE_URL; deterministic rules used";
+  if (status === 429) return "AI provider quota/rate limit (HTTP 429); deterministic rules used";
+  if (status === 402) return "AI provider rejected the request for billing/credit reasons (HTTP 402); deterministic rules used";
+  if (status >= 500) return `AI provider service error (HTTP ${status}); deterministic rules used`;
+  if (error instanceof SyntaxError || error instanceof z.ZodError) return "AI provider returned invalid JSON/schema; deterministic rules used";
+  if (message.includes("Evidence quote not found")) return "AI provider returned an unsupported evidence quote; deterministic rules used";
+  const networkCode = message.match(/\b(ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET)\b/)?.[1];
+  return networkCode
+    ? `AI provider transport failure (${networkCode}); deterministic rules used`
+    : "AI provider failure; deterministic rules used";
+}
+
+/** OpenAI-compatible discovery extraction; all signals still pass the same quote/schema validator. */
+export function classifyOpenAICompatibleDiscovery(
+  http: Http,
+  context: DiscoveryContext,
+  options: {
+    enabled: boolean;
+    dataUseApproved: boolean;
+    apiKey: string;
+    model: string;
+    baseUrl?: string;
+  },
+): { signals?: DiscoverySignals; warning?: string; method?: "openai-compatible" } {
+  if (!options.enabled) return { warning: "AI disabled; local rules used" };
+  if (!options.dataUseApproved) return { warning: "AI provider data-use approval missing; local rules used" };
+  if (!options.apiKey || !/^[\w.-]+$/.test(options.apiKey) || options.apiKey.length > 500) {
+    return { warning: "AI_API_KEY missing or invalid; local rules used" };
+  }
+  if (!options.model || !/^[a-zA-Z0-9._:/-]{1,120}$/.test(options.model)) {
+    return { warning: "AI_MODEL missing or invalid; local rules used" };
+  }
+
+  const title = context.original_title || "";
+  const body = context.decoded_text || "";
+  const canonical = `${title}\n\n${body}`;
+  if (canonical.length > 10000) return { warning: "Input too long for discovery extraction; rules used" };
+
+  let endpoint: string;
+  try {
+    endpoint = openAICompletionEndpoint(options.baseUrl);
+  } catch {
+    return { warning: "AI_API_BASE_URL is invalid; local rules used" };
+  }
+  const sourceThreadHash = hash([
+    context.source_hash,
+    title,
+    context.parent_id || "none",
+    context.thread_id || "none",
+    context.thread_title || "none",
+    context.thread_date || "none",
+  ].join("\u001f"));
+  const cacheKey = [
+    sourceThreadHash,
+    "openai-compatible",
+    endpoint,
+    options.model,
+    qualificationVersions.schema_version,
+    qualificationVersions.rules_version,
+    qualificationVersions.prompt_version,
+    qualificationVersions.capability_list_version,
+    qualificationVersions.policy_version,
+  ].join(":");
+  const cached = discoveryExtractionCache.get(cacheKey);
+  if (cached) return { signals: cached, method: "openai-compatible" };
+
+  const threadContext = context.thread_id
+    ? `Thread context: thread=${context.thread_id}, parent=${context.parent_id || "none"}\n\n`
+    : "";
+  try {
+    const result = openAIResponse.parse(http.json(endpoint, {
+      method: "post",
+      headers: { Authorization: `Bearer ${options.apiKey}` },
+      retrySafe: false,
+      body: {
+        model: options.model,
+        messages: [
+          {
+            role: "system",
+            content: `${discoveryExtractionPrompt}\nReturn JSON matching this schema exactly:\n${JSON.stringify(discoveryExtractionJsonSchema)}`,
+          },
+          {
+            role: "user",
+            content: JSON.stringify({ DATA: `${threadContext}${canonical}` }),
+          },
+        ],
+        temperature: 0,
+        max_tokens: 800,
+        response_format: { type: "json_object" },
+      },
+    }));
+    const text = result.choices[0].message.content;
+    if (text.length > 12000) throw new Error("Oversized classification");
+    const signals = validateDiscoveryExtraction(text, context);
+    discoveryExtractionCache.set(cacheKey, signals);
+    return { signals, method: "openai-compatible" };
+  } catch (error) {
+    return { warning: openAIFailureWarning(error) };
+  }
+}
+
+export function classifyDiscoveryAI(
+  http: Http,
+  context: DiscoveryContext,
+  options: {
+    enabled: boolean;
+    provider?: string;
+    freeTierConfirmed: boolean;
+    dataUseApproved: boolean;
+    apiKey: string;
+    model: string;
+    baseUrl?: string;
+  },
+): { signals?: DiscoverySignals; warning?: string; method?: "gemini" | "openai-compatible" } {
+  const provider = options.provider || "gemini";
+  if (provider === "gemini") {
+    const result = classifyGeminiDiscovery(http, context, options);
+    return { ...result, ...(result.signals ? { method: "gemini" as const } : {}) };
+  }
+  if (provider === "openai") {
+    return classifyOpenAICompatibleDiscovery(http, context, options);
+  }
+  return { warning: "AI_PROVIDER must be gemini or openai; local rules used" };
 }
 
 const gmailPart: z.ZodType<GmailPart> = z.lazy(() =>

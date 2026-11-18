@@ -74,11 +74,13 @@ function harness() {
   const tabs = new Map<string, FakeSheet>();
   const calls: { method: string; body: Record<string, unknown> }[] = [];
   let updates: unknown[] = [];
-  let sourceReply: ((url:string)=>unknown)|undefined;
+  let sourceReply: ((url:string,method?:string)=>unknown)|undefined;
   let prompt = "";
   let uuid = 0;
   let locked = false;
+  let activeSheet = "Leads";
   const sent:string[]=[];
+  const externalCalls:{url:string;method:string}[]=[];
   let committedOutbox:unknown[][]=[];
   const menu = {
     addItem: () => menu,
@@ -93,7 +95,7 @@ function harness() {
       tabs.set(name, tab);
       return tab;
     },
-    getActiveSheet: () => tabs.get("Leads"),
+    getActiveSheet: () => tabs.get(activeSheet),
   };
   const context = vm.createContext({
     console: { log: () => {} },
@@ -159,13 +161,14 @@ function harness() {
       },
     },
     UrlFetchApp: {
-      fetch: (url: string, request: { payload: string }) => {
+      fetch: (url: string, request: { payload?: string; method?: string }) => {
         if(sourceReply && !url.startsWith('https://api.telegram.org/')) {
-          const data=sourceReply(url);
+          externalCalls.push({url,method:request.method||'get'});
+          const data=sourceReply(url,request.method);
           return {getResponseCode:()=>200,getContentText:()=>JSON.stringify(data)};
         }
         const method = url.split("/").pop()!;
-        const body = JSON.parse(request.payload) as Record<string, unknown>;
+        const body = JSON.parse(request.payload ?? "{}") as Record<string, unknown>;
         calls.push({ method, body });
         let result: unknown;
         if (method === "getUpdates") {
@@ -199,7 +202,9 @@ function harness() {
     run,
     records,
     sent,
-    setSourceReply:(reply:(url:string)=>unknown)=>{sourceReply=reply;},
+    setSourceReply:(reply:(url:string,method?:string)=>unknown)=>{sourceReply=reply;},
+    setActiveSheet:(name:string)=>{activeSheet=name;},
+    externalCalls,
     setUpdates: (x: unknown[]) => {
       updates = x;
     },
@@ -241,6 +246,60 @@ describe("built Apps Script runtime with mocked Google/Telegram services", () =>
     expect(h.records()).toHaveLength(1);
     expect(h.records()[0].qualification).toBeDefined();
     expect(h.calls.some(c=>c.method==='sendMessage')).toBe(false);
+  });
+  it('uses the OpenAI-compatible provider for discovery only and keeps notifications shadowed',()=>{
+    const h=harness();h.run('setup');
+    for(const [k,v] of Object.entries({DRY_RUN:'false',EXTERNAL_LEADS_ENABLED:'true',
+      EXTERNAL_LEADS_API_ORIGIN:'https://scout.example.com',EXTERNAL_LEADS_API_TOKEN:'x'.repeat(40),
+      AI_ENABLED:'true',AI_PROVIDER:'openai',AI_API_KEY:'sk-test-key',AI_MODEL:'test-model',
+      AI_DATA_USE_APPROVED:'true',FREELANCE_QUALIFICATION_MODE:'shadow',
+      TELEGRAM_ENABLED:'true',TELEGRAM_BOT_TOKEN:'123:token',TELEGRAM_OWNER_CHAT_ID:'99',TELEGRAM_OWNER_USER_ID:'99'}))h.props.set(k,v);
+    const foundAt=new Date().toISOString();
+    const text='SEEKING FREELANCER: We need an independent contractor to build a React checkout. Budget: $3,000 fixed. Deadline next month.';
+    const signals={
+      intent:'BUYER',lead_type:'CONTRACT_ROLE',requester_type:'COMPANY',engagement_type:'INDEPENDENT_CONTRACT',
+      budget_signal:{kind:'AMOUNT_STATED',minimum:3000,maximum:3000,currency:'USD',unit:'PROJECT'},
+      timeline_signal:'Deadline next month',required_skills:['React'],seniority:'UNKNOWN',
+      location_or_remote_policy:null,contact_method:{type:'UNKNOWN',value:null},rejection_reason:null,
+      evidence_quotes:[
+        {field:'intent',quote:'We need an independent contractor'},
+        {field:'engagement',quote:'independent contractor'},
+        {field:'payment',quote:'Budget: $3,000 fixed'},
+        {field:'scope',quote:'build a React checkout'},
+        {field:'skill',quote:'React checkout'},
+      ],
+    };
+    h.setSourceReply(url=>{
+      if(url.includes('/leads?'))return {ok:true,total:1,count:1,offset:0,leads:[{
+        source:'hackernews',source_id:'12345',category:'freelance_request',name:'founder',
+        title:'SEEKING FREELANCER',url:'https://news.ycombinator.com/item?id=12345',found_at:foundAt}]};
+      if(url.endsWith('/item/12345.json'))return {id:12345,type:'comment',parent:100,time:Math.floor(Date.now()/1000),text};
+      if(url.endsWith('/item/100.json'))return {id:100,type:'job',title:'Who is hiring? November',time:Math.floor(Date.now()/1000)};
+      if(url.endsWith('/chat/completions'))return {choices:[{message:{content:JSON.stringify(signals)}}]};
+      return {};
+    });
+    h.run('tick');
+    expect(h.records()).toHaveLength(1);
+    expect(h.externalCalls.map(call=>call.url)).toContain('https://api.openai.com/v1/chat/completions');
+    expect(h.records()[0].qualification_audit.method).toBe('openai-compatible');
+    expect(h.calls.some(call=>call.method==='sendMessage')).toBe(false);
+  });
+  it('keeps inbound Gemini extraction enabled when OpenAI is selected for discovery',()=>{
+    const h=harness();h.run('setup');
+    for(const [k,v] of Object.entries({DRY_RUN:'false',AI_ENABLED:'true',AI_PROVIDER:'openai',
+      GEMINI_ENABLED:'true',GEMINI_API_KEY:'gemini-test-key',GEMINI_MODEL:'gemini-3.5-flash-lite',
+      GEMINI_FREE_TIER_CONFIRMED:'true',GEMINI_DATA_USE_APPROVED:'true'}))h.props.set(k,v);
+    h.setSourceReply(url=>{
+      expect(url).toContain('generativelanguage.googleapis.com');
+      return {candidates:[{content:{parts:[{text:JSON.stringify({
+        hiring_evidence:'We need a React website developer',
+        skill_evidence:[{skill:'react',quote:'React'}],timeline_evidence:null,
+      })}]}}]};
+    });
+    h.setPrompt(JSON.stringify(fixtures(new Date().toISOString())[0]));
+    h.run('addManualLead');
+    h.run('tick');
+    expect(h.externalCalls.some(call=>call.url.includes('generativelanguage.googleapis.com'))).toBe(true);
   });
   it('preserves full diagnostic logs while continuing beyond the operational row limit',()=>{
     const h=harness();h.run('setup');const log=h.tabs.get('SourceRuns')!;
@@ -286,6 +345,52 @@ describe("built Apps Script runtime with mocked Google/Telegram services", () =>
     expect(h.tabs.get("Projects")?.rows[0][0]).toBe("Original project data");
     expect(h.tabs.get("Settings")?.rows).toHaveLength(3);
     expect(h.tabs.get("SourceRuns")?.rows[1][4]).toBe("DRY_RUN");
+  });
+  it("syncs local businesses into their own manual queue without entering Leads or notifications", () => {
+    const h = harness();
+    h.run("setup");
+    for (const [key, value] of Object.entries({
+      DRY_RUN: "false",
+      LOCAL_BUSINESS_SYNC_ENABLED: "true",
+      EXTERNAL_LEADS_API_ORIGIN: "https://scout.example.com",
+      EXTERNAL_LEADS_API_TOKEN: "x".repeat(40),
+    })) h.props.set(key, value);
+    const local = {
+      id: 21, source: "osm", source_id: "node/21", category: "local_business",
+      name: "Kothrud Dental", title: "dentist", city: "Pune", phone: "+91 98765 43210",
+      website: null, pagespeed_mobile: null, rating: null, rating_count: null,
+      score: 90, signal: "No website listed", url: "https://www.openstreetmap.org/node/21",
+      status: "new", notes: null,
+    };
+    const google = { ...local, id: 22, source: "google_nearby", source_id: "place/22" };
+    h.setSourceReply((url) => {
+      expect(url).toContain("/leads?category=local_business");
+      return { ok: true, total: 2, count: 2, offset: 0, leads: [local, google] };
+    });
+
+    expect(h.run("syncLocalBusinessProspects")).toContain("1 new");
+    const queue = h.tabs.get("Local Businesses")!;
+    expect(queue.rows).toHaveLength(2);
+    expect(queue.rows[1][queue.rows[0].indexOf("name")]).toBe("Kothrud Dental");
+    expect(h.records()).toHaveLength(0);
+    expect(h.calls).toHaveLength(0);
+    expect(h.sent).toHaveLength(0);
+
+    queue.rows[1][queue.rows[0].indexOf("campaign_status")] = "contacted";
+    queue.rows[1][queue.rows[0].indexOf("campaign_notes")] = "Call next week";
+    expect(h.run("syncLocalBusinessProspects")).toContain("1 refreshed");
+    expect(queue.rows[1][queue.rows[0].indexOf("campaign_status")]).toBe("contacted");
+    expect(queue.rows[1][queue.rows[0].indexOf("campaign_notes")]).toBe("Call next week");
+    h.setActiveSheet("Local Businesses");
+    h.setSourceReply((url, method) => {
+      expect(url).toContain("/leads/21");
+      return method === "patch" ? { ok: true } : { ok: true, lead: { category: "local_business", source: "osm" } };
+    });
+    expect(h.run("saveSelectedLocalBusinessFollowup")).toContain("Saved local-business status contacted");
+    expect(h.externalCalls.slice(-2).map((call) => call.method)).toEqual(["get", "patch"]);
+    expect(h.records()).toHaveLength(0);
+    expect(h.calls).toHaveLength(0);
+    expect(h.sent).toHaveLength(0);
   });
   it("processes a full owner-only notification and approval through the real scheduler code", () => {
     const h = harness();

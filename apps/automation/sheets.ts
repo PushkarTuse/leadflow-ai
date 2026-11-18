@@ -69,6 +69,32 @@ export const tableHeaders: Record<string, string[]> = {
   EngineDashboard: ["metric", "value", "updated_at"],
   IntakeReceipts: ["submission_id", "lead_id", "payload_hash", "received_at", "processed_at", "status"],
   EmailOutbox: ["outbox_id", "lead_id", "recipient", "subject", "body", "content_hash", "nonce", "chat_id", "message_id", "expires_at", "status", "created_at", "updated_at", "approved_by", "approved_at", "gmail_message_id", "error_code", "draft_method"],
+  "Local Businesses": [
+    "business_key",
+    "api_id",
+    "source",
+    "source_id",
+    "name",
+    "category",
+    "title",
+    "city",
+    "country",
+    "address",
+    "phone",
+    "email",
+    "website",
+    "website_status",
+    "pagespeed_mobile",
+    "rating",
+    "rating_count",
+    "score",
+    "signal",
+    "source_url",
+    "campaign_status",
+    "last_contacted_at",
+    "campaign_notes",
+    "synced_at",
+  ],
 };
 export interface TablePort {
   read(name: string): unknown[][];
@@ -131,6 +157,16 @@ export class SheetStore implements Store {
       ...leadRecord(l),
       record_json: JSON.stringify(l),
     });
+  }
+  upsertLocalBusiness(data: Record<string, unknown>) {
+    const current = this.records("Local Businesses").find((record) => record.business_key === data.business_key);
+    this.upsert("Local Businesses", "business_key", {
+      ...data,
+      campaign_status: current?.campaign_status || data.campaign_status || "new",
+      last_contacted_at: current?.last_contacted_at || data.last_contacted_at || "",
+      campaign_notes: current?.campaign_notes ?? data.campaign_notes ?? "",
+    });
+    return Boolean(current);
   }
   activity(e: Activity) {
     if (!this.records("ActivityLog").some((r) => r.event_id === e.event_id))

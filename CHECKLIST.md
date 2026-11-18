@@ -4,12 +4,13 @@
 
 | Area | Status | Evidence / remaining |
 |---|---|---|
-| Stages A–F: evidence, gates, scoring, persistence/routing and dashboard | Implemented locally | `npm test`: 161 passed; `npm run typecheck` passed. Dashboard distinguishes eligible, low, rejected, incomplete, quarantined and needs-requalification |
-| Stage D Gemini handoff | Implemented and exercised locally | Validated `discoverySignals` now reach Stage C; deterministic hard exclusions remain authoritative. Intermittent provider errors fall back to rules |
+| Stages A–F: evidence, gates, scoring, persistence/routing and dashboard | Implemented locally | Current `npm test`: 172 passed; `npm run typecheck` passed. Dashboard distinguishes eligible, low, rejected, incomplete, quarantined and needs-requalification |
+| Stage D provider handoff | Gemini exercised locally; OpenAI-compatible adapter covered by mocked tests | Validated signals from the selected provider reach Stage C; deterministic hard exclusions remain authoritative. Provider errors fall back to rules. No live OpenAI-compatible request has been verified |
 | Stage G: shadow/enforce | Implemented and tested locally; default `shadow` | Enforce routes only eligible MEDIUM/HIGH records with confidence >=0.85. Local Apps Script bundle built but **not redeployed**; live Script Properties/runtime are unverified |
 | Stage H documentation | Updated locally | Documentation records local behavior/evidence and clearly separates it from production deployment |
-| Local qualification snapshot | Verified 19 November | Upstream D1: 85 records (67 HN, 18 Arbeitnow). Dashboard state: 15 HN records (10 Gemini, 5 rules fallback); 15 rejected, 0 eligible |
+| Local qualification snapshot | Verified 19 November, before provider fallback work | Upstream D1: 85 records (67 HN, 18 Arbeitnow). Dashboard state: 15 HN records (10 Gemini, 5 rules fallback); 15 rejected, 0 eligible |
 | Production rollout | Not verified | Stage G/H have not been pushed/deployed to Apps Script; the local leadflow-leads API is not yet hosted at a reachable HTTPS origin. Inbound website enquiries remain unchanged |
+| Separate local-business manual queue | Implemented and locally tested | New `Local Businesses` tab, manual sync and selected-row status/note push; no `Engine`, approval or notification path. Upstream CSV/Sheet exports exclude Google Places. Foursquare/HERE remain disabled stubs. Requires `setup()` schema v3 and reachable HTTPS API; not deployed |
 
 The importer requests the configured source newest-first; the current source is `hackernews`. HN “Who is hiring?” context, missing-title body evidence and seller-availability patterns strengthen job/seller rejection. Duplicate records are reused unless explicitly requalified. These results are a bounded local snapshot, not a guarantee that every future/non-classic job post is classified perfectly.
 

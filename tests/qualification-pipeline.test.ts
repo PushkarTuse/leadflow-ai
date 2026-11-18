@@ -111,6 +111,7 @@ describe("Stage E qualification routing and persistence", () => {
     };
     const engine = new Engine(new MemoryStore(), undefined, undefined, () => ({
       discoverySignals: extracted,
+      method: "openai-compatible",
     }));
     const lead = engine.ingest(
       discoveryInput(
@@ -120,7 +121,7 @@ describe("Stage E qualification routing and persistence", () => {
 
     expect(lead.qualification?.eligibility_state).toBe("ELIGIBLE");
     expect(lead.qualification?.required_skills).toContain("SvelteKit");
-    expect(lead.qualification_audit?.method).toBe("gemini");
+    expect(lead.qualification_audit?.method).toBe("openai-compatible");
   });
 
   it("does not let Gemini extraction override deterministic employment rejection", () => {
@@ -330,7 +331,7 @@ describe("Stage E qualification routing and persistence", () => {
       quality_score: 100,
     });
     expect(lead.qualification_audit).toMatchObject({
-      schema_version: "freelance.v1",
+      schema_version: "freelance.v2",
       rules_version: "rules.v1",
       prompt_version: "prompt.v1",
       policy_version: "policy.v1",

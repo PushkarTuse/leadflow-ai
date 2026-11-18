@@ -4,7 +4,7 @@
 
 `FREELANCE_QUALIFICATION_MODE` defaults to `shadow`. Shadow computes and persists qualification and audit data but suppresses discovery approval notifications. Enforce routes only `ELIGIBLE` MEDIUM/HIGH records with confidence >=0.85. Legacy records without qualification remain `NEEDS_REQUALIFICATION` and never notify. The inbound website enquiry and email-approval path is unchanged.
 
-Validated Gemini `discoverySignals` now flow into Stage C scoring; every model evidence quote is checked against source text, and deterministic hard exclusions remain authoritative. The upstream importer queries a configured single source newest-first (`sort=found_at&order=desc`); the current source is `hackernews`. HN “Who is hiring?” context, first non-empty post-body title evidence, and seller-availability patterns strengthen W-2, fixed-term contract, and seller-self-promotion classification. Clear independent freelance/project buyer requests remain eligible when all gates pass. Dashboard rows expose eligibility, priority, score/confidence, method, rejection reason and evidence. Do not refer to rejected or incomplete records as leads.
+Validated `discoverySignals` from the selected discovery provider now flow into Stage C scoring; every model evidence quote is checked against source text, and deterministic hard exclusions remain authoritative. Gemini is still supported; an opt-in OpenAI-compatible endpoint is available for discovery only. It does not change the inbound enquiry Gemini path or automatically try a second provider. The upstream importer queries a configured single source newest-first (`sort=found_at&order=desc`); the current source is `hackernews`. HN “Who is hiring?” context, first non-empty post-body title evidence, and seller-availability patterns strengthen W-2, fixed-term contract, and seller-self-promotion classification. Clear independent freelance/project buyer requests remain eligible when all gates pass. Dashboard rows expose eligibility, priority, score/confidence, method, rejection reason and evidence. Do not refer to rejected or incomplete records as leads.
 
 Local runner commands, from `D:\freelance_personal\leadflow-ai`:
 
@@ -31,11 +31,50 @@ $env:FREELANCE_QUALIFICATION_MODE = 'enforce'
 npm run external:run
 ```
 
-In shadow there are no discovery alerts. Enforce may write local eligible alert previews to `outputs/external/review-preview.json`; with Telegram and owner-email testing disabled, nothing is sent. Ensure the Gemini key and the owner's free-tier/data-use approvals are configured if testing live extraction. This local variable does not configure Apps Script Script Properties.
+In shadow there are no discovery alerts. Enforce may write local eligible alert previews to `outputs/external/review-preview.json`; with Telegram and owner-email testing disabled, nothing is sent. This local variable does not configure Apps Script Script Properties.
+
+To select an OpenAI-compatible provider for **discovery only**, set these in `.env.external` or the current PowerShell session. Use a model enabled for your provider account and approve sending source text to that provider before enabling extraction:
+
+```powershell
+$env:EXTERNAL_LEADS_ENABLED = 'true'
+$env:AI_ENABLED = 'true'
+$env:AI_PROVIDER = 'openai'
+$env:AI_API_KEY = '<provider-key>'
+$env:AI_MODEL = '<currently-enabled-model>'
+$env:AI_API_BASE_URL = 'https://api.openai.com/v1'
+$env:AI_DATA_USE_APPROVED = 'true'
+$env:TELEGRAM_ENABLED = 'false'
+$env:SAFE_OWNER_EMAIL_TEST = 'false'
+$env:FREELANCE_QUALIFICATION_MODE = 'shadow'
+npm run external:run
+```
+
+`AI_API_BASE_URL` may point to a compatible public HTTPS endpoint such as OpenRouter's API base. Private/local hosts and URL credentials, custom ports, query strings and fragments are rejected. The selected provider's valid structured extraction and exact source quotes still pass the same validator as Gemini; Stage C computes eligibility, score and confidence. HTTP/quota/billing/model/schema/evidence failures are reported safely and fall back to deterministic rules. The runner uses a separate `data/external-openai.json` state file. Do not use `--dry-run` when testing extraction because it disables AI. For Apps Script, set the equivalent Script Properties; rebuild/deploy is separate, and deployment has not been verified.
 
 The gates are intentionally conservative: source/freshness and safety checks precede seller/employment/unpaid exclusions; buyer direction, independent engagement, payment and scope are mandatory for eligibility. Classic HN employer posts and explicit freelancer availability reject unless clear independent buyer evidence supports the project. Non-classic or underspecified records may remain `REVIEW_INCOMPLETE` with `AMBIGUOUS_DIRECTION`. Arbeitnow is an employment job board and is not included in the current HN-only qualification pull.
 
-Gemini is optional. Invalid output, intermittent HTTP 503/transport failures, or quota errors fall back to deterministic rules with a safe execution warning. On 19 November, the local upstream database had 85 rows (67 HN, 18 Arbeitnow); `data/external-gemini.json` held 15 evaluated HN records (10 Gemini, 5 rules fallback; 15 rejected, 0 eligible). These are local results, not production delivery. Keep `.env.external` and `data/external-*.json` ignored and out of Git. The Stage G/H changes are local-only until pushed and the Apps Script bundle is deployed; the leadflow-leads API also needs reachable HTTPS hosting before Apps Script can access it.
+Gemini is optional. Invalid output, intermittent HTTP 503/transport failures, or quota errors fall back to deterministic rules with a safe execution warning. The OpenAI-compatible adapter is locally mocked, not verified against a live provider. On 19 November, before this adapter was added, the local upstream database had 85 rows (67 HN, 18 Arbeitnow); `data/external-gemini.json` held 15 evaluated HN records (10 Gemini, 5 rules fallback; 15 rejected, 0 eligible). These are local results, not production delivery. Keep `.env.external` and `data/external-*.json` ignored and out of Git. The Stage G/H changes are local-only until pushed and the Apps Script bundle is deployed; the leadflow-leads API also needs reachable HTTPS hosting before Apps Script can access it.
+
+## Separate local-business outreach queue
+
+The upstream API categorizes local prospects as `local_business`; they never enter the freelance `Leads` sheet or qualification/notification pipeline. An owner may export compatible non-Google records from the authenticated API with `GET /exports/local-businesses.csv`, or sync the top 200 score-ranked records into the dedicated **Local Businesses** tab from the LeadFlow menu. Run `setup()` once to create/update the schema-v3 tab. The menu sync is manual, requires `DRY_RUN=false`, `LOCAL_BUSINESS_SYNC_ENABLED=true`, and the existing API origin/token Script Properties; it does not run from the scheduled `tick`.
+
+The Sheet contains contact/site/PageSpeed fields plus campaign status, last-contacted date and notes. Re-sync refreshes source fields while preserving campaign tracking entered in the Sheet. It is an owner-operated manual phone/email research queue: this code does not contact businesses or generate freelancer approvals. **Save selected local business follow-up** pushes only the selected row's status/notes to D1 after a GET confirms the record is a non-Google `local_business`; the last-contacted date remains in Sheets. Apps Script needs a reachable HTTPS API; `127.0.0.1` cannot be accessed from Google's servers.
+
+For the Sheet sync, keep `EXTERNAL_LEADS_ENABLED=false` and set these Apps Script Script Properties only after the API is reachable:
+
+```text
+DRY_RUN=false
+LOCAL_BUSINESS_SYNC_ENABLED=true
+EXTERNAL_LEADS_API_ORIGIN=https://<your-api-host>
+EXTERNAL_LEADS_API_TOKEN=<private 32+ character token>
+TELEGRAM_ENABLED=false
+GMAIL_SEND_ENABLED=false
+```
+
+Run **LeadFlow → Sync local business prospects** in the Sheet. This explicit action reads from the API and writes only the Local Businesses tab/SourceRuns; it does not install a trigger or send a notification. To persist a manual status/note change, select that row and run **LeadFlow → Save selected local business follow-up**. Leave the feature flag false when not using the queue. Do not copy a local `dev-token` into a public deployment.
+
+Google Places source rows are deliberately excluded from the CSV and Sheet sync because the existing integration notes flag restrictions on storing/exporting Places content for CRM or outreach. The current upstream collector still stores the returned fields in D1; do not use that path for campaigns unless source terms and retention have been separately reviewed. OpenStreetMap requires attribution. Foursquare Places and HERE are currently disabled stubs even if their keys are set; Overture/Foursquare OS/MCA imports accept canonical JSON through `/import/:source`, but no file-extraction scripts are included.
 
 ## V3 website enquiries
 
@@ -87,7 +126,7 @@ Use the actual date and verified facts, not these sample dates. UTC timestamps a
 | Duplicate-looking source | Different URL or source ID for same opportunity | Review both, archive the redundant record. Fuzzy identity merging is intentionally not automatic |
 | Sheet counts differ from original Dashboard | Original workbook dashboard is still linked to legacy CRM | Use EngineDashboard. The original is preserved, not silently rewired |
 
-Retries are limited to read-safe HTTP failures (429/5xx) with 250/500ms backoff. Writes such as Telegram send and Gemini generation do not retry automatically. The next scheduled source cycle is the broader retry mechanism. Error bodies/credential-bearing URLs are not logged.
+Retries are limited to read-safe HTTP failures (429/5xx) with 250/500ms backoff. Writes such as Telegram send and AI generation do not retry automatically. The next scheduled source cycle is the broader retry mechanism. Error bodies/credential-bearing URLs are not logged.
 
 ## Backup, retention, deletion and shutdown
 

@@ -145,7 +145,7 @@ export interface Assessment {
   summary: string;
   priority: "HIGH" | "REVIEW" | "LOW";
   quarantined: boolean;
-  method: "rules" | "gemini";
+  method: "rules" | "gemini" | "openai-compatible";
   extractionWarning: string;
 }
 export interface Lead extends LeadInput, Assessment {

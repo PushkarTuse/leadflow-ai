@@ -156,6 +156,11 @@ export function pullExternalLeads(http:Http, options:{origin:string;token:string
     const parsed=rowSchema.safeParse(raw);
     if(!parsed.success||!options.allowedSources.includes(parsed.data.source)){counts.invalid++;continue;}
     const row=parsed.data;
+    // Keep local-business prospects and ordinary job-board listings out of the freelance CRM.
+    // HN hiring threads retain their original evidence so Stage C can reject them explicitly.
+    if(row.category==='local_business'||(row.source!=='hackernews'&&row.category!=='freelance_request')){
+      counts.invalid++;continue;
+    }
     if(row.source==='hackernews'&&!/^[1-9]\d{0,14}$/.test(row.source_id)){counts.invalid++;continue;}
     // Provider failures abort this page; cursor is not committed and retries deduplicate prior writes.
     const item=row.source==='hackernews'?http.json(`https://hacker-news.firebaseio.com/v0/item/${row.source_id}.json`):undefined;
