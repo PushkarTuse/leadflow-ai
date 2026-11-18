@@ -1,16 +1,93 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 
-interface LeadRow {
+export type QualificationState =
+  | "ELIGIBLE"
+  | "REVIEW_INCOMPLETE"
+  | "REJECTED"
+  | "QUARANTINED"
+  | "NEEDS_REQUALIFICATION";
+
+export interface LeadRow {
   lead_id: string;
   title: string;
   client_name_if_public: string;
   source: string;
-  score: number;
-  priority: string;
-  method: string;
-  reasoning: string[];
+  discovery_context?: unknown;
+  qualification_status?: string;
+  qualification?: {
+    is_valid_freelance_lead: boolean;
+    eligibility_state: string;
+    priority: string;
+    quality_score: number;
+    confidence_score: number;
+    rejection_reason: string | null;
+    evidence_quotes: { field: string; quote: string }[];
+  };
+  qualification_audit?: { method: string };
   extractionWarning: string;
   status: string;
+}
+
+export function qualificationState(row: LeadRow): QualificationState {
+  const state = row.qualification?.eligibility_state;
+  if (
+    state === "ELIGIBLE" ||
+    state === "REVIEW_INCOMPLETE" ||
+    state === "REJECTED" ||
+    state === "QUARANTINED"
+  ) {
+    if (
+      (state === "ELIGIBLE" && !row.qualification?.is_valid_freelance_lead) ||
+      (state !== "ELIGIBLE" && row.qualification?.is_valid_freelance_lead)
+    ) {
+      return "NEEDS_REQUALIFICATION";
+    }
+    return state;
+  }
+  return "NEEDS_REQUALIFICATION";
+}
+
+export function qualificationCounts(rows: LeadRow[]) {
+  const counts = {
+    raw: rows.length,
+    eligible: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+    rejected: 0,
+    incomplete: 0,
+    quarantined: 0,
+    needsRequalification: 0,
+  };
+
+  for (const row of rows) {
+    const state = qualificationState(row);
+    if (state === "ELIGIBLE" && row.qualification?.is_valid_freelance_lead) {
+      if (row.qualification?.priority === "HIGH") {
+        counts.eligible++;
+        counts.high++;
+      } else if (row.qualification?.priority === "MEDIUM") {
+        counts.eligible++;
+        counts.medium++;
+      } else if (row.qualification?.priority === "LOW") {
+        counts.low++;
+      }
+    } else if (state === "REJECTED") {
+      counts.rejected++;
+    } else if (state === "REVIEW_INCOMPLETE") {
+      counts.incomplete++;
+    } else if (state === "QUARANTINED") {
+      counts.quarantined++;
+    } else {
+      counts.needsRequalification++;
+    }
+  }
+  return counts;
+}
+
+function qualificationMethod(row: LeadRow) {
+  const method = row.qualification_audit?.method;
+  return method === "rules" || method === "gemini" ? method : "—";
 }
 
 interface RequestRow {
@@ -41,7 +118,7 @@ interface TogglePayload {
 const stages = [
   "External APIs",
   "Normalizer & Deduplicator",
-  "Gemini AI Scoring",
+  "Freelance Qualification",
   "Telegram Owner Digest",
   "Gmail Safe Owner-Test",
 ];
@@ -164,6 +241,7 @@ export function PipelineDashboard() {
   const emailTest = status?.emailTest ?? null;
   const enabled = toggle?.enabled ?? false;
   const configured = toggle?.configured ?? false;
+  const counts = qualificationCounts(rows);
 
   return (
     <div className="container page">
@@ -259,6 +337,37 @@ export function PipelineDashboard() {
 
       <section>
         <h2>Latest local results</h2>
+        <div
+          aria-label="Qualification counts"
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "0.5rem",
+            marginBottom: "1rem",
+          }}
+        >
+          {[
+            ["Raw candidates", counts.raw],
+            ["Eligible opportunities (HIGH/MEDIUM)", counts.eligible],
+            ["Low", counts.low],
+            ["Rejected", counts.rejected],
+            ["Incomplete", counts.incomplete],
+            ["Quarantined", counts.quarantined],
+            ["Needs requalification", counts.needsRequalification],
+          ].map(([label, count]) => (
+            <span
+              key={label}
+              style={{
+                border: "1px solid rgba(127,127,127,0.3)",
+                borderRadius: "0.5rem",
+                padding: "0.4rem 0.65rem",
+                fontSize: "0.85rem",
+              }}
+            >
+              {label}: <strong>{count}</strong>
+            </span>
+          ))}
+        </div>
         {loading && <p role="status">Loading local pipeline state…</p>}
         {!loading && error && <p role="alert">{error}</p>}
         {!loading && !error && !enabled && (
@@ -288,11 +397,15 @@ export function PipelineDashboard() {
               <thead>
                 <tr>
                   {[
-                    "Lead / company",
+                    "Candidate / company",
                     "Source",
-                    "Gemini score",
-                    "Reasoning",
-                    "Telegram message ID",
+                    "Eligibility",
+                    "Priority",
+                    "Quality score / confidence",
+                    "Classification method",
+                    "Primary rejection reason",
+                    "Evidence highlights",
+                    "Prior Telegram message ID",
                     "Email test",
                   ].map((heading) => (
                     <th
@@ -310,6 +423,9 @@ export function PipelineDashboard() {
                   const request = requests.find(
                     (r) => r.lead_id === lead.lead_id,
                   );
+                  const state = qualificationState(lead);
+                  const qualification = lead.qualification;
+                  const evidence = qualification?.evidence_quotes ?? [];
                   return (
                     <tr key={lead.lead_id}>
                       <td style={cell}>
@@ -321,11 +437,37 @@ export function PipelineDashboard() {
                       </td>
                       <td style={cell}>{lead.source}</td>
                       <td style={cell}>
-                        {lead.score}{" "}
-                        <span style={{ opacity: 0.7 }}>({lead.method})</span>
+                        {state}
                       </td>
                       <td style={cell}>
-                        {short((lead.reasoning || []).join(" · "), 160) || "—"}
+                        {qualification?.priority || "—"}
+                      </td>
+                      <td style={cell}>
+                        {qualification
+                          ? `${qualification.quality_score}/100 · ${Math.round(qualification.confidence_score * 100)}%`
+                          : "—"}
+                      </td>
+                      <td style={cell}>{qualificationMethod(lead)}</td>
+                      <td style={cell}>
+                        {qualification?.rejection_reason ||
+                          (state === "NEEDS_REQUALIFICATION" ? state : "—")}
+                      </td>
+                      <td style={cell}>
+                        {evidence.length ? (
+                          <ul style={{ margin: 0, paddingLeft: "1.1rem" }}>
+                            {evidence.slice(0, 3).map((quote, index) => (
+                              <li key={`${quote.field}-${index}`}>
+                                <strong>{quote.field}:</strong>{" "}
+                                {short(quote.quote, 100)}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          "—"
+                        )}
+                        {evidence.length > 3 && (
+                          <span> +{evidence.length - 3} more</span>
+                        )}
                       </td>
                       <td style={cell}>{request?.message_id || "—"}</td>
                       <td style={cell}>

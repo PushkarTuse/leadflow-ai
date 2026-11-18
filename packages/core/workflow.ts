@@ -8,6 +8,7 @@ import {
   systemClock,
   type Activity,
   type ApprovalRequest,
+  type Assessment,
   type Clock,
   type Config,
   type Draft,
@@ -16,7 +17,208 @@ import {
   type Status,
   type Store,
 } from "./model";
-import { assess, injectionPattern, type Signals } from "./scoring";
+import {
+  assess,
+  injectionPattern,
+  type DiscoverySignals,
+  type Signals,
+} from "./scoring";
+import {
+  extractRuleEvidence,
+  prefilterDiscovery,
+  scoreFreelanceQualification,
+  canonicalEvidence,
+  defaultQualificationPolicy,
+  type RuleEvidence,
+} from "./qualification";
+
+export function isDiscoveryCandidate(
+  lead: {
+    source: string;
+    discovery_context?: Lead["discovery_context"];
+    qualification?: Lead["qualification"];
+  },
+): boolean {
+  return Boolean(lead.discovery_context || lead.qualification || lead.source === "hn");
+}
+
+export function canRouteDiscoveryLead(
+  lead: Pick<Lead, "source" | "discovery_context" | "qualification">,
+): boolean {
+  if (!isDiscoveryCandidate(lead)) return true;
+  const qualification = lead.qualification;
+  return Boolean(
+    qualification?.is_valid_freelance_lead &&
+      qualification.eligibility_state === "ELIGIBLE" &&
+      (qualification.priority === "MEDIUM" || qualification.priority === "HIGH") &&
+      qualification.confidence_score >= 0.85,
+  );
+}
+
+function mergeDiscoverySignals(
+  rules: RuleEvidence,
+  extracted: DiscoverySignals,
+  canonical: string,
+): { evidence: RuleEvidence; used: boolean } {
+  const lowerCanonical = canonical.toLowerCase();
+  const quotes = extracted.evidence_quotes.filter((item) =>
+    lowerCanonical.includes(item.quote.toLowerCase()),
+  );
+  const hasQuote = (field: string) => quotes.some((item) => item.field === field);
+  const quoteFor = (field: string) =>
+    quotes.find((item) => item.field === field)?.quote ?? "";
+  const next: RuleEvidence = {
+    ...rules,
+    budget_signal: { ...rules.budget_signal },
+    contact_method: { ...rules.contact_method },
+    required_skills: [...rules.required_skills],
+    evidence_quotes: [...rules.evidence_quotes],
+    all_reasons: [...rules.all_reasons],
+    missing_fields: [...rules.missing_fields],
+  };
+  let used = false;
+
+  if (next.intent === "UNKNOWN" && hasQuote("intent")) {
+    const intentQuote = quoteFor("intent");
+    const sellerCue =
+      /\b(?:seeking freelance|looking for work|available for (?:work|projects)|my services|i(?:'m| am) available)\b/i;
+    const buyerCue =
+      /\b(?:we need|our (?:team|company) needs|need (?:a|an|someone|help)|looking for (?:a|an|someone|freelancer|contractor)|seeking (?:a|an|someone|freelancer|contractor)|hire|hiring|commission|requesting)\b/i;
+    const employmentCue =
+      /\b(?:full[- ]time|employee|permanent position|salary and benefits|on our payroll)\b/i;
+    if (extracted.intent === "BUYER" && buyerCue.test(intentQuote) && !sellerCue.test(intentQuote)) {
+      next.intent = "BUYER";
+      next.all_reasons = next.all_reasons.filter((reason) => reason !== "AMBIGUOUS_DIRECTION");
+      next.missing_fields = next.missing_fields.filter((field) => field !== "buyer_demand");
+      used = true;
+    } else if (extracted.intent === "SELLER" && sellerCue.test(intentQuote)) {
+      next.intent = "SELLER";
+      next.lead_type = "SELLER_PROMOTION";
+      next.requester_type = "FREELANCER_SELLER";
+      next.all_reasons.push("SELLER_SELF_PROMOTION");
+      used = true;
+    } else if (extracted.intent === "EMPLOYMENT" && employmentCue.test(intentQuote)) {
+      next.intent = "EMPLOYMENT";
+      next.lead_type = "EMPLOYMENT";
+      next.requester_type = "EMPLOYER";
+      next.engagement_type = /\bfixed[- ]?term\b/i.test(intentQuote)
+        ? "EMPLOYEE_FIXED_TERM"
+        : "EMPLOYEE_FULL_TIME";
+      next.all_reasons.push(
+        next.engagement_type === "EMPLOYEE_FIXED_TERM"
+          ? "EMPLOYMENT_CONTRACT_ONLY"
+          : "FULL_TIME_ONLY",
+      );
+      used = true;
+    }
+  }
+
+  if (next.intent === "BUYER") {
+    const eligibleEngagements = new Set([
+      "FIXED_PROJECT",
+      "INDEPENDENT_CONTRACT",
+      "RETAINER",
+      "FRACTIONAL",
+      "CONSULTING",
+    ]);
+    if (
+      next.engagement_type === "UNKNOWN" &&
+      eligibleEngagements.has(extracted.engagement_type) &&
+      hasQuote("engagement")
+    ) {
+      next.engagement_type = extracted.engagement_type;
+      next.all_reasons = next.all_reasons.filter((reason) => reason !== "ENGAGEMENT_UNCLEAR");
+      next.missing_fields = next.missing_fields.filter((field) => field !== "engagement_type");
+      used = true;
+    }
+    if (
+      next.lead_type === "UNKNOWN" &&
+      ["CLIENT_PROJECT", "CONTRACT_ROLE", "RETAINER", "CONSULTING"].includes(extracted.lead_type) &&
+      hasQuote("engagement")
+    ) {
+      next.lead_type = extracted.lead_type;
+      used = true;
+    }
+    if (next.requester_type === "UNKNOWN" && extracted.requester_type !== "UNKNOWN" && hasQuote("requester")) {
+      next.requester_type = extracted.requester_type;
+      used = true;
+    }
+    if (
+      next.budget_signal.kind === "UNKNOWN" &&
+      extracted.budget_signal.kind !== "UNKNOWN" &&
+      hasQuote("payment")
+    ) {
+      const paymentQuote = quoteFor("payment");
+      const supportedPayment =
+        extracted.budget_signal.kind === "AMOUNT_STATED"
+          ? /(?:[$€£₹]|\b(?:USD|EUR|GBP|INR)\b)\s*[\d,.]+/i.test(paymentQuote)
+          : extracted.budget_signal.kind === "EXPLICIT_PAID"
+            ? /\b(?:paid|pay|payment|compensation|rate)\b/i.test(paymentQuote)
+            : extracted.budget_signal.kind === "COMMERCIAL_HIRING" &&
+              /\b(?:hire|hiring|client|commercial)\b/i.test(paymentQuote);
+      if (supportedPayment) {
+        next.budget_signal = { ...extracted.budget_signal };
+        next.all_reasons = next.all_reasons.filter((reason) => reason !== "PAYMENT_UNCLEAR");
+        next.missing_fields = next.missing_fields.filter((field) => field !== "payment_signal");
+        used = true;
+      }
+    }
+    const skillQuotes = quotes.filter((item) => item.field === "skill");
+    for (const skill of extracted.required_skills) {
+      const normalizedSkill = skill.toLowerCase().replace(/[^a-z0-9]+/g, "");
+      if (
+        normalizedSkill &&
+        skillQuotes.some((item) =>
+          item.quote.toLowerCase().replace(/[^a-z0-9]+/g, "").includes(normalizedSkill),
+        ) &&
+        !next.required_skills.some((existing) => existing.toLowerCase() === skill.toLowerCase())
+      ) {
+        next.required_skills.push(skill);
+        used = true;
+      }
+    }
+    if (next.required_skills.length > 0) {
+      next.all_reasons = next.all_reasons.filter((reason) => reason !== "SCOPE_MISSING");
+      next.missing_fields = next.missing_fields.filter((field) => field !== "scope");
+    }
+  }
+
+  if (next.timeline_signal === null && extracted.timeline_signal && hasQuote("timeline")) {
+    next.timeline_signal = extracted.timeline_signal;
+    used = true;
+  }
+  if (next.seniority === "UNKNOWN" && extracted.seniority !== "UNKNOWN" && hasQuote("seniority")) {
+    next.seniority = extracted.seniority;
+    used = true;
+  }
+  if (
+    next.location_or_remote_policy === null &&
+    extracted.location_or_remote_policy &&
+    hasQuote("location")
+  ) {
+    next.location_or_remote_policy = extracted.location_or_remote_policy;
+    used = true;
+  }
+  if (
+    next.contact_method.type === "UNKNOWN" &&
+    extracted.contact_method.type !== "UNKNOWN" &&
+    extracted.contact_method.value &&
+    hasQuote("contact") &&
+    quoteFor("contact").toLowerCase().includes(extracted.contact_method.value.toLowerCase())
+  ) {
+    next.contact_method = { ...extracted.contact_method };
+    used = true;
+  }
+
+  for (const quote of quotes) {
+    if (!next.evidence_quotes.some((item) => item.field === quote.field && item.quote === quote.quote)) {
+      next.evidence_quotes.push(quote);
+      used = true;
+    }
+  }
+
+  return { evidence: next, used };
+}
 
 const transitions: Record<Status, Status[]> = {
   NEW: ["QUALIFIED", "ARCHIVED", "REJECTED"],
@@ -42,6 +244,7 @@ export class Engine {
     public clock: Clock = systemClock,
     private extractor?: (input: LeadInput) => {
       signals?: Signals;
+      discoverySignals?: DiscoverySignals;
       warning?: string;
     },
   ) {}
@@ -86,6 +289,9 @@ export class Engine {
     let lead: Lead = {
       ...input,
       ...assessment,
+      ...(isDiscoveryCandidate(input) && !assessment.qualification
+        ? { qualification_status: "NEEDS_REQUALIFICATION" as const }
+        : {}),
       lead_id: "lf_" + hash(key),
       dedup_key: key,
       status: "NEW",
@@ -99,19 +305,52 @@ export class Engine {
     };
     this.store.save(lead);
     this.log(lead, "", "INGESTED");
-    if (assessment.quarantined) lead = this.move(lead, "ARCHIVED");
-    else if (
-      assessment.score >= this.config.reviewThreshold &&
-      assessment.breakdown.intent > 0 &&
-      assessment.breakdown.fit > 0
-    ) {
-      lead = this.move(lead, "QUALIFIED");
-      lead.approval_status = "PENDING";
-      lead = this.move(lead, "PENDING_APPROVAL");
+
+    if (lead.qualification) {
+      const q = lead.qualification;
+      if (q.eligibility_state === "QUARANTINED") {
+        lead = this.move(lead, "ARCHIVED");
+      } else if (q.eligibility_state === "REJECTED") {
+        lead = this.move(lead, "REJECTED", "system");
+      } else if (q.eligibility_state === "REVIEW_INCOMPLETE") {
+        // Held as incomplete: remains NEW, never qualified, never pending approval
+      } else if (q.eligibility_state === "ELIGIBLE" && q.is_valid_freelance_lead) {
+        if (canRouteDiscoveryLead(lead)) {
+          lead = this.move(lead, "QUALIFIED");
+          lead.approval_status = "PENDING";
+          lead = this.move(lead, "PENDING_APPROVAL");
+        } else {
+          lead = this.move(lead, "QUALIFIED");
+          lead.approval_status = "NONE";
+        }
+      }
+    } else if (isDiscoveryCandidate(lead)) {
+      lead.qualification_status = "NEEDS_REQUALIFICATION";
+      this.store.save(lead);
+    } else {
+      if (assessment.quarantined) lead = this.move(lead, "ARCHIVED");
+      else if (
+        assessment.score >= this.config.reviewThreshold &&
+        assessment.breakdown.intent > 0 &&
+        assessment.breakdown.fit > 0
+      ) {
+        lead = this.move(lead, "QUALIFIED");
+        lead.approval_status = "PENDING";
+        lead = this.move(lead, "PENDING_APPROVAL");
+      }
     }
     return { lead, duplicate: false };
   }
-  private classify(input: LeadInput) {
+
+  private classify(
+    input: LeadInput,
+  ): Assessment & Partial<Pick<Lead, "qualification" | "qualification_audit">> {
+    if (input.discovery_context) {
+      return this.classifyDiscovery(input);
+    }
+    if (input.source === "hn") {
+      return this.unqualifiedDiscoveryAssessment();
+    }
     let extraction: { signals?: Signals; warning?: string } = {};
     if (this.extractor && !injectionPattern.test(input.title + ' ' + input.raw_description)) {
       try { extraction = this.extractor(input); }
@@ -119,19 +358,287 @@ export class Engine {
     }
     return assess(input, this.clock.now(), this.config, extraction.signals, extraction.warning);
   }
+
+  private unqualifiedDiscoveryAssessment(): Assessment {
+    return {
+      score: 0,
+      breakdown: {
+        intent: 0,
+        fit: 0,
+        budget: 0,
+        timeline: 0,
+        credibility: 0,
+        permission: 0,
+      },
+      reasoning: ["Original discovery evidence is unavailable; requalification is required"],
+      confidence: 0,
+      missing: ["original discovery evidence"],
+      skills: [],
+      summary: "",
+      priority: "LOW",
+      quarantined: false,
+      method: "rules",
+      extractionWarning: "NEEDS_REQUALIFICATION",
+    };
+  }
+
+  private classifyDiscovery(input: LeadInput) {
+    const context = input.discovery_context!;
+    const now = this.clock.now();
+    const canonical = canonicalEvidence(context);
+    const policy = {
+      ...defaultQualificationPolicy,
+      max_age_days: this.config.maxAgeDays,
+    };
+    const prefilterResult = prefilterDiscovery(context, now, policy);
+
+    let ruleEvidence = extractRuleEvidence(canonical, context);
+
+    let extractorWarning = "";
+    let usedDiscoveryExtraction = false;
+    if (prefilterResult.pass && this.extractor && !injectionPattern.test(canonical)) {
+      try {
+        const extResult = this.extractor(input);
+        if (extResult?.discoverySignals) {
+          const merged = mergeDiscoverySignals(
+            ruleEvidence,
+            extResult.discoverySignals,
+            canonical,
+          );
+          ruleEvidence = merged.evidence;
+          usedDiscoveryExtraction = merged.used;
+        }
+        if (extResult?.warning) extractorWarning = extResult.warning;
+      } catch {
+        extractorWarning = "Classifier unavailable; deterministic fallback used";
+      }
+    }
+
+    const { record, audit } = scoreFreelanceQualification(
+      ruleEvidence,
+      context,
+      now,
+      policy,
+    );
+    if (usedDiscoveryExtraction) audit.method = "gemini";
+    if (extractorWarning) {
+      audit.warnings.push(extractorWarning.slice(0, 240));
+    } else if (!prefilterResult.pass && prefilterResult.reason) {
+      audit.warnings.push(`Prefilter: ${prefilterResult.reason}`);
+    }
+
+    let legacyPriority: "HIGH" | "REVIEW" | "LOW" = "LOW";
+    if (record.priority === "HIGH") legacyPriority = "HIGH";
+    else if (record.priority === "MEDIUM") legacyPriority = "REVIEW";
+    else legacyPriority = "LOW";
+
+    return {
+      score: record.quality_score,
+      breakdown: {
+        intent: audit.breakdown.buyer_demand ?? 0,
+        fit: audit.breakdown.service_fit ?? 0,
+        budget: audit.breakdown.paid_intent ?? 0,
+        timeline: audit.breakdown.timeline ?? 0,
+        credibility: audit.breakdown.engagement ?? 0,
+        permission: audit.breakdown.contact_path ?? 0,
+      },
+      reasoning: audit.reasons,
+      confidence: record.confidence_score,
+      missing: audit.missing_fields,
+      skills: record.required_skills,
+      summary:
+        [record.lead_type, record.engagement_type, record.budget_signal.kind]
+          .filter(Boolean)
+          .join(" • ") || input.title,
+      priority: legacyPriority,
+      quarantined: record.eligibility_state === "QUARANTINED",
+      method: audit.method,
+      extractionWarning: audit.warnings.join("; "),
+      qualification: record,
+      qualification_audit: audit,
+    };
+  }
+
+  requalifyMissingDiscovery(id: string, raw: unknown): Lead {
+    return this.requalifyDiscovery(id, raw, false);
+  }
+
+  requalifyDiscovery(id: string, raw: unknown, overwrite = false): Lead {
+    const old = this.store.get(id);
+    const input = inputSchema.strip().parse(raw);
+    if (
+      !old ||
+      !isDiscoveryCandidate(old) ||
+      (!overwrite &&
+        old.qualification &&
+        old.qualification_status !== "NEEDS_REQUALIFICATION") ||
+      !input.discovery_context
+    ) {
+      throw new Error(
+        "Only discovery records with source context can be requalified",
+      );
+    }
+
+    const assessment = this.classifyDiscovery(input);
+    if (!assessment.qualification || !assessment.qualification_audit)
+      throw new Error("Discovery qualification did not produce an audit record");
+
+    const now = this.clock.now();
+    let lead: Lead = {
+      ...old,
+      title: input.title,
+      raw_description: input.raw_description,
+      source_url: input.source_url,
+      posted_at: input.posted_at,
+      discovery_context: input.discovery_context,
+      ...assessment,
+      status: old.status,
+      approval_status: old.approval_status,
+      draft_id: old.draft_id,
+      qualification_status: undefined,
+      updated_at: now,
+      last_activity_at: now,
+    };
+    const qualification = lead.qualification;
+    if (!qualification) {
+      throw new Error(`Requalification for ${id} did not produce a qualification`);
+    }
+    this.store.save(lead);
+    this.log(lead, old.status, "REQUALIFIED", "system");
+
+    const requests = this.store
+      .requests()
+      .filter((request) => request.lead_id === id);
+    const hasOwnerDecision = requests.some(
+      (request) => request.state === "CONSUMED" || Boolean(request.decision),
+    );
+    if (!hasOwnerDecision) {
+      for (const request of requests) {
+        if (["PREPARED", "SENDING", "SENT"].includes(request.state)) {
+          request.state = "FAILED";
+          this.store.request(request);
+        }
+      }
+
+      const route = canRouteDiscoveryLead(lead);
+      if (lead.status === "NEW") {
+        if (qualification.eligibility_state === "QUARANTINED") {
+          lead = this.move(lead, "ARCHIVED");
+        } else if (qualification.eligibility_state === "REJECTED") {
+          lead = this.move(lead, "REJECTED");
+        } else if (qualification.eligibility_state === "ELIGIBLE") {
+          lead = this.move(lead, "QUALIFIED");
+          if (route) {
+            lead = this.move(
+              { ...lead, approval_status: "PENDING" },
+              "PENDING_APPROVAL",
+            );
+          }
+        }
+      } else if (
+        lead.status === "QUALIFIED" &&
+        !route
+      ) {
+        lead = this.move(
+          lead,
+          qualification.eligibility_state === "REJECTED"
+            ? "REJECTED"
+            : "ARCHIVED",
+        );
+      } else if (
+        lead.status === "QUALIFIED" &&
+        route &&
+        lead.approval_status === "NONE"
+      ) {
+        lead = this.move(
+          { ...lead, approval_status: "PENDING" },
+          "PENDING_APPROVAL",
+        );
+      } else if (
+        lead.status === "PENDING_APPROVAL" &&
+        !route &&
+        lead.approval_status === "PENDING"
+      ) {
+        lead = this.move(
+          lead,
+          qualification.eligibility_state === "REJECTED"
+            ? "REJECTED"
+            : "ARCHIVED",
+        );
+      }
+    }
+    return lead;
+  }
+
   reprocess(id: string): Lead {
     const old = this.store.get(id);
-    if (!old || !['NEW', 'ARCHIVED'].includes(old.status) || old.draft_id || old.approval_status === 'APPROVED' || this.store.requests().some(r => r.lead_id === id)) {
-      throw new Error('Only unapproved NEW/ARCHIVED leads without approval history can be reprocessed');
+    const discovery = old ? isDiscoveryCandidate(old) : false;
+    const discoveryHistory =
+      old &&
+      (this.store.requests().some((r) => r.lead_id === id) ||
+        this.store.drafts().some((d) => d.lead_id === id) ||
+        this.store.activities().some(
+          (event) => event.lead_id === id && event.actor === "owner",
+        ));
+    if (
+      !old ||
+      !["NEW", "ARCHIVED", "REJECTED"].includes(old.status) ||
+      old.draft_id ||
+      old.approval_status === "APPROVED" ||
+      (discovery &&
+        (!old.discovery_context ||
+          old.approval_status !== "NONE" ||
+          discoveryHistory))
+    ) {
+      throw new Error(
+        "Only untouched, unapproved records with available evidence can be reprocessed",
+      );
     }
     const input = inputSchema.strip().parse(old);
-    let lead: Lead = { ...old, ...this.classify(input), status: 'NEW', approval_status: 'NONE', updated_at: this.clock.now(), last_activity_at: this.clock.now() };
+    const assessment = this.classify(input);
+    let lead: Lead = {
+      ...old,
+      ...assessment,
+      status: "NEW",
+      approval_status: "NONE",
+      qualification_status: undefined,
+      updated_at: this.clock.now(),
+      last_activity_at: this.clock.now(),
+    };
     this.store.save(lead);
-    this.log(lead, old.status, 'REPROCESSED', 'owner');
-    if (lead.quarantined) lead = this.move(lead, 'ARCHIVED');
-    else if (lead.score >= this.config.reviewThreshold && lead.breakdown.intent > 0 && lead.breakdown.fit > 0) {
-      lead = this.move(lead, 'QUALIFIED');
-      lead = this.move({ ...lead, approval_status: 'PENDING' }, 'PENDING_APPROVAL');
+    this.log(lead, old.status, "REPROCESSED", "owner");
+
+    if (lead.qualification) {
+      const q = lead.qualification;
+      if (q.eligibility_state === "QUARANTINED") {
+        lead = this.move(lead, "ARCHIVED", "owner");
+      } else if (q.eligibility_state === "REJECTED") {
+        lead = this.move(lead, "REJECTED", "owner");
+      } else if (q.eligibility_state === "REVIEW_INCOMPLETE") {
+        // remains in NEW
+      } else if (q.eligibility_state === "ELIGIBLE" && q.is_valid_freelance_lead) {
+        if (canRouteDiscoveryLead(lead)) {
+          lead = this.move(lead, "QUALIFIED", "owner");
+          lead = this.move({ ...lead, approval_status: "PENDING" }, "PENDING_APPROVAL", "owner");
+        } else {
+          lead = this.move(lead, "QUALIFIED", "owner");
+          lead.approval_status = "NONE";
+        }
+      }
+    } else {
+      if (lead.quarantined) lead = this.move(lead, "ARCHIVED", "owner");
+      else if (
+        lead.score >= this.config.reviewThreshold &&
+        lead.breakdown.intent > 0 &&
+        lead.breakdown.fit > 0
+      ) {
+        lead = this.move(lead, "QUALIFIED", "owner");
+        lead = this.move(
+          { ...lead, approval_status: "PENDING" },
+          "PENDING_APPROVAL",
+          "owner",
+        );
+      }
     }
     return lead;
   }
@@ -163,6 +670,27 @@ export class Engine {
     if (lead.status !== "PENDING_APPROVAL")
       throw new Error("Lead is not pending approval");
     if (!/^[a-zA-Z0-9_-]{12,32}$/.test(nonce)) throw new Error("Invalid nonce");
+
+    if (isDiscoveryCandidate(lead)) {
+      if (!lead.qualification) {
+        throw new Error("Only qualified discovery leads can be prepared for approval - legacy records need requalification");
+      }
+
+      if (
+        !lead.qualification.is_valid_freelance_lead ||
+        lead.qualification.eligibility_state !== "ELIGIBLE"
+      ) {
+        throw new Error(`Cannot prepare ineligible discovery lead for approval: ${lead.qualification.rejection_reason}`);
+      }
+
+      if (lead.qualification.priority !== "HIGH" && lead.qualification.priority !== "MEDIUM") {
+        throw new Error(`Cannot prepare low-priority discovery lead for approval: ${lead.qualification.priority}`);
+      }
+
+      if (lead.qualification.confidence_score < 0.85) {
+        throw new Error(`Cannot prepare discovery lead with low confidence for approval: ${lead.qualification.confidence_score}`);
+      }
+    }
     const request: ApprovalRequest = {
       request_id: "ar_" + hash(lead.lead_id + nonce),
       lead_id: lead.lead_id,
@@ -259,17 +787,80 @@ export class Engine {
   reconcile(): void {
     // Resume a partially persisted ingestion as well as a partially applied decision.
     for (let lead of this.store.leads()) {
-      if (lead.status === "NEW" && lead.quarantined)
-        this.move(lead, "ARCHIVED");
-      else if (
-        lead.status === "NEW" &&
-        lead.score >= this.config.reviewThreshold &&
-        lead.breakdown.intent > 0 &&
-        lead.breakdown.fit > 0
-      )
-        lead = this.move(lead, "QUALIFIED");
-      if (lead.status === "QUALIFIED")
-        this.move({ ...lead, approval_status: "PENDING" }, "PENDING_APPROVAL");
+      if (isDiscoveryCandidate(lead)) {
+        if (!lead.qualification) {
+          if (lead.qualification_status !== "NEEDS_REQUALIFICATION") {
+            lead.qualification_status = "NEEDS_REQUALIFICATION";
+            this.store.save(lead);
+          }
+          const requests = this.store.requests().filter((r) => r.lead_id === lead.lead_id);
+          const hasOwnerDecision = requests.some(
+            (request) => request.state === "CONSUMED" || Boolean(request.decision),
+          );
+          if (
+            lead.status === "PENDING_APPROVAL" &&
+            !lead.draft_id &&
+            lead.approval_status === "PENDING" &&
+            !hasOwnerDecision
+          ) {
+            for (const request of requests) {
+              if (["PREPARED", "SENDING", "SENT"].includes(request.state)) {
+                request.state = "FAILED";
+                this.store.request(request);
+              }
+            }
+            this.move(lead, "ARCHIVED", "system");
+          }
+        } else {
+          const q = lead.qualification;
+          if (lead.status === "NEW") {
+            if (q.eligibility_state === "QUARANTINED") {
+              this.move(lead, "ARCHIVED");
+            } else if (q.eligibility_state === "REJECTED") {
+              this.move(lead, "REJECTED", "system");
+            } else if (q.eligibility_state === "ELIGIBLE" && q.is_valid_freelance_lead) {
+              if (canRouteDiscoveryLead(lead)) {
+                lead = this.move(lead, "QUALIFIED");
+                this.move({ ...lead, approval_status: "PENDING" }, "PENDING_APPROVAL");
+              } else {
+                this.move(lead, "QUALIFIED");
+              }
+            }
+          } else if (lead.status === "QUALIFIED" && canRouteDiscoveryLead(lead)) {
+            this.move({ ...lead, approval_status: "PENDING" }, "PENDING_APPROVAL");
+          } else if (lead.status === "PENDING_APPROVAL") {
+            if (!canRouteDiscoveryLead(lead)) {
+              if (!lead.draft_id && lead.approval_status === "PENDING") {
+                const requests = this.store.requests().filter((r) => r.lead_id === lead.lead_id);
+                const hasOwnerDecision = requests.some(
+                  (request) => request.state === "CONSUMED" || Boolean(request.decision),
+                );
+                if (!hasOwnerDecision) {
+                  for (const request of requests) {
+                    if (["PREPARED", "SENDING", "SENT"].includes(request.state)) {
+                      request.state = "FAILED";
+                      this.store.request(request);
+                    }
+                  }
+                  this.move(lead, q.eligibility_state === "REJECTED" ? "REJECTED" : "ARCHIVED", "system");
+                }
+              }
+            }
+          }
+        }
+      } else {
+        if (lead.status === "NEW" && lead.quarantined)
+          this.move(lead, "ARCHIVED");
+        else if (
+          lead.status === "NEW" &&
+          lead.score >= this.config.reviewThreshold &&
+          lead.breakdown.intent > 0 &&
+          lead.breakdown.fit > 0
+        )
+          lead = this.move(lead, "QUALIFIED");
+        if (lead.status === "QUALIFIED")
+          this.move({ ...lead, approval_status: "PENDING" }, "PENDING_APPROVAL");
+      }
     }
     for (const request of this.store
       .requests()
@@ -277,6 +868,7 @@ export class Engine {
       const lead = this.store.get(request.lead_id);
       if (
         lead &&
+        !(isDiscoveryCandidate(lead) && !lead.qualification) &&
         ["PENDING_APPROVAL", "APPROVED_FOR_DRAFT"].includes(lead.status)
       )
         this.applyDecision(request);
@@ -286,6 +878,16 @@ export class Engine {
 export function proposal(lead: Lead, now: string): Draft {
   if (lead.approval_status !== "APPROVED")
     throw new Error("Draft requires approval");
+  if (isDiscoveryCandidate(lead)) {
+    if (
+      !lead.qualification ||
+      !lead.qualification.is_valid_freelance_lead ||
+      lead.qualification.eligibility_state !== "ELIGIBLE" ||
+      !canRouteDiscoveryLead(lead)
+    ) {
+      throw new Error("Draft requires an eligible freelance lead");
+    }
+  }
   const scope =
     lead.skills.includes("api") || lead.skills.includes("java")
       ? "map the API contracts, implement one complete integration, and add validation and handover documentation"
@@ -301,6 +903,39 @@ export function proposal(lead: Lead, now: string): Draft {
   };
 }
 export function notification(lead: Lead, request: ApprovalRequest) {
+  if (isDiscoveryCandidate(lead)) {
+    if (!lead.qualification) {
+      throw new Error("Cannot notify legacy record without qualification - needs requalification");
+    }
+
+    if (
+      !lead.qualification.is_valid_freelance_lead ||
+      lead.qualification.eligibility_state !== "ELIGIBLE"
+    ) {
+      throw new Error(`Cannot notify ineligible discovery lead: ${lead.qualification.rejection_reason}`);
+    }
+
+    if (lead.qualification.priority !== "HIGH" && lead.qualification.priority !== "MEDIUM") {
+      throw new Error(`Cannot notify low-priority discovery lead: ${lead.qualification.priority}`);
+    }
+
+    if (!canRouteDiscoveryLead(lead)) {
+      throw new Error(`Cannot notify discovery lead with low confidence: ${lead.qualification.confidence_score}`);
+    }
+
+    return {
+      text: `LeadFlow • freelance opportunity\n${lead.title}\nScore ${lead.qualification.quality_score}/100 • ${lead.qualification.priority}\nBudget: ${lead.qualification.budget_signal.minimum ?? lead.qualification.budget_signal.maximum ?? "not stated"} ${lead.qualification.budget_signal.currency}\nLead Type: ${lead.qualification.lead_type} • ${lead.qualification.engagement_type}\n${lead.reasoning.slice(0, 2).join("\n")}\nPermission: ${lead.qualification.contact_method.permission_state}\n${lead.source_url}\nApproval creates a draft only.`,
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "Draft proposal", callback_data: "approve:" + request.nonce }],
+          [
+            { text: "Review later", callback_data: "review:" + request.nonce },
+            { text: "Reject", callback_data: "reject:" + request.nonce },
+          ],
+        ],
+      },
+    };
+  }
   return {
     text: `LeadFlow • owner review\n${lead.title}\nScore ${lead.score}/100 • ${lead.priority}\nBudget: ${lead.stated_budget_max ?? lead.stated_budget_min ?? "not stated"} ${lead.currency}\n${lead.reasoning.slice(0, 2).join("\n")}\nPermission: ${lead.contact_permission_state}\n${lead.source_url}\nApproval creates a draft only.`,
     reply_markup: {
@@ -327,16 +962,54 @@ export function commandReply(
           events.filter((e) => e.new_state === status).map((e) => e.lead_id),
         ).size
       : leads.filter((l) => fallback.includes(l.status)).length;
-  if (cmd === "/stats")
-    return `Actual CRM counts\nTotal: ${leads.length}\nQualified ever: ${reached("QUALIFIED", ["QUALIFIED", "PENDING_APPROVAL", "APPROVED_FOR_DRAFT", "DRAFT_READY", "CONTACTED_MANUALLY", "REPLIED", "DISCOVERY", "QUOTED", "WON", "MAINTENANCE"])}\nApproved ever: ${reached("APPROVED_FOR_DRAFT", ["APPROVED_FOR_DRAFT", "DRAFT_READY", "CONTACTED_MANUALLY", "REPLIED", "DISCOVERY", "QUOTED", "WON", "MAINTENANCE"])}\nPending: ${leads.filter((l) => l.status === "PENDING_APPROVAL" || (l.source === "inbound" && l.status === "DRAFT_READY" && l.approval_status === "PENDING")).length}\nDrafts ready: ${leads.filter((l) => l.status === "DRAFT_READY").length}\nEnquiry emails sent: ${leads.filter((l) => l.status === "EMAIL_SENT").length}\nManually submitted: ${reached("CONTACTED_MANUALLY", ["CONTACTED_MANUALLY", "REPLIED", "DISCOVERY", "QUOTED", "WON", "LOST", "MAINTENANCE"])}\nReplies: ${reached("REPLIED", ["REPLIED", "DISCOVERY", "QUOTED", "WON", "MAINTENANCE"])}\nDiscovery calls: ${reached("DISCOVERY", ["DISCOVERY", "QUOTED", "WON", "MAINTENANCE"])}\nWon: ${reached("WON", ["WON", "MAINTENANCE"])}`;
+  if (cmd === "/stats") {
+    const discovery = leads.filter(isDiscoveryCandidate);
+    const eligibleDiscovery = discovery.filter(
+      (l) =>
+        l.qualification?.eligibility_state === "ELIGIBLE" &&
+        l.qualification.is_valid_freelance_lead,
+    );
+    const rejectedDiscovery = discovery.filter(
+      (l) => l.qualification?.eligibility_state === "REJECTED",
+    );
+    const incompleteDiscovery = discovery.filter(
+      (l) => l.qualification?.eligibility_state === "REVIEW_INCOMPLETE",
+    );
+    const quarantinedDiscovery = discovery.filter(
+      (l) => l.qualification?.eligibility_state === "QUARANTINED",
+    );
+    const legacyDiscovery = discovery.filter(
+      (l) => l.qualification_status === "NEEDS_REQUALIFICATION" || !l.qualification,
+    );
+
+    return (
+      `Actual CRM counts\nTotal: ${leads.length}\n` +
+      (discovery.length > 0
+        ? `Discovery candidates: ${discovery.length} (Eligible: ${eligibleDiscovery.length}, Rejected: ${rejectedDiscovery.length}, Incomplete: ${incompleteDiscovery.length}, Quarantined: ${quarantinedDiscovery.length}${legacyDiscovery.length ? `, Needs requalification: ${legacyDiscovery.length}` : ""})\n`
+        : "") +
+      `Qualified ever: ${reached("QUALIFIED", ["QUALIFIED", "PENDING_APPROVAL", "APPROVED_FOR_DRAFT", "DRAFT_READY", "CONTACTED_MANUALLY", "REPLIED", "DISCOVERY", "QUOTED", "WON", "MAINTENANCE"])}\n` +
+      `Approved ever: ${reached("APPROVED_FOR_DRAFT", ["APPROVED_FOR_DRAFT", "DRAFT_READY", "CONTACTED_MANUALLY", "REPLIED", "DISCOVERY", "QUOTED", "WON", "MAINTENANCE"])}\n` +
+      `Pending: ${leads.filter((l) => l.status === "PENDING_APPROVAL" || (l.source === "inbound" && l.status === "DRAFT_READY" && l.approval_status === "PENDING")).length}\n` +
+      `Drafts ready: ${leads.filter((l) => l.status === "DRAFT_READY").length}\n` +
+      `Enquiry emails sent: ${leads.filter((l) => l.status === "EMAIL_SENT").length}\n` +
+      `Manually submitted: ${reached("CONTACTED_MANUALLY", ["CONTACTED_MANUALLY", "REPLIED", "DISCOVERY", "QUOTED", "WON", "LOST", "MAINTENANCE"])}\n` +
+      `Replies: ${reached("REPLIED", ["REPLIED", "DISCOVERY", "QUOTED", "WON", "MAINTENANCE"])}\n` +
+      `Discovery calls: ${reached("DISCOVERY", ["DISCOVERY", "QUOTED", "WON", "MAINTENANCE"])}\n` +
+      `Won: ${reached("WON", ["WON", "MAINTENANCE"])}`
+    );
+  }
   if (["/leads", "/pending", "/followups"].includes(cmd)) {
-    const filtered = leads.filter((l) =>
-      cmd === "/pending"
+    const filtered = leads.filter((l) => {
+      // Exclude non-eligible discovery records from being presented as leads
+      if (isDiscoveryCandidate(l) && !canRouteDiscoveryLead(l)) {
+        return false;
+      }
+      return cmd === "/pending"
         ? l.status === "PENDING_APPROVAL" || (l.status === 'DRAFT_READY' && l.approval_status === 'PENDING')
         : cmd === "/followups"
           ? Boolean(l.next_followup_at && l.next_followup_at <= now)
-          : !["NEW", "ARCHIVED", "REJECTED"].includes(l.status),
-    );
+          : !["NEW", "ARCHIVED", "REJECTED"].includes(l.status);
+    });
     return (
       filtered
         .sort((a, b) => cmd === '/followups' ? a.next_followup_at.localeCompare(b.next_followup_at) : b.created_at.localeCompare(a.created_at))

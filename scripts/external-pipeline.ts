@@ -1,10 +1,10 @@
 import {readFile,mkdir,writeFile,rename,open,unlink} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
-import {Engine,notification} from '../packages/core/workflow';
+import {Engine,canRouteDiscoveryLead,isDiscoveryCandidate,notification} from '../packages/core/workflow';
 import {MemoryStore} from '../packages/core/memory-store';
 import {configSchema} from '../packages/core/model';
-import {classifyGemini,type Http} from '../apps/automation/adapters';
+import {classifyGemini,classifyGeminiDiscovery,type Http} from '../apps/automation/adapters';
 import {pullExternalLeads} from '../apps/automation/external-leads';
 
 interface EmailTestState{status:string;at:string;to:string;messageId:string;error:string}
@@ -48,35 +48,68 @@ function smtpHint(stage:string,code:number):string{
 
 /** Structured owner digest. Contains no credentials and no lead contact details. */
 function executiveSummary(store:MemoryStore,run:{imported:number;duplicates:number;invalid:number},emailTest:EmailTestState){
-  const leads=store.leads();
-  const gemini=leads.filter(l=>l.method==='gemini').length;
-  const rules=leads.length-gemini;
-  const top=leads.filter(l=>l.priority!=='LOW').sort((a,b)=>b.score-a.score).slice(0,3);
-  const warned=leads.filter(l=>l.extractionWarning);
+  const allRecords=store.leads();
+  const discovery=allRecords.filter(isDiscoveryCandidate);
+  const eligible=discovery.filter(l=>
+    l.qualification?.eligibility_state==='ELIGIBLE'&&
+    l.qualification.is_valid_freelance_lead&&
+    (l.qualification.priority==='HIGH'||l.qualification.priority==='MEDIUM')
+  );
+  const low=discovery.filter(l=>
+    l.qualification?.eligibility_state==='ELIGIBLE'&&
+    l.qualification.priority==='LOW'
+  );
+  const rejected=discovery.filter(l=>l.qualification?.eligibility_state==='REJECTED');
+  const incomplete=discovery.filter(l=>l.qualification?.eligibility_state==='REVIEW_INCOMPLETE');
+  const quarantined=discovery.filter(l=>l.qualification?.eligibility_state==='QUARANTINED');
+  const legacy=discovery.filter(l=>l.qualification_status==='NEEDS_REQUALIFICATION'||!l.qualification);
+  const inbound=allRecords.filter(l=>!isDiscoveryCandidate(l));
+  const reasonCounts=new Map<string,number>();
+  for(const candidate of [...rejected,...incomplete,...quarantined]){
+    const reason=candidate.qualification?.rejection_reason;
+    if(reason)reasonCounts.set(reason,(reasonCounts.get(reason)||0)+1);
+  }
+  const top=eligible.sort((a,b)=>(b.qualification?.quality_score??0)-(a.qualification?.quality_score??0)).slice(0,3);
+  const warned=allRecords.filter(l=>l.extractionWarning||l.qualification_audit?.warnings?.length);
+  const safeEvidence=(l:typeof top[number])=>
+    (l.qualification?.evidence_quotes||[])
+      .filter(q=>q.field!=='contact')
+      .slice(0,3)
+      .map(q=>`${q.field}: ${q.quote.replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g,'[email]').replace(/https?:\/\/\S+/gi,'[link]').slice(0,100)}`);
   return [
-    'GEMINI EXECUTIVE ANALYSIS SUMMARY',
-    `Pipeline status: ${run.imported>0?'ACTIVE — new leads qualified':'IDLE — no new leads this run'}`,
+    'FREELANCE QUALIFICATION SUMMARY',
+    `Pipeline status: ${run.imported>0?'ACTIVE — new candidates processed':'IDLE — no new candidates this run'}`,
     '',
     `Processed this run: ${run.imported+run.duplicates+run.invalid} (imported ${run.imported}, duplicates ${run.duplicates}, skipped ${run.invalid})`,
-    `Leads in local store: ${leads.length}`,
-    `Gemini-scored: ${gemini} · rules fallback: ${rules}`,
+    `Raw candidates: ${discovery.length}`,
+    `Eligible opportunities (HIGH/MEDIUM): ${eligible.length} (HIGH: ${eligible.filter(l=>l.qualification?.priority==='HIGH').length}, MEDIUM: ${eligible.filter(l=>l.qualification?.priority==='MEDIUM').length})`,
+    `Low-priority eligible candidates: ${low.length}`,
+    `Rejected candidates: ${rejected.length}`,
+    `Incomplete candidates: ${incomplete.length}`,
+    quarantined.length?`Quarantined candidates: ${quarantined.length}`:'',
+    legacy.length?`Needs requalification: ${legacy.length}`:'',
+    reasonCounts.size?`Primary reasons: ${[...reasonCounts].map(([reason,count])=>`${reason} (${count})`).join(', ')}`:'',
+    inbound.length?`  • Consented inbound enquiries: ${inbound.length}`:'',
     '',
-    'Top opportunities:',
+    'Top eligible opportunities:',
     ...(top.length
-      ? top.map((l,i)=>`${i+1}. [${l.score}] ${(l.client_name_if_public||l.title||l.lead_id).slice(0,90)} — ${l.priority}`)
+      ? top.flatMap((l,i)=>[
+          `${i+1}. ${(l.client_name_if_public||l.title||l.lead_id).slice(0,90)} — ${l.qualification?.priority}, ${l.qualification?.quality_score}/100, ${Math.round((l.qualification?.confidence_score||0)*100)}% confidence (${l.qualification_audit?.method||'unknown'})`,
+          ...(safeEvidence(l).length?[`   Evidence: ${safeEvidence(l).join(' · ')}`]:[]),
+        ])
       : ['  none above LOW priority']),
     '',
     'Errors / skipped:',
     ...(run.invalid||warned.length
       ? [
           ...(run.invalid?[`  ${run.invalid} row(s) skipped as invalid or unsupported`]:[]),
-          ...warned.slice(0,3).map(l=>`  ${l.lead_id}: ${l.extractionWarning.slice(0,120)}`),
+          ...warned.slice(0,3).map(l=>`  ${l.lead_id}: ${(l.extractionWarning||l.qualification_audit?.warnings?.join('; ')||'').slice(0,120)}`),
         ]
       : ['  none']),
     '',
     `Owner email test: ${emailTest.status}${emailTest.to?` → ${emailTest.to}`:''}${emailTest.error?` (${emailTest.error})`:''}`,
     'No email was sent to any external lead.',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 /**
@@ -132,14 +165,23 @@ async function main(){
   }}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
   const get=(key:string,fallback='')=>process.env[key]??fallback;
   const on=(key:string)=>get(key)==='true';
+  const requalifyMissing=process.argv.includes('--requalify-missing')||
+    ['1','true'].includes(get('REQUALIFY_MISSING').toLowerCase());
+  const requalifyAll=process.argv.includes('--requalify-all')||
+    ['1','true'].includes(get('FORCE_REQUALIFY').toLowerCase());
+  const requalificationRun=requalifyMissing||requalifyAll;
+  const qualificationMode=get('FREELANCE_QUALIFICATION_MODE','shadow');
+  if(qualificationMode!=='shadow'&&qualificationMode!=='enforce')
+    throw new Error('FREELANCE_QUALIFICATION_MODE must be shadow or enforce');
+  const allowDiscoveryNotifications=qualificationMode==='enforce'&&!requalificationRun;
   if(!preview&&!on('EXTERNAL_LEADS_ENABLED')){console.log('External ingestion OFF. Set EXTERNAL_LEADS_ENABLED=true in .env.external; preview: npm run external:run -- --dry-run');return;}
   // Intentionally local-only. Hosted APIs use the existing Apps Script connector.
-  if(get('EXTERNAL_LEADS_API_ORIGIN','http://127.0.0.1:8787')!=='http://127.0.0.1:8787')throw new Error('Local runner only accepts http://127.0.0.1:8787');
+  if(!requalifyAll&&get('EXTERNAL_LEADS_API_ORIGIN','http://127.0.0.1:8787')!=='http://127.0.0.1:8787')throw new Error('Local runner only accepts http://127.0.0.1:8787');
   let token=get('EXTERNAL_LEADS_API_TOKEN');
-  if(!token){const vars=await readFile('../leadflow-leads/.dev.vars','utf8');token=vars.split(/\r?\n/).find(l=>l.startsWith('API_TOKEN='))?.slice(10).trim()||'';}
-  if(!token)throw new Error('Local API token missing');
-  const gemini=!preview&&on('GEMINI_ENABLED'),telegram=!preview&&on('TELEGRAM_ENABLED');
-  const safeEmailTest=!preview&&on('SAFE_OWNER_EMAIL_TEST');
+  if(!token&&!requalifyAll){const vars=await readFile('../leadflow-leads/.dev.vars','utf8');token=vars.split(/\r?\n/).find(l=>l.startsWith('API_TOKEN='))?.slice(10).trim()||'';}
+  if(!token&&!requalifyAll)throw new Error('Local API token missing');
+  const gemini=!preview&&on('GEMINI_ENABLED'),telegram=!preview&&on('TELEGRAM_ENABLED')&&allowDiscoveryNotifications;
+  const safeEmailTest=!preview&&on('SAFE_OWNER_EMAIL_TEST')&&!requalificationRun;
   if(gemini&&(!get('GEMINI_API_KEY')||!get('GEMINI_MODEL')||!on('GEMINI_FREE_TIER_CONFIRMED')||!on('GEMINI_DATA_USE_APPROVED')))throw new Error('Complete approved Gemini settings first');
   if(telegram&&(!/^\d+:[\w-]+$/.test(get('TELEGRAM_BOT_TOKEN'))||!/^\d+$/.test(get('TELEGRAM_OWNER_CHAT_ID'))||get('TELEGRAM_OWNER_CHAT_ID')!==get('TELEGRAM_OWNER_USER_ID')))throw new Error('Private Telegram owner settings missing or mismatched');
   const limit=Number(get('EXTERNAL_LEADS_BATCH_SIZE','5'));if(!Number.isInteger(limit)||limit<1||limit>5)throw new Error('Batch must be 1–5');
@@ -150,6 +192,7 @@ async function main(){
     const store=new MemoryStore();let offset=0;let emailTest:EmailTestState={...emptyEmailTest};
     try{const old=JSON.parse(await readFile(file,'utf8'));Object.assign(store,old.store);offset=old.offset;if(old.emailTest)emailTest=old.emailTest as EmailTestState;}
     catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('Unreadable local state; restore before retrying');}
+    if(requalifyMissing&&!requalifyAll)offset=0;
     const save=async()=>{await writeFile(file+'.tmp',JSON.stringify({offset,store,emailTest},null,2));await rename(file+'.tmp',file);};
     let httpCount=0;
     const network:Http={json(url,request){
@@ -170,11 +213,52 @@ async function main(){
       if(request?.headers)throw new Error('No token may be sent to HN');return network.json(url);
     }};
     const config=configSchema.parse({ownerUserId:get('TELEGRAM_OWNER_USER_ID','local-owner'),ownerChatId:get('TELEGRAM_OWNER_CHAT_ID','local-owner')});
-    const engine=new Engine(store,config,undefined,gemini?input=>classifyGemini(network,input,{enabled:true,freeTierConfirmed:true,dataUseApproved:true,apiKey:get('GEMINI_API_KEY'),model:get('GEMINI_MODEL')}):undefined);
-    const result=pullExternalLeads(http,{origin,token:transportToken,offset,limit,allowedSources:get('EXTERNAL_LEADS_SOURCES','hackernews').split(',').map(s=>s.trim())},lead=>engine.ingest(lead));
-    offset=result.nextOffset;await save();
+    const engine=new Engine(store,config,undefined,gemini?input=>{
+      if (input.discovery_context) {
+        const res = classifyGeminiDiscovery(network, input.discovery_context, {
+          enabled: true,
+          freeTierConfirmed: true,
+          dataUseApproved: true,
+          apiKey: get('GEMINI_API_KEY'),
+          model: get('GEMINI_MODEL'),
+        });
+        return { discoverySignals: res.signals, warning: res.warning };
+      }
+      return classifyGemini(network,input,{enabled:true,freeTierConfirmed:true,dataUseApproved:true,apiKey:get('GEMINI_API_KEY'),model:get('GEMINI_MODEL')});
+    }:undefined);
+    let requalified=0,requalificationSkipped=0;
+    let result:{imported:number;duplicates:number;invalid:number;nextOffset:number};
+    if(requalifyAll){
+      for(const lead of store.leads().filter(isDiscoveryCandidate)){
+        if(!lead.discovery_context){requalificationSkipped++;continue;}
+        engine.requalifyDiscovery(lead.lead_id,lead,true);
+        requalified++;
+      }
+      result={imported:0,duplicates:0,invalid:0,nextOffset:offset};
+    }else{
+      result=pullExternalLeads(http,{origin,token:transportToken,offset,limit,allowedSources:get('EXTERNAL_LEADS_SOURCES','hackernews').split(',').map(s=>s.trim())},lead=>{
+        const ingested=engine.ingest(lead);
+        if(requalifyMissing&&ingested.duplicate&&lead.discovery_context){
+          const stored=store.get(ingested.lead.lead_id);
+          if(stored?.source==='hn'&&(!stored.qualification||stored.qualification_status==='NEEDS_REQUALIFICATION')){
+            engine.requalifyMissingDiscovery(stored.lead_id,lead);
+            requalified++;
+          }
+        }
+        return ingested;
+      });
+      offset=result.nextOffset;
+    }
+    await save();
     const alerts=[];
-    for(const lead of store.leads().filter(l=>l.status==='PENDING_APPROVAL'&&!store.requests().some(r=>r.lead_id===l.lead_id)).slice(0,2)){
+    for(const lead of (allowDiscoveryNotifications?store.leads():[]).filter(l=>
+      l.status==='PENDING_APPROVAL' &&
+      !store.requests().some(r=>
+        r.lead_id===l.lead_id&&
+        !(requalifyMissing&&allowDiscoveryNotifications&&r.state==='FAILED')
+      ) &&
+      canRouteDiscoveryLead(l)
+    ).slice(0,2)){
       const request=engine.prepareApproval(lead,randomBytes(12).toString('hex'));
       const alert=notification(lead,request);alerts.push({lead_id:lead.lead_id,...alert});
       if(telegram){
@@ -203,10 +287,10 @@ async function main(){
       }catch{summaryStatus='FAILED';}
     }
     await save();await writeFile('outputs/external/review-preview.json',JSON.stringify(alerts,null,2));
-    console.log(JSON.stringify({mode:preview?'DRY RUN — real reads, local rules, preview only':'LOCAL ONE-SHOT',...result,
+    console.log(JSON.stringify({mode:preview?'DRY RUN — real reads, local rules, preview only':requalificationRun?'LOCAL REQUALIFICATION — NOTIFICATIONS SUPPRESSED':`LOCAL ONE-SHOT — ${qualificationMode.toUpperCase()}`,...result,requalified,requalification_skipped_missing_context:requalificationSkipped,
       total:store.leads().length,pending:store.leads().filter(l=>l.status==='PENDING_APPROVAL').length,
       gemini_attempted:gemini,methods:store.leads().map(l=>({id:l.lead_id,method:l.method,warning:l.extractionWarning})),
-      telegram:telegram?'owner preview notifications + executive summary':'local payloads only',
+      telegram:requalificationRun?'suppressed during requalification':qualificationMode==='shadow'?'suppressed by shadow mode':telegram?'owner preview notifications + executive summary':'local payloads only',
       telegram_summary:summaryStatus,
       email_test:emailTest,
       gmail:'BLOCKED — no sender adapter; owner receipt only',state:file,alerts:alerts.length},null,2));

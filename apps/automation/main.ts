@@ -7,11 +7,14 @@ import { EmailWorkflow, emailAlert, type EmailOutbox } from "../../packages/core
 import { rowToInput } from "../../packages/core/csv";
 import {
   Engine,
+  canRouteDiscoveryLead,
   commandReply,
+  isDiscoveryCandidate,
   notification,
 } from "../../packages/core/workflow";
 import {
   classifyGemini,
+  classifyGeminiDiscovery,
   planEmailGemini,
   gmailToLead,
   hnSources,
@@ -154,13 +157,18 @@ function runtime() {
     if (dry() || !enabled("GEMINI_ENABLED"))
       return { warning: "Gemini disabled; local rules used" };
     spend("gemini", integer("DAILY_GEMINI_LIMIT", 10, 1, 100));
-    return classifyGemini(http, input, {
-      enabled: true,
-      freeTierConfirmed: enabled("GEMINI_FREE_TIER_CONFIRMED"),
-      dataUseApproved: enabled("GEMINI_DATA_USE_APPROVED"),
-      apiKey: setting("GEMINI_API_KEY"),
-      model: setting("GEMINI_MODEL"),
-    });
+    if (input.discovery_context) {
+      const extraction = classifyGeminiDiscovery(
+        http,
+        input.discovery_context,
+        aiOptions(),
+      );
+      return {
+        discoverySignals: extraction.signals,
+        warning: extraction.warning,
+      };
+    }
+    return classifyGemini(http, input, aiOptions());
   });
   const outbox=new SheetOutbox(store);
   const email=new EmailWorkflow(store,outbox,config,{now},digest);
@@ -631,13 +639,19 @@ function pollTelegram(engine: Engine,email:EmailWorkflow) {
   }
 }
 function notifyPending(engine: Engine) {
+  const qualificationMode = setting("FREELANCE_QUALIFICATION_MODE", "shadow");
+  if (qualificationMode !== "shadow" && qualificationMode !== "enforce")
+    throw new Error("Invalid setting: FREELANCE_QUALIFICATION_MODE");
+  const shadowMode = qualificationMode === "shadow";
   const candidates = engine.store
     .leads()
     .filter(
       (l) =>
         l.status === "PENDING_APPROVAL" &&
         l.source !== 'inbound' &&
-        !engine.store.requests().some((r) => r.lead_id === l.lead_id),
+        !engine.store.requests().some((r) => r.lead_id === l.lead_id) &&
+        canRouteDiscoveryLead(l) &&
+        (!isDiscoveryCandidate(l) || !shadowMode),
     )
     .slice(0, 2);
   for (const lead of candidates) {

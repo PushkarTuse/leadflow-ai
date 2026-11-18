@@ -1,5 +1,42 @@
 # Operating the agency from your phone
 
+## Freelance discovery qualification (Stage G)
+
+`FREELANCE_QUALIFICATION_MODE` defaults to `shadow`. Shadow computes and persists qualification and audit data but suppresses discovery approval notifications. Enforce routes only `ELIGIBLE` MEDIUM/HIGH records with confidence >=0.85. Legacy records without qualification remain `NEEDS_REQUALIFICATION` and never notify. The inbound website enquiry and email-approval path is unchanged.
+
+Validated Gemini `discoverySignals` now flow into Stage C scoring; every model evidence quote is checked against source text, and deterministic hard exclusions remain authoritative. The upstream importer queries a configured single source newest-first (`sort=found_at&order=desc`); the current source is `hackernews`. HN “Who is hiring?” context, first non-empty post-body title evidence, and seller-availability patterns strengthen W-2, fixed-term contract, and seller-self-promotion classification. Clear independent freelance/project buyer requests remain eligible when all gates pass. Dashboard rows expose eligibility, priority, score/confidence, method, rejection reason and evidence. Do not refer to rejected or incomplete records as leads.
+
+Local runner commands, from `D:\freelance_personal\leadflow-ai`:
+
+```powershell
+npm run external:run
+npm run external:run -- --dry-run
+npm run external:run -- --requalify-missing
+npm run external:run -- --requalify-all
+```
+
+Normal runs reuse duplicates and do not rescore them. The bounded page is at most five records; run multiple times to advance the cursor. `--requalify-missing` revisits the first source page and requalifies only stored HN duplicates missing qualification. `--requalify-all` overwrites qualification for stored discovery records with saved `discovery_context`. Both requalification modes suppress notifications and skip records lacking context; they never synthesize `valid=true`. `--dry-run` makes bounded source reads but uses isolated `data/external-preview.json` and review-preview output; it disables Gemini, Telegram and owner email testing, so it is not an AI mode-comparison test.
+
+For a no-message comparison, use a PowerShell session and keep both output channels off. Do not use `--dry-run` for this comparison because it disables Gemini and uses preview state:
+
+```powershell
+$env:EXTERNAL_LEADS_ENABLED = 'true'
+$env:EXTERNAL_LEADS_SOURCES = 'hackernews'
+$env:TELEGRAM_ENABLED = 'false'
+$env:SAFE_OWNER_EMAIL_TEST = 'false'
+$env:FREELANCE_QUALIFICATION_MODE = 'shadow'
+npm run external:run
+
+$env:FREELANCE_QUALIFICATION_MODE = 'enforce'
+npm run external:run
+```
+
+In shadow there are no discovery alerts. Enforce may write local eligible alert previews to `outputs/external/review-preview.json`; with Telegram and owner-email testing disabled, nothing is sent. Ensure the Gemini key and the owner's free-tier/data-use approvals are configured if testing live extraction. This local variable does not configure Apps Script Script Properties.
+
+The gates are intentionally conservative: source/freshness and safety checks precede seller/employment/unpaid exclusions; buyer direction, independent engagement, payment and scope are mandatory for eligibility. Classic HN employer posts and explicit freelancer availability reject unless clear independent buyer evidence supports the project. Non-classic or underspecified records may remain `REVIEW_INCOMPLETE` with `AMBIGUOUS_DIRECTION`. Arbeitnow is an employment job board and is not included in the current HN-only qualification pull.
+
+Gemini is optional. Invalid output, intermittent HTTP 503/transport failures, or quota errors fall back to deterministic rules with a safe execution warning. On 19 November, the local upstream database had 85 rows (67 HN, 18 Arbeitnow); `data/external-gemini.json` held 15 evaluated HN records (10 Gemini, 5 rules fallback; 15 rejected, 0 eligible). These are local results, not production delivery. Keep `.env.external` and `data/external-*.json` ignored and out of Git. The Stage G/H changes are local-only until pushed and the Apps Script bundle is deployed; the leadflow-leads API also needs reachable HTTPS hosting before Apps Script can access it.
+
 ## V3 website enquiries
 
 Check the exact recipient and full proposed email in Telegram. Approve & send email queues that single reply; Defer/Reject do not send. Confirm EmailOutbox becomes SENT with a Gmail message ID, and check venture Gmail for replies. Polling is approximately every ten minutes. UNCERTAIN or NOTIFYING requires owner review, not blind retry. Renew unsent/deferred email reviews from the Sheet menu; changed nonces invalidate old buttons. Test and emergency-stop steps are in LIVE_SMOKE_TEST.md and SETUP.md. The discovery routine below remains draft-only.

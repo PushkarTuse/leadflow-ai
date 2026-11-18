@@ -146,7 +146,8 @@ export function pullExternalLeads(http:Http, options:{origin:string;token:string
   if(!options.allowedSources.length||options.allowedSources.some(s=>!externalSources.includes(s as typeof externalSources[number])))
     throw new Error('Invalid external source allowlist');
   guard();
-  const page=pageSchema.parse(http.json(`${origin}/leads?sort=found_at&order=asc&limit=${options.limit}&offset=${options.offset}`,
+  const sourceFilter=options.allowedSources.length===1?`&source=${encodeURIComponent(options.allowedSources[0])}`:'';
+  const page=pageSchema.parse(http.json(`${origin}/leads?sort=found_at&order=desc${sourceFilter}&limit=${options.limit}&offset=${options.offset}`,
     {headers:{Authorization:`Bearer ${options.token}`}}));
   if(page.offset!==options.offset || page.count!==page.leads.length || page.count>options.limit)throw new Error('External page mismatch');
   const counts={imported:0,duplicates:0,invalid:0};

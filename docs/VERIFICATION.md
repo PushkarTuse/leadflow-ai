@@ -1,4 +1,18 @@
-# Verification record — 14 November 2026
+# Verification record — updated 19 November 2026
+
+## Stage G/H freelance qualification — local verification, 19 November 2026
+
+`npm test` passed **161 tests**, `npm run typecheck` passed, and `npm run build:automation` built the Apps Script bundle locally. The GAS runtime test verifies that missing `FREELANCE_QUALIFICATION_MODE` defaults to shadow, qualification is persisted, and no discovery Telegram message is sent. Another test explicitly opts into enforce and verifies the eligible notification path. `apps/automation/settings.example.json` parses as valid JSON.
+
+The Stage C fixture suite covers classic employee openings, fixed-term contract roles, seller availability posts, true buyer projects, negation and mixed posts. Validated Gemini `discoverySignals` were exercised end-to-end and reached Stage C; deterministic hard exclusions remained authoritative. The configured `gemini-3.5-flash-lite` model was confirmed to support `generateContent`. Live local extraction succeeded on multiple HN records, while intermittent HTTP 503/transport errors used deterministic fallback. No 429 was observed in this bounded run; quota remains a possible provider limit.
+
+The local external API database had **85 records** (67 HN, 18 Arbeitnow). The LeadFlow dashboard state had **15 evaluated HN records** (10 Gemini method, 5 rules fallback; 15 rejected, 0 eligible, 0 low, 0 incomplete, 0 quarantined, 0 needing requalification). The rejection snapshot included full-time/employment, fixed-term employment contracts, seller self-promotion and one stale/closed record. The local requalification run suppressed notifications; no Telegram or owner-test email was sent in these checks. This snapshot does not contain a qualifying buyer post; separate tests verify an eligible freelance buyer can route in enforce mode.
+
+Mode comparisons should use normal runs with `TELEGRAM_ENABLED=false` and `SAFE_OWNER_EMAIL_TEST=false`; `--dry-run` disables Gemini and writes isolated preview state, so it is not an AI mode-comparison test. See `docs/OPERATIONS_RUNBOOK.md` for exact PowerShell commands. The local Apps Script bundle has **not** been redeployed, and the leadflow-leads API is not yet hosted at reachable HTTPS; production Apps Script behavior/delivery is not verified.
+
+Known classification limits: non-classic or underspecified job listings can still remain `REVIEW_INCOMPLETE` with `AMBIGUOUS_DIRECTION`; these HN fixtures do not prove perfect job-post detection. Duplicate runs reuse existing records; use the documented requalification flags for controlled local rescoring. Inbound website enquiries were not changed.
+
+## Historical verification entries
 
 ## Kapicks portfolio update — 16 November 2026
 

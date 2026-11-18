@@ -32,6 +32,7 @@ flowchart LR
 | `apps/web` | React/TypeScript/Vite/Tailwind agency pages, accessible native form controls, fictional demo |
 | `packages/core/model.ts` | Strict input/config schemas, statuses, types, stable IDs and contact checks |
 | `packages/core/scoring.ts` | Source cleaning, injection heuristic, structured extraction schema, transparent scoring |
+| `packages/core/qualification.ts` | Discovery-specific source/safety, buyer, engagement, payment, scope gates, evidence audit and policy versions |
 | `packages/core/workflow.ts` | Ingestion, transitions, approvals, crash reconciliation, drafts, owner commands |
 | `packages/core/csv.ts` | Bounded CSV parser, template migration mapping, formula-safe export |
 | `apps/automation/adapters.ts` | Testable Gmail, Gemini and official HN wire formats |
@@ -46,7 +47,7 @@ flowchart LR
 
 **Rules are a supported operating mode.** Gemini extracts exact evidence for hiring intent, supported skills and timeline. Strict JSON rejects extra fields or unsupported quotations. The application calculates points and retains unknown budgets/identity as unknown. Supplied budget fields are owner/source facts; currency conversion is not guessed. The proposal template uses those facts and explicit assumptions without making model calls.
 
-**Two different scoring contexts.** Public property-demo scoring measures clarity/completeness of a fictional buyer enquiry. Private freelance scoring measures paid project fit against the six dimensions in the brief. A property budget is never treated as a software-project budget. A score is not a conversion probability.
+**Separate qualification contexts.** Inbound enquiry scoring/drafting remains consent-based and is not controlled by the discovery setting. HN discovery uses versioned buyer/independent-engagement/paid-intent/scope gates; explicit seller and employment exclusions precede incomplete-data holds. `FREELANCE_QUALIFICATION_MODE` defaults to `shadow` and suppresses discovery notices; `enforce` routes only eligible MEDIUM/HIGH records. Scores are not conversion probabilities.
 
 **Credentials stay on servers.** The browser only gets public site/contact/Turnstile settings. Cloudflare stores the Turnstile secret and shared HMAC; Apps Script stores that HMAC plus provider keys. The anonymous Apps Script web app validates signed POSTs and exposes only a generic GET health response. It cannot be used as a public CRM reader or arbitrary mail sender.
 

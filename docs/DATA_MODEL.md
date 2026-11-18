@@ -43,6 +43,14 @@ IntakeReceipts stores submission UUID, lead ID, payload hash, received/processed
 
 ## Status and permission rules
 
+### Discovery qualification (Stages A–G)
+
+Discovery leads carry optional `discovery_context`, `qualification` and `qualification_audit` in `record_json`. The final record retains schema/rules/prompt/capability/policy versions, source hash, classification time/method, rejection reasons, missing fields, score breakdown and execution warnings. Legacy HN records without a result are held as `NEEDS_REQUALIFICATION`; validity is never inferred from an old assessment.
+
+Discovery gates require allowed/current source evidence, buyer-side demand, independent engagement, credible paid intent and defined scope. Explicit seller availability, employment/full-time or employee-contract roles, internship, unpaid/equity, aggregator and promotion evidence reject before incomplete gates. Primary reason precedence is source-not-allowed, source-unavailable, unsafe, stale, seller, full-time, employment-contract, internship, unpaid/equity, aggregator, no-client-need, ambiguous-direction, engagement, payment, scope, insufficient-context, service-scope and location. Classic role title plus company hiring language is employment unless there is clear independent freelance/project buyer evidence. This heuristic does not eliminate all ambiguous job listings; unresolved direction remains a review hold.
+
+Discovery priority thresholds are HIGH ≥85, MEDIUM ≥65, LOW ≥50. Passing hard gates can produce ELIGIBLE at LOW, but routing requires ELIGIBLE + MEDIUM/HIGH + confidence ≥0.85. `FREELANCE_QUALIFICATION_MODE` defaults to `shadow`: qualification/audit persist, discovery alerts do not send. `enforce` permits only the routed set. Inbound qualification/email behavior is unchanged. Stage G's Apps Script bundle has not been deployed; the setting in this repository is not evidence of live Script Properties.
+
 ```text
 NEW → QUALIFIED → PENDING_APPROVAL → APPROVED_FOR_DRAFT → DRAFT_READY
     → CONTACTED_MANUALLY → REPLIED → DISCOVERY → QUOTED → WON → MAINTENANCE
@@ -53,7 +61,7 @@ ARCHIVED and REJECTED are terminal branches where permitted. A review decision k
 
 Permitted states: `PLATFORM_ONLY` means use only the reviewed source platform; `EXPLICIT_OPT_IN` means use only the contact purpose/channel actually granted. Neither is inferred from public availability or AI output. Gmail/HN defaults are UNKNOWN.
 
-Score weights: hiring 30, supported skills 25, budget 20, timeline 10, identity credibility 10, contact route 5. The current scoring maximum for supplied identity alone is 7/10 credibility because no external verification is performed. Missing budgets get 5/20 and lower confidence, not a fabricated value. Default software-project budget floors: INR 15,000 / USD 200 / EUR 180 / GBP 160; these are explicit independent thresholds, not exchange-rate conversions. Thresholds are configurable in core; source priority cutoffs are configurable in Apps Script.
+The score weights in the legacy scoring section apply to inbound/manual records, not Stage C discovery qualification. Discovery uses a separate versioned score breakdown and policy; do not interpret one system's score or priority as the other's.
 
 ## IDs, export and privacy
 

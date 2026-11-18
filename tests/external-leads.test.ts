@@ -27,6 +27,7 @@ describe('external discovery pull',()=>{
     const store=new MemoryStore(),engine=new Engine(store,defaults,{now:()=>time});
     const calls:string[]=[];
     const http:Http={json:(url,request)=>{calls.push(url);if(url.includes('/leads?')){
+      expect(url).toContain('sort=found_at&order=desc&source=hackernews');
       expect(request?.headers?.Authorization).toBe(`Bearer ${options.token}`);return page([row]);
     }expect(request?.headers).toBeUndefined();return item;}};
     expect(pullExternalLeads(http,options,l=>engine.ingest(l))).toMatchObject({imported:1,nextOffset:0});

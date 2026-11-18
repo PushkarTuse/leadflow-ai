@@ -1,12 +1,20 @@
 import { z } from "zod";
 import { draftPlanSchema } from '../../packages/core/email';
-import { inputSchema, type LeadInput } from "../../packages/core/model";
+import { hash, inputSchema, type LeadInput } from "../../packages/core/model";
 import {
   cleanText,
   extractionJsonSchema,
   extractionPrompt,
   validateExtraction,
+  discoveryExtractionJsonSchema,
+  discoveryExtractionPrompt,
+  validateDiscoveryExtraction,
+  type DiscoverySignals,
 } from "../../packages/core/scoring";
+import {
+  qualificationVersions,
+  type DiscoveryContext,
+} from "../../packages/core/qualification";
 
 export interface HttpRequest {
   method?: "get" | "post";
@@ -28,6 +36,25 @@ export const geminiResponse = z.object({
     )
     .min(1),
 });
+function discoveryFailureWarning(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  const status = Number(message.match(/\bHTTP\s+(\d{3})\b/)?.[1] || 0);
+  if (status === 429) return "Gemini quota/rate limit (HTTP 429); deterministic rules used";
+  if (status === 400) return "Gemini rejected the request/schema (HTTP 400); check model/API compatibility; deterministic rules used";
+  if (status === 401 || status === 403) return `Gemini API key/access failure (HTTP ${status}); deterministic rules used`;
+  if (status === 404) return "Gemini model or endpoint not found (HTTP 404); verify GEMINI_MODEL; deterministic rules used";
+  if (status >= 500) return `Gemini service error (HTTP ${status}); deterministic rules used`;
+  if (error instanceof SyntaxError || error instanceof z.ZodError) {
+    return "Gemini returned invalid JSON/schema; deterministic rules used";
+  }
+  const networkCode = message.match(
+    /\b(ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET)\b/,
+  )?.[1];
+  if (networkCode) {
+    return `Gemini transport failure (${networkCode}); deterministic rules used`;
+  }
+  return "Gemini network/provider failure; deterministic rules used";
+}
 export function classifyGemini(
   http: Http,
   input: LeadInput,
@@ -92,6 +119,118 @@ export function classifyGemini(
   } catch {
     return {
       warning: "Gemini unavailable, quota-limited or invalid; local rules used",
+    };
+  }
+}
+
+const discoveryExtractionCache = new Map<string, DiscoverySignals>();
+
+/**
+ * Stage D: Bounded Gemini extraction for freelance discovery classification.
+ * One extraction request per candidate; ≤2500 input tokens, ≤800 output tokens.
+ * Temperature 0. No auto-retry on invalid JSON — fall back deterministically.
+ * Cache by content + version hashes. Freshness recalculated even on cache hits.
+ */
+export function classifyGeminiDiscovery(
+  http: Http,
+  context: DiscoveryContext,
+  options: {
+    enabled: boolean;
+    freeTierConfirmed: boolean;
+    dataUseApproved: boolean;
+    apiKey: string;
+    model: string;
+  },
+): { signals?: DiscoverySignals; warning?: string } {
+  if (!options.enabled) return { warning: "Gemini disabled; local rules used" };
+  if (
+    !options.freeTierConfirmed ||
+    !options.dataUseApproved ||
+    !options.apiKey ||
+    !/^[a-zA-Z0-9._-]+$/.test(options.model)
+  )
+    return {
+      warning:
+        "Gemini configuration or free-tier/data-use confirmation missing; local rules used",
+    };
+
+  // Cache by source/thread context and all classification contract versions.
+  const sourceThreadHash = hash([
+    context.source_hash,
+    context.original_title || "",
+    context.parent_id || "none",
+    context.thread_id || "none",
+    context.thread_title || "none",
+    context.thread_date || "none",
+  ].join("\u001f"));
+  const cacheKey = [
+    sourceThreadHash,
+    options.model,
+    qualificationVersions.schema_version,
+    qualificationVersions.rules_version,
+    qualificationVersions.prompt_version,
+    qualificationVersions.capability_list_version,
+    qualificationVersions.policy_version,
+  ].join(":");
+  const cached = discoveryExtractionCache.get(cacheKey);
+  if (cached) {
+    return { signals: cached };
+  }
+
+  // Build input: title + paragraph-preserving body, never credentials or CRM history
+  // Do not truncate away disclaimers or the end of a post just to fit: hold long posts
+  const title = context.original_title || "";
+  const body = context.decoded_text || "";
+  const canonical = `${title}\n\n${body}`;
+
+  // ≤2500 input tokens ≈ ~10,000 characters
+  if (canonical.length > 10000) {
+    return { warning: "Input too long for discovery extraction; rules used" };
+  }
+
+  const threadContext = context.thread_id
+    ? `Thread context: thread=${context.thread_id}, parent=${context.parent_id || "none"}\n\n`
+    : "";
+  const inputText = JSON.stringify({
+    DATA: `${threadContext}${canonical}`,
+  });
+
+  try {
+    const result = geminiResponse.parse(
+      http.json(
+        `https://generativelanguage.googleapis.com/v1beta/models/${options.model}:generateContent`,
+        {
+          method: "post",
+          headers: { "x-goog-api-key": options.apiKey },
+          retrySafe: false,
+          body: {
+            systemInstruction: { parts: [{ text: discoveryExtractionPrompt }] },
+            contents: [
+              {
+                role: "user",
+                parts: [{ text: inputText }],
+              },
+            ],
+            generationConfig: {
+              temperature: 0,
+              maxOutputTokens: 800,
+              responseMimeType: "application/json",
+              responseJsonSchema: discoveryExtractionJsonSchema,
+            },
+          },
+        },
+      ),
+    );
+    const text = result.candidates[0].content.parts
+      .map((p) => p.text || "")
+      .join("");
+    // No auto-retry: validate or fall back
+    const signals = validateDiscoveryExtraction(text, context);
+    discoveryExtractionCache.set(cacheKey, signals);
+    return { signals };
+  } catch (error) {
+    return {
+      warning: discoveryFailureWarning(error),
     };
   }
 }

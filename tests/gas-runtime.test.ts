@@ -213,6 +213,7 @@ describe("built Apps Script runtime with mocked Google/Telegram services", () =>
     const h=harness();h.run('setup');
     for(const [k,v] of Object.entries({DRY_RUN:'false',EXTERNAL_LEADS_ENABLED:'true',
       EXTERNAL_LEADS_API_ORIGIN:'https://scout.example.com',EXTERNAL_LEADS_API_TOKEN:'x'.repeat(40),
+      FREELANCE_QUALIFICATION_MODE:'enforce',
       TELEGRAM_ENABLED:'true',TELEGRAM_BOT_TOKEN:'123:token',TELEGRAM_OWNER_CHAT_ID:'99',TELEGRAM_OWNER_USER_ID:'99'}))h.props.set(k,v);
     const fixture=inputSchema.parse(fixtures(new Date().toISOString())[0]);
     h.setSourceReply(url=>url.includes('/leads?')?{ok:true,total:1,count:1,offset:0,leads:[{
@@ -225,6 +226,21 @@ describe("built Apps Script runtime with mocked Google/Telegram services", () =>
     expect(h.tabs.get('EmailOutbox')!.rows).toHaveLength(1);expect(h.sent).toHaveLength(0);
     expect(h.props.get('EXTERNAL_LEADS_OFFSET')).toBe('0');
     h.props.delete('last_source_cycle');h.run('tick');expect(h.records()).toHaveLength(1);
+  });
+  it('defaults discovery notifications to shadow while still persisting qualification',()=>{
+    const h=harness();h.run('setup');
+    for(const [k,v] of Object.entries({DRY_RUN:'false',EXTERNAL_LEADS_ENABLED:'true',
+      EXTERNAL_LEADS_API_ORIGIN:'https://scout.example.com',EXTERNAL_LEADS_API_TOKEN:'x'.repeat(40),
+      TELEGRAM_ENABLED:'true',TELEGRAM_BOT_TOKEN:'123:token',TELEGRAM_OWNER_CHAT_ID:'99',TELEGRAM_OWNER_USER_ID:'99'}))h.props.set(k,v);
+    const fixture=inputSchema.parse(fixtures(new Date().toISOString())[0]);
+    h.setSourceReply(url=>url.includes('/leads?')?{ok:true,total:1,count:1,offset:0,leads:[{
+      source:'hackernews',source_id:'12345',category:'company_hiring',name:'Company',title:'React website developer',
+      url:'https://news.ycombinator.com/item?id=12345',found_at:new Date().toISOString()}]}:
+      {id:12345,type:'job',title:fixture.title,text:fixture.raw_description,time:Math.floor(Date.now()/1000)});
+    h.run('tick');
+    expect(h.records()).toHaveLength(1);
+    expect(h.records()[0].qualification).toBeDefined();
+    expect(h.calls.some(c=>c.method==='sendMessage')).toBe(false);
   });
   it('preserves full diagnostic logs while continuing beyond the operational row limit',()=>{
     const h=harness();h.run('setup');const log=h.tabs.get('SourceRuns')!;

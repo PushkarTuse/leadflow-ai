@@ -1,18 +1,28 @@
 # LeadFlow launch checklist
 
-| Strict freelance qualification | Status | Next |
+## Current discovery qualification — 19 November 2026
+
+| Area | Status | Evidence / remaining |
 |---|---|---|
-| Eight-stage eligibility/evidence/scoring design | Specification complete; not implemented | Follow docs/FREELANCE_LEAD_QUALIFICATION_SPEC.md stages A–H; shadow evaluation before enforcement; preserve inbound email and prior decisions |
+| Stages A–F: evidence, gates, scoring, persistence/routing and dashboard | Implemented locally | `npm test`: 161 passed; `npm run typecheck` passed. Dashboard distinguishes eligible, low, rejected, incomplete, quarantined and needs-requalification |
+| Stage D Gemini handoff | Implemented and exercised locally | Validated `discoverySignals` now reach Stage C; deterministic hard exclusions remain authoritative. Intermittent provider errors fall back to rules |
+| Stage G: shadow/enforce | Implemented and tested locally; default `shadow` | Enforce routes only eligible MEDIUM/HIGH records with confidence >=0.85. Local Apps Script bundle built but **not redeployed**; live Script Properties/runtime are unverified |
+| Stage H documentation | Updated locally | Documentation records local behavior/evidence and clearly separates it from production deployment |
+| Local qualification snapshot | Verified 19 November | Upstream D1: 85 records (67 HN, 18 Arbeitnow). Dashboard state: 15 HN records (10 Gemini, 5 rules fallback); 15 rejected, 0 eligible |
+| Production rollout | Not verified | Stage G/H have not been pushed/deployed to Apps Script; the local leadflow-leads API is not yet hosted at a reachable HTTPS origin. Inbound website enquiries remain unchanged |
+
+The importer requests the configured source newest-first; the current source is `hackernews`. HN “Who is hiring?” context, missing-title body evidence and seller-availability patterns strengthen job/seller rejection. Duplicate records are reused unless explicitly requalified. These results are a bounded local snapshot, not a guarantee that every future/non-classic job post is classified perfectly.
 
 | External one-shot trigger | Status | Remaining |
 |---|---|---|
-| `npm run external:run` and local config switch | Real provider check passed: five HN leads, three Gemini + two rules, two pending and two owner Telegram preview receipts | Hosted interactive approvals require HTTPS/CRM activation; production stays off, Gmail absent from local runner |
+| `npm run external:run` | Two shadow-mode pages imported 10 new HN records; subsequent `--requalify-all` rescored all 15 stored records with zero alerts | Per-run batch is capped at five. Telegram and owner email testing were disabled during verification |
 
 | External API integration (16 November) | Status | Next |
 |---|---|---|
-| Bounded pull adapter, HN original-evidence mapping, scheduled Engine path | Implemented, disabled by default; 16 focused tests pass | Local external API setup, then reachable HTTPS hosting/configuration and live ingestion verification; see HANDOFF_EXTERNAL_LEAD_INTEGRATION.md |
-| Local external API + real HN validation | Completed 16 November | Five HN records in local API/D1; five mapped, zero invalid, replay five duplicates; three in-memory draft-review candidates. Future HTTPS deployment/production activation deferred |
-| Local token + integrated approval dry run | Completed 16 November | dev-token authentication verified after restart; 5 HN + 5 Arbeitnow in local SQLite; three review payloads and approve/defer/reject callbacks exercised internally; 16 focused tests pass; no provider sends |
+| Bounded pull adapter and HN evidence mapping | Implemented locally; importer filters the configured single source and sorts newest-first | Current config is HN-only. Do not route Arbeitnow job-board records through the legacy scorer |
+| Local external API refresh | Verified 19 November | 85 D1 rows: 67 HN and 18 Arbeitnow; this repository imports HN discovery only |
+| Local qualification and dashboard state | Verified 19 November | 15 evaluated HN records; 15 rejected (10 employment/full-time, 2 employment-contract, 2 seller self-promotion, 1 stale/closed); 0 eligible/incomplete |
+| Automation bundle | Built locally | `npm run build:automation` passed; **not deployed** to Apps Script |
 
 ## P0.1 — Blueprint studio revision (15 November 2026)
 

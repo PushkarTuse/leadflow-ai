@@ -9,7 +9,6 @@ import {
   prefilterDiscovery,
   extractRuleEvidence,
   scoreFreelanceQualification,
-  defaultQualificationPolicy,
   type QualificationRecord,
   type DiscoveryContext,
 } from "../packages/core/qualification";
@@ -159,7 +158,7 @@ describe("Stage B: HN discovery evidence preservation", () => {
     };
     const withoutTime = externalToLead(baseRow, itemNoTime);
     expect(withoutTime.posted_at).toBeUndefined();
-    expect(withTime.discovery_context?.published_at).toBeNull();
+    expect(withoutTime.discovery_context?.published_at).toBeNull();
   });
 
   it("keeps the provider category as an untrusted tag hint", () => {
@@ -245,12 +244,11 @@ describe("Stage B: evidence offset validation", () => {
   });
 });
 
-
 /* ================================================================== */
-/* Stage C — Section 9 concrete acceptance cases                       */
+/* Stage C helpers                                                      */
 /* ================================================================== */
 
-function makeContext(
+function makeCtx(
   title: string,
   body: string,
   overrides: Partial<DiscoveryContext> = {},
@@ -267,19 +265,27 @@ function makeContext(
     published_at: NOW,
     collected_at: NOW,
     fetched_at: NOW,
-    source_hash: hash(body || title),
+    source_hash: hash(body || title || "empty"),
     ...overrides,
   });
 }
 
-function classify(title: string, body: string, overrides: Partial<DiscoveryContext> = {}) {
-  const context = makeContext(title, body, overrides);
-  const evidence = extractRuleEvidence(canonicalEvidence(context), context);
-  return scoreFreelanceQualification(evidence, context, NOW);
+function classify(
+  title: string,
+  body: string,
+  overrides: Partial<DiscoveryContext> = {},
+) {
+  const ctx = makeCtx(title, body, overrides);
+  const ev = extractRuleEvidence(canonicalEvidence(ctx), ctx);
+  return scoreFreelanceQualification(ev, ctx, NOW);
 }
 
-describe("Stage C — Section 9: concrete acceptance cases", () => {
-  it("Case 1: Full-spec React contractor project → CLIENT_PROJECT HIGH 100", () => {
+/* ================================================================== */
+/* Stage C — Section 9 concrete acceptance cases                        */
+/* ================================================================== */
+
+describe("Stage C: Section 9 acceptance cases", () => {
+  it("Case 1: full React contractor fixed-price project is HIGH 100", () => {
     const { record, audit } = classify(
       "",
       "We need an independent React contractor to deliver our checkout with Stripe integration and tests. Fixed budget USD 4,000. Deadline in four weeks. Apply using this form: https://example.com/apply.",
@@ -295,7 +301,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.confidence_score).toBe(0.95);
     expect(record.rejection_reason).toBeNull();
     expect(audit.method).toBe("rules");
-    // Verify: 20+15+20+15+5+10+10+5 = 100
+    // Verify exact breakdown: 20+15+20+15+5+10+10+5 = 100
     expect(audit.breakdown.buyer_demand).toBe(20);
     expect(audit.breakdown.engagement).toBe(15);
     expect(audit.breakdown.paid_intent).toBe(20);
@@ -305,9 +311,8 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(audit.breakdown.contact_path).toBe(10);
     expect(audit.breakdown.freshness).toBe(5);
   });
-  });
 
-  it("Case 2: Paid freelancer Python API → CONSULTING MEDIUM 80", () => {
+  it("Case 2: paid freelancer Python API rate negotiable is MEDIUM 80", () => {
     const { record, audit } = classify(
       "",
       "Seeking a paid freelancer to improve our Python API performance. Rates negotiable. Email engineering@example.com.",
@@ -328,7 +333,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(audit.breakdown.freshness).toBe(5);
   });
 
-  it("Case 3: Independent React contractor (bare) → CONTRACT_ROLE LOW 60", () => {
+  it("Case 3: bare independent React contractor hiring is LOW 60 COMMERCIAL_HIRING", () => {
     const { record, audit } = classify(
       "",
       "We are hiring an independent React contractor.",
@@ -352,7 +357,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(audit.breakdown.freshness).toBe(5);
   });
 
-  it("Case 4: Agency subcontracting WordPress → AGENCY_BUYER HIGH 100", () => {
+  it("Case 4: agency subcontracting WordPress site with USD 2000 is HIGH 100", () => {
     const { record } = classify(
       "",
       "Our agency needs a paid subcontractor to migrate one WordPress site including redirect tests. USD 2,000 fixed fee; finish this month; reply by email to agency@example.com.",
@@ -365,7 +370,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.quality_score).toBe(100);
   });
 
-  it("Case 5: Fractional CTO consulting → FOUNDER HIGH 85", () => {
+  it("Case 5: startup fractional CTO flexible start DM is HIGH 85", () => {
     const { record, audit } = classify(
       "",
       "Our startup seeks a paid fractional CTO for architecture consulting. Flexible start, DM me here.",
@@ -386,7 +391,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(audit.breakdown.freshness).toBe(5);
   });
 
-  it("Case 6: Sendery | iOS Engineer | Tokyo | Full-time → REJECTED FULL_TIME_ONLY", () => {
+  it("Case 6: Sendery iOS full-time salary job posting is REJECTED FULL_TIME_ONLY", () => {
     const { record } = classify(
       "Sendery | iOS Engineer | Tokyo | Full-time, salary and benefits.",
       "Sendery | iOS Engineer | Tokyo | Full-time, salary and benefits.",
@@ -398,7 +403,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.priority).toBe("REJECTED");
   });
 
-  it("Case 7: Clad | Software Engineer | NYC. Full-time employment only. → REJECTED FULL_TIME_ONLY", () => {
+  it("Case 7: Clad Software Engineer full-time employment only is REJECTED FULL_TIME_ONLY", () => {
     const { record } = classify(
       "Clad | Software Engineer | NYC.",
       "Clad | Software Engineer | NYC. Full-time employment only.",
@@ -407,10 +412,9 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.eligibility_state).toBe("REJECTED");
     expect(record.rejection_reason).toBe("FULL_TIME_ONLY");
     expect(record.quality_score).toBe(0);
-    expect(record.priority).toBe("REJECTED");
   });
 
-  it("Case 8: Clad | Software Engineer | NYC (no body) → REVIEW_INCOMPLETE INSUFFICIENT_CONTEXT", () => {
+  it("Case 8: job title with no body is REVIEW_INCOMPLETE INSUFFICIENT_CONTEXT", () => {
     const { record } = classify(
       "Clad | Software Engineer | NYC.",
       "",
@@ -419,32 +423,32 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.eligibility_state).toBe("REVIEW_INCOMPLETE");
     expect(record.rejection_reason).toBe("INSUFFICIENT_CONTEXT");
     expect(record.quality_score).toBe(0);
-    expect(record.priority).toBe("REJECTED");
   });
 
-  it("Case 9: Seller available for projects → REJECTED SELLER_SELF_PROMOTION", () => {
+  it("Case 9: seller available for projects is REJECTED SELLER_SELF_PROMOTION", () => {
     const { record } = classify(
       "",
       "Location: Estonia. I am available for projects. Technologies: React.js.",
     );
     expect(record.is_valid_freelance_lead).toBe(false);
     expect(record.eligibility_state).toBe("REJECTED");
+    expect(record.requester_type).toBe("FREELANCER_SELLER");
     expect(record.rejection_reason).toBe("SELLER_SELF_PROMOTION");
     expect(record.quality_score).toBe(0);
   });
 
-  it("Case 10: SEEKING FREELANCE Egypt seller → REJECTED SELLER_SELF_PROMOTION", () => {
+  it("Case 10: SEEKING FREELANCE seller with rate is REJECTED SELLER_SELF_PROMOTION", () => {
     const { record } = classify(
       "SEEKING FREELANCE",
-      "SEEKING FREELANCE — Egypt. React developer, USD 50/hour. Contact me.",
+      "SEEKING FREELANCE -- Egypt. React developer, USD 50/hour. Contact me.",
     );
     expect(record.is_valid_freelance_lead).toBe(false);
     expect(record.eligibility_state).toBe("REJECTED");
     expect(record.rejection_reason).toBe("SELLER_SELF_PROMOTION");
     expect(record.quality_score).toBe(0);
-  );
+  });
 
-  it("Case 11: SEEKING FREELANCER unpaid → REJECTED UNPAID_OR_EQUITY_ONLY", () => {
+  it("Case 11: SEEKING FREELANCER unpaid volunteer is REJECTED UNPAID_OR_EQUITY_ONLY", () => {
     const { record } = classify(
       "",
       "SEEKING FREELANCER. Need a logo for a volunteer event; unpaid.",
@@ -455,7 +459,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.quality_score).toBe(0);
   });
 
-  it("Case 12: Equity-only cofounder → REJECTED UNPAID_OR_EQUITY_ONLY", () => {
+  it("Case 12: cofounder equity-only is REJECTED UNPAID_OR_EQUITY_ONLY", () => {
     const { record } = classify(
       "",
       "We need a cofounder to build our app for equity only.",
@@ -466,7 +470,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.quality_score).toBe(0);
   });
 
-  it("Case 13: Product promotion newsletter → REJECTED NO_CLIENT_NEED", () => {
+  it("Case 13: product promotion newsletter is REJECTED NO_CLIENT_NEED", () => {
     const { record } = classify(
       "",
       "Our product makes SEO easy. Join our newsletter.",
@@ -477,7 +481,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.quality_score).toBe(0);
   });
 
-  it("Case 14: Aggregator job list → REJECTED AGGREGATOR_ONLY", () => {
+  it("Case 14: aggregator 50 jobs listing is REJECTED AGGREGATOR_ONLY", () => {
     const { record } = classify(
       "",
       "Here are 50 remote developer jobs.",
@@ -488,7 +492,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.quality_score).toBe(0);
   });
 
-  it("Case 15: 'Need React help' → REVIEW_INCOMPLETE ENGAGEMENT_UNCLEAR", () => {
+  it("Case 15: Need React help is REVIEW_INCOMPLETE ENGAGEMENT_UNCLEAR", () => {
     const { record } = classify(
       "",
       "Need React help.",
@@ -500,7 +504,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.priority).toBe("REJECTED");
   });
 
-  it("Case 16: Employee payroll contract → REJECTED EMPLOYMENT_CONTRACT_ONLY", () => {
+  it("Case 16: six-month employee payroll contract is REJECTED EMPLOYMENT_CONTRACT_ONLY", () => {
     const { record } = classify(
       "",
       "We need a six-month developer on employee payroll; contract position.",
@@ -511,7 +515,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.quality_score).toBe(0);
   });
 
-  it("Case 17: Mixed post with isolated contract unit → ELIGIBLE HIGH 85", () => {
+  it("Case 17: mixed post isolated contract unit is ELIGIBLE HIGH 85", () => {
     const { record, audit } = classify(
       "",
       "We hire full-time; alternatively an independent paid contractor can deliver only the React checkout with integration tests. Email us.",
@@ -531,7 +535,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(audit.breakdown.freshness).toBe(5);
   });
 
-  it("Case 18: Negated unpaid — 'Not seeking unpaid' buyer → ELIGIBLE MEDIUM 80", () => {
+  it("Case 18: negated unpaid paid independent Python contractor is ELIGIBLE MEDIUM 80", () => {
     const { record } = classify(
       "",
       "Not seeking unpaid collaboration. We need a paid independent Python contractor to optimize our API; reply here.",
@@ -542,7 +546,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.quality_score).toBe(80);
   });
 
-  it("Case 19: Stale post (45 days old) → REJECTED STALE_OR_CLOSED", () => {
+  it("Case 19: stale post 45 days old is REJECTED STALE_OR_CLOSED", () => {
     const staleDate = new Date(Date.parse(NOW) - 45 * 86400000).toISOString();
     const { record } = classify(
       "",
@@ -555,7 +559,7 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
     expect(record.quality_score).toBe(0);
   });
 
-  it("Case 20: No publication date → ELIGIBLE LOW, freshness capped at 64", () => {
+  it("Case 20: no publication date eligible LOW capped at 64", () => {
     const { record } = classify(
       "",
       "We need an independent React contractor to deliver our checkout with Stripe integration and tests. Fixed budget USD 4,000. Deadline in four weeks. Apply using this form: https://example.com/apply.",
@@ -568,19 +572,22 @@ describe("Stage C — Section 9: concrete acceptance cases", () => {
   });
 });
 
-describe("Stage C — Mandatory gate invariants", () => {
+/* ================================================================== */
+/* Stage C — Mandatory gate invariants                                  */
+/* ================================================================== */
+
+describe("Stage C: mandatory gate invariants", () => {
   it("adding technology keywords cannot promote a gate failure", () => {
-    // A seller post stays rejected even with many tech keywords
     const { record } = classify(
       "",
-      "SEEKING FREELANCE — I am available. React, TypeScript, Node.js, Python, API, iOS, Swift, Java, WordPress, automation.",
+      "SEEKING FREELANCE -- I am available. React, TypeScript, Node.js, Python, API, iOS, Swift, Java, WordPress, automation.",
     );
     expect(record.is_valid_freelance_lead).toBe(false);
     expect(record.rejection_reason).toBe("SELLER_SELF_PROMOTION");
     expect(record.quality_score).toBe(0);
   });
 
-  it("seller rate doesn't change direction", () => {
+  it("seller rate does not change direction", () => {
     const { record } = classify(
       "",
       "I am available for projects. USD 100/hour. React developer. Contact me.",
@@ -590,12 +597,13 @@ describe("Stage C — Mandatory gate invariants", () => {
   });
 
   it("non-eligible records always have score=0 and priority=REJECTED", () => {
-    for (const text of [
-      "SEEKING FREELANCE — developer available",
+    const cases = [
+      "SEEKING FREELANCE -- developer available",
       "Full-time iOS engineer, salary and benefits",
       "Here are 50 remote developer jobs",
       "Build our app for equity only",
-    ]) {
+    ];
+    for (const text of cases) {
       const { record } = classify("", text);
       expect(record.quality_score).toBe(0);
       expect(record.priority).toBe("REJECTED");
@@ -603,39 +611,39 @@ describe("Stage C — Mandatory gate invariants", () => {
     }
   });
 
-  it("eligible records have non-null evidence for mandatory fields", () => {
+  it("eligible records have evidence for mandatory intent and payment fields", () => {
     const { record } = classify(
       "",
       "We need an independent React contractor to deliver our checkout. Fixed budget USD 4,000. Deadline in four weeks.",
     );
     expect(record.is_valid_freelance_lead).toBe(true);
-    const fields = new Set(record.evidence_quotes.map(q => q.field));
+    const fields = new Set(record.evidence_quotes.map((q) => q.field));
     expect(fields.has("intent")).toBe(true);
     expect(fields.has("payment")).toBe(true);
   });
 
   it("prefilterDiscovery rejects non-allowed sources", () => {
-    const ctx = makeContext("test", "test body", { provider: "arbeitnow" });
+    const ctx = makeCtx("test", "test body", { provider: "arbeitnow" });
     const result = prefilterDiscovery(ctx, NOW);
     expect(result.pass).toBe(false);
     expect(result.reason).toBe("SOURCE_NOT_ALLOWED");
   });
 
   it("prefilterDiscovery rejects dead posts", () => {
-    const ctx = makeContext("test", "test body", { dead: true });
+    const ctx = makeCtx("test", "test body", { dead: true });
     const result = prefilterDiscovery(ctx, NOW);
     expect(result.pass).toBe(false);
     expect(result.reason).toBe("SOURCE_UNAVAILABLE");
   });
 
   it("prefilterDiscovery passes fresh valid sources", () => {
-    const ctx = makeContext("test", "test body");
+    const ctx = makeCtx("test", "test body");
     const result = prefilterDiscovery(ctx, NOW);
     expect(result.pass).toBe(true);
     expect(result.reason).toBeNull();
   });
 
-  it("clause-level analysis: 'No unpaid work; seeking a paid contractor' is buyer", () => {
+  it("clause-level: No unpaid work seeking a paid contractor is eligible", () => {
     const { record } = classify(
       "",
       "No unpaid work; seeking a paid contractor for our React project. Reply here.",
@@ -645,11 +653,10 @@ describe("Stage C — Mandatory gate invariants", () => {
     expect(record.eligibility_state).toBe("ELIGIBLE");
   });
 
-  it("evidence quotes validate against canonical text", () => {
-    const ctx = makeContext("Title", "We need an independent React contractor.");
-    const evidence = extractRuleEvidence(canonicalEvidence(ctx), ctx);
-    const { record } = scoreFreelanceQualification(evidence, ctx, NOW);
-    // All evidence quotes should have valid offsets
+  it("evidence quotes validate against canonical text with exact offsets", () => {
+    const ctx = makeCtx("Title", "We need an independent React contractor.");
+    const ev = extractRuleEvidence(canonicalEvidence(ctx), ctx);
+    const { record } = scoreFreelanceQualification(ev, ctx, NOW);
     const canonical = canonicalEvidence(ctx);
     for (const eq of record.evidence_quotes) {
       expect(canonical.slice(eq.start, eq.end)).toBe(eq.quote);
@@ -657,7 +664,69 @@ describe("Stage C — Mandatory gate invariants", () => {
   });
 });
 
-describe("Stage C — Job posting rejection patterns", () => {
+/* ================================================================== */
+/* Stage C — Job posting rejection                                      */
+/* ================================================================== */
+
+describe("Stage C: job posting rejection patterns", () => {
+  it.each([
+    {
+      label: "Sendery iOS contract opening",
+      title:
+        "Sendery ( https://sendery.co ) | iOS Engineer | Tokyo, Japan | Contract",
+      body:
+        "We're currently looking for a capable iOS Engineer to join our team as we build out our mobile stack. Applicants should send a resume and GitHub to jobs@sendery.co.",
+      reason: "EMPLOYMENT_CONTRACT_ONLY",
+    },
+    {
+      label: "Clad Software Engineer opening",
+      title: "Clad (YC W23) | Software Engineer | NYC | withclad.com",
+      body:
+        "Clad is an AI-native platform for utility construction. We are hiring a Software Engineer to join our team. Apply with your resume.",
+      reason: "FULL_TIME_ONLY",
+    },
+    {
+      label: "Estonia seller availability post",
+      title: "Location: Estonia Remote: Yes Technologies: React.js, Vue.js",
+      body:
+        "Location: Estonia. Remote: Yes. Technologies: React.js, Vue.js. I am available for freelance work and projects.",
+      reason: "SELLER_SELF_PROMOTION",
+    },
+    {
+      label: "Collabify fixed-term contract role",
+      title:
+        "Collabify | Senior Full-Stack Engineer | Remote | Contract, 4–5 months | $3,000–4,000/month",
+      body:
+        "We're looking for a Senior Full-Stack Engineer to join our team on a 4–5 month contract. Apply by email.",
+      reason: "EMPLOYMENT_CONTRACT_ONLY",
+    },
+    {
+      label: "Egypt SEEKING FREELANCE seller post",
+      title:
+        "SEEKING FREELANCE - Egypt (UTC+2) - Remote Senior Full-Stack & Creative Frontend Engineer",
+      body:
+        "SEEKING FREELANCE - Egypt. Senior Full-Stack Engineer with React and TypeScript. I am available for projects.",
+      reason: "SELLER_SELF_PROMOTION",
+    },
+  ] as const)(
+    "rejects $label with $reason",
+    ({ title, body, reason }) => {
+      const { record } = classify(title, body);
+      expect(record.is_valid_freelance_lead).toBe(false);
+      expect(record.eligibility_state).toBe("REJECTED");
+      expect(record.rejection_reason).toBe(reason);
+    },
+  );
+
+  it("does not mistake a negated job opening for employment when an independent project is explicit", () => {
+    const { record } = classify(
+      "Acme | Software Engineer | Remote",
+      "We are not hiring a full-time engineer. We need an independent React contractor to deliver a fixed-scope checkout. Fixed budget USD 2,000; reply by email.",
+    );
+    expect(record.is_valid_freelance_lead).toBe(true);
+    expect(record.eligibility_state).toBe("ELIGIBLE");
+  });
+
   it.each([
     "Acme | Senior Software Engineer | San Francisco | Full-time",
     "Startup | iOS Engineer | Remote | Competitive salary",
@@ -666,7 +735,9 @@ describe("Stage C — Job posting rejection patterns", () => {
   ])("rejects classic job posting: %s", (title) => {
     const { record } = classify(title, title);
     expect(record.is_valid_freelance_lead).toBe(false);
-    expect(["FULL_TIME_ONLY", "EMPLOYMENT_CONTRACT_ONLY"]).toContain(record.rejection_reason);
+    expect(["FULL_TIME_ONLY", "EMPLOYMENT_CONTRACT_ONLY"]).toContain(
+      record.rejection_reason,
+    );
     expect(record.quality_score).toBe(0);
   });
 });

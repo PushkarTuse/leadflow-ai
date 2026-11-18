@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { discoveryContextSchema } from "./qualification";
-import type { DiscoveryContext, QualificationRecord } from "./qualification";
+import type {
+  DiscoveryContext,
+  QualificationRecord,
+  QualificationAudit,
+} from "./qualification";
 
 export const permissions = [
   "UNKNOWN",
@@ -155,12 +159,15 @@ export interface Lead extends LeadInput, Assessment {
   last_activity_at: string;
   next_followup_at: string;
   /**
-   * Stage A: optional discovery qualification record. Absent on legacy and
-   * inbound records; nothing in the live pipeline produces or consumes it yet.
+   * Optional discovery qualification record. Absent on legacy and inbound records.
    */
   qualification?: QualificationRecord;
   /** Stage A: optional preserved discovery evidence context. */
   discovery_context?: DiscoveryContext;
+  /** Stage E: audit data persisted independently from the producer assessment. */
+  qualification_audit?: QualificationAudit;
+  /** Legacy discovery rows remain held until their original evidence is available. */
+  qualification_status?: "NEEDS_REQUALIFICATION";
 }
 export interface Activity {
   event_id: string;
