@@ -176,6 +176,17 @@ The row payload includes source identity, name/title/location/contact/website/Pa
 
 No local-business row creates an approval request or Telegram/Gmail notification.
 
+### OSM collection and outreach drafts
+
+The leadflow-leads daily cron (01:30 UTC) collects up to three `DAILY_OSM` tags in `DEFAULT_CITY` after the keyless feeds. Tags run one after another against Overpass, with mirror fallback. Rows land in D1 as `local_business`. The owner previews first-contact emails with `npm run local:drafts -- --from-api` (`packages/core/local-business-email.ts`). Every send remains a manual, one-at-a-time owner action.
+
+```text
+cron -> DAILY_OSM tags -> Overpass (mirrors) -> D1 local_business
+     -> Local Businesses Sheet / CSV           (manual research queue)
+     -> npm run local:drafts                   (plain + HTML draft, animated logo)
+     -> owner verifies business and contact    -> owner sends manually
+```
+
 ## Diagram: notification and local-outreach split
 
 ```text

@@ -2,6 +2,28 @@
 
 This is the entry point for any AI (or human) picking up this repository. Read this file first, then open the latest capsule.
 
+## OSM local-business pipeline and outreach email draft — 22 November 2026
+
+**OSM collection.** Before this work, the leadflow-leads daily cron (`runDaily`) never ran OSM; OSM ran only through a manual `POST /collect/osm`. That manual call failed with HTTP 406 because Overpass rejects the placeholder `you@example.com` User-Agent. The upstream repo (`../leadflow-api/leadflow-api`) now has:
+
+- `USER_AGENT = "LeadFlowBot/0.1 (+https://leadflow-agency.pages.dev)"`
+- Overpass mirror fallback in `src/adapters/osm.ts`. It stops on non-429 4xx errors.
+- A new `DAILY_OSM` variable: up to 3 tags in `DEFAULT_CITY`, run one after another. The default is `amenity=dentist|amenity=clinic|leisure=fitness_centre`.
+
+A local `wrangler dev --test-scheduled` cron run stored **182 Pune OSM rows** (dentist 86 new, clinic 96 new): 161 no-website, 20 with an unchecked site, 1 without HTTPS. **Only 7 rows have a public email and 28 have a phone.** Treat the queue as contact research, not a ready email list. "No website listed" means only that OSM has no website tag. A repeat run hit an Overpass "at capacity" 502 on one tag; the error was logged and the run continued. **The worker is not deployed** (`wrangler.toml` still has the placeholder D1 id), so the cron does not run in production.
+
+**Email draft.** `packages/core/local-business-email.ts` (`draftLocalBusinessEmail`) writes one first-contact email per non-Google `local_business` row. It chooses an angle from the upstream signal: no website, social-only, site down, slow (quotes the PageSpeed score), no HTTPS, average or unchecked. It refuses Google Places rows, closed campaign statuses and well-performing sites. A missing email produces a "use phone/WhatsApp" checklist item; no recipient is guessed. It returns plain `body` and `html`:
+
+- The HTML uses Gmail-composer markup (no fonts, widths or colours), as the owner requested a normal hand-typed look.
+- It links directly to the studio site.
+- It can embed the animated signature logo `apps/web/public/email/leadflow-logo-animated.gif` (84 KB; regenerate with `scripts/render-email-logo.py`, which needs Pillow).
+
+The opt-out footer was removed on the owner's instruction (22 November). Reconsider it before any bulk sending; Gmail's bulk-sender rules expect an unsubscribe option. Preview with `npm run local:drafts` (`-- --from-api` reads the loopback API). The module itself never sends, writes EmailOutbox or notifies Telegram.
+
+**Sample sends.** With explicit owner approval, three sample dentist emails ("Kothrud Dental Care", no-website angle) were sent through the Gmail connector. They went from the owner's personal Gmail, not the venture account, to an owner-designated test address. The versions were: plain text; styled HTML with logo and no opt-out; final Gmail-style HTML with logo. These were one-off connector sends, not the EmailOutbox approval path. The owner then reported a Gmail "Redirect Notice" on link clicks. Gmail adds that page on the recipient's side, likely because of the free `*.pages.dev` domain and the lack of sender history. Email content cannot remove it. The real fix is a custom domain for both the site link and the sender, which needs owner approval for purchase.
+
+Verification: `npm test` 183 passed and `npm run typecheck` passed in leadflow-ai. Upstream: 41 tests and typecheck passed. `npm ci` fails because `package-lock.json` is already out of sync with `package.json` (missing `@emnapi/*@2.0.0-beta.2`); dependencies were installed with `--package-lock=false`. **None of this work is committed or pushed yet.**
+
 ## Freelance discovery qualification — current as of 19 November 2026
 
 The live local workflow runs `prefilterDiscovery` → validated provider `discoverySignals` / `extractRuleEvidence` → `scoreFreelanceQualification`, then persists the full qualification, audit/version envelope, source hash, evidence and warnings. Discovery extraction supports Gemini and an opt-in OpenAI-compatible endpoint; deterministic hard exclusions remain authoritative over either provider. Classic HN “Who is hiring?” posts, missing-title role posts and seller-availability posts have strengthened employment/contract/seller gates; ambiguous non-classic posts can still be review-incomplete. The importer filters to the configured source (`hackernews`) and requests newest-first (`sort=found_at&order=desc`). The dashboard distinguishes eligible, low, rejected, incomplete, quarantined and needs-requalification. Do not call rejected or incomplete records leads.
@@ -91,6 +113,7 @@ The private loop is **live and verified end-to-end**. A consented website enquir
 
 | Date | Capsule | Summary |
 |---|---|---|
+| 2026-11-22 | (this HANDOFF section) | OSM in daily cron + 406 fix; 182 local OSM rows; local-business email draft with animated logo; 3 owner-approved sample sends |
 | 2026-11-15 | [[2026-11-15_studio-blueprint]] | Studio 3D redesign live on Cloudflare; compatible Apps Script v6; Notion updated |
 | 2026-11-15 | [[2026-11-15_signal-slate-build]] | Signal & Slate built/tested locally; production activation pending |
 | 2026-11-14 | [[2026-11-14_particle-1-handoff]] | First verified live send; rejection path verified; test mode still on |

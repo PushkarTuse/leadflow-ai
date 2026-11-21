@@ -1,5 +1,21 @@
 # LeadFlow launch checklist
 
+## OSM local-business pipeline and outreach drafts — 22 November 2026
+
+| Area | Status | Evidence / remaining |
+|---|---|---|
+| OSM in daily cron (`DAILY_OSM`) | Implemented upstream; local cron verified | `wrangler dev --test-scheduled` stored 182 Pune rows; parser test added; 41 upstream tests pass. Worker **not deployed** (placeholder D1 id) |
+| Overpass 406 / overload | Fixed (UA) and mitigated (mirror fallback) | Placeholder UA rejected with 406; three mirrors tried in turn. Public servers still intermittently return 502/504 |
+| OSM contactability | Measured | 7/182 public email, 28/182 phone. Most rows need contact research before outreach |
+| Local-business email draft module | Implemented and unit tested | `packages/core/local-business-email.ts`; 7 angles; Google/closed/good-site refusal; Gmail-style HTML + animated logo; 183 tests pass |
+| Animated signature logo | Generated | `apps/web/public/email/leadflow-logo-animated.gif`; Outlook desktop shows first frame only |
+| Opt-out footer | Removed on owner instruction | Revisit before any bulk sending |
+| Sample sends | 3 sent with explicit owner approval | Gmail connector, owner's personal Gmail → owner test address; not via EmailOutbox |
+| Gmail "Redirect Notice" on link click | Open; not fixable in email content | Caused on Gmail's side (free `pages.dev` domain, no sender history). Needs owner-approved custom domain |
+| Sheet/Gmail-draft wiring for local-business drafts | Not built | Drafts are preview-only (`npm run local:drafts`) |
+| Lockfile | Broken (pre-existing) | `npm ci` fails: lockfile out of sync; regenerate with `npm install` and review the diff |
+| Commit / push | Not done | Both repos have uncommitted changes |
+
 ## Current discovery qualification — 19 November 2026
 
 | Area | Status | Evidence / remaining |

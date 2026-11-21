@@ -15,6 +15,7 @@
     "dry-run": "tsx scripts/cli.ts demo",
     "hunter": "tsx scripts/cli.ts",
     "external:run": "tsx scripts/external-pipeline.ts",
+    "local:drafts": "tsx scripts/local-business-drafts.ts",
     "dev:marketing": "vite --config apps/marketing/vite.config.ts",
     "build:marketing": "vite build --config apps/marketing/vite.config.ts",
     "preview:marketing": "vite preview --config apps/marketing/vite.config.ts --host 127.0.0.1 --port 4175",
