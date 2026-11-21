@@ -12,7 +12,7 @@ export interface LeadRow {
   title: string;
   client_name_if_public: string;
   source: string;
-  discovery_context?: unknown;
+  discovery_context?: {provider?: string; original_url?: string; application_url?: string; expires_at?: string};
   qualification_status?: string;
   qualification?: {
     is_valid_freelance_lead: boolean;
@@ -111,11 +111,26 @@ interface StatusPayload {
   store: { rows: LeadRow[]; requestRows: RequestRow[] };
   emailTest: EmailTest | null;
   stateFile?: string | null;
+  directory?: string;
+  sourceHealth?: {
+    origin: string;
+    state: "OK" | "NO_NEW_BUYERS" | "NO_BUYER_CANDIDATES" | "UPSTREAM_ERROR";
+    at: string;
+    fetched?: number;
+    error?: string;
+    diagnostics?: {
+      legacy_google_rows: number;
+      pagespeed: { cached: number; deferred: number };
+      latest_runs: { source: string; fetched: number; inserted: number; failed: number; state?:string;
+        raw_count?:number|null; filtered_count?:number|null; accepted_count?:number|null; last_success_at?:string|null }[];
+    };
+  };
 }
 
 interface TogglePayload {
   enabled: boolean;
   configured: boolean;
+  locked?: boolean;
 }
 
 const stages = [
@@ -125,6 +140,10 @@ const stages = [
   "Telegram Owner Digest",
   "Gmail Safe Owner-Test",
 ];
+const attribution: Record<string,string> = {
+  hackernews:"Hacker News", wordpress_jobs_rss:"WordPress Jobs", freelancer_rss:"Freelancer",
+  himalayas:"Himalayas", jobicy_rss:"Jobicy", remotive:"Remotive",
+};
 
 const cell: CSSProperties = {
   padding: "0.6rem 0.75rem",
@@ -204,7 +223,7 @@ export function PipelineDashboard() {
   async function flip() {
     setError("");
     try {
-      const res = await fetch("/api/local/pipeline/toggle", { method: "POST" });
+      const res = await fetch("/api/local/pipeline/toggle", { method: "POST", headers: { "X-LeadFlow-Local": "1" } });
       const data = (await res.json()) as TogglePayload & { error?: string };
       if (!res.ok) {
         setError(data.error || "Could not update EXTERNAL_LEADS_ENABLED.");
@@ -220,7 +239,7 @@ export function PipelineDashboard() {
     setRunState("running");
     setRunMessage("Running the external pipeline…");
     try {
-      const res = await fetch("/api/local/pipeline/run", { method: "POST" });
+      const res = await fetch("/api/local/pipeline/run", { method: "POST", headers: { "X-LeadFlow-Local": "1" } });
       const data = (await res.json()) as { status: string; error?: string };
       if (!res.ok || data.status !== "completed") {
         setRunState("error");
@@ -239,12 +258,22 @@ export function PipelineDashboard() {
     }
   }
 
-  const rows = status?.store?.rows ?? [];
+  const rows = (status?.store?.rows ?? []).filter(lead => {
+    const expires = lead.discovery_context?.expires_at;
+    return !expires || Date.parse(expires) > Date.now();
+  });
   const requests = status?.store?.requestRows ?? [];
   const emailTest = status?.emailTest ?? null;
   const enabled = toggle?.enabled ?? false;
   const configured = toggle?.configured ?? false;
   const counts = qualificationCounts(rows);
+  const health = status?.sourceHealth;
+  const healthLabel = health ? {
+    OK: "Buyer candidates received",
+    NO_NEW_BUYERS: "No new buyer candidates since the last run",
+    NO_BUYER_CANDIDATES: "No buyer candidates stored for the selected sources",
+    UPSTREAM_ERROR: "Upstream request failed",
+  }[health.state] : "Run the pipeline to check the upstream connection";
 
   return (
     <div className="container page">
@@ -274,7 +303,7 @@ export function PipelineDashboard() {
           <button
             className="button secondary"
             onClick={() => void flip()}
-            disabled={loading || !configured}
+            disabled={loading || !configured || toggle?.locked}
           >
             {enabled ? "Turn pipeline off" : "Turn pipeline on"}
           </button>
@@ -300,6 +329,27 @@ export function PipelineDashboard() {
             {emailTest.to ? ` → ${emailTest.to}` : ""}
             {emailTest.error ? ` — ${emailTest.error}` : ""}
           </p>
+        )}
+      </section>
+
+      <section className="note-panel" aria-label="Source health">
+        <h2>Source health</h2>
+        <p><strong>{healthLabel}</strong></p>
+        {health && <p>Upstream <code>{health.origin}</code> · {health.fetched ?? 0} fetched · <time dateTime={health.at}>{new Date(health.at).toLocaleString()}</time></p>}
+        {health?.error && <p role="alert">{health.error}</p>}
+        {health?.diagnostics && (
+          <>
+            <p>PageSpeed · {health.diagnostics.pagespeed.cached} cached · {health.diagnostics.pagespeed.deferred} deferred. Google inventory · {health.diagnostics.legacy_google_rows} isolated.</p>
+            <ul>
+              {health.diagnostics.latest_runs.map((source) => (
+                <li key={source.source}>
+                  <strong>{attribution[source.source] || source.source}</strong> · {source.state || (source.failed ? "PROVIDER_UNAVAILABLE" : "OK")}
+                  {source.raw_count != null && <> · {source.raw_count} raw, {source.filtered_count ?? 0} filtered, {source.accepted_count ?? 0} accepted</>}
+                  {source.last_success_at && <> · Last successful poll <time dateTime={source.last_success_at}>{new Date(source.last_success_at).toLocaleString()}</time></>}
+                </li>
+              ))}
+            </ul>
+          </>
         )}
       </section>
 
@@ -385,7 +435,7 @@ export function PipelineDashboard() {
           </p>
         )}
         {!loading && !error && status?.stateFile && (
-          <p>Latest state: <code>data/{status.stateFile}</code></p>
+          <p>Latest state <code>{status.directory || "data"}/{status.stateFile}</code></p>
         )}
         {!loading && !error && rows.length > 0 && (
           <div style={{ overflowX: "auto" }}>
@@ -432,6 +482,9 @@ export function PipelineDashboard() {
                   const state = qualificationState(lead);
                   const qualification = lead.qualification;
                   const evidence = qualification?.evidence_quotes ?? [];
+                  const context = lead.discovery_context;
+                  const sourceLabel = attribution[context?.provider || ""] || lead.source;
+                  const sourceLink = context?.provider === "himalayas" ? context.application_url : context?.original_url;
                   return (
                     <tr key={lead.lead_id}>
                       <td style={cell}>
@@ -441,7 +494,9 @@ export function PipelineDashboard() {
                             lead.lead_id,
                         )}
                       </td>
-                      <td style={cell}>{lead.source}</td>
+                      <td style={cell}>{sourceLink && /^https:\/\//.test(sourceLink)
+                        ? <a href={sourceLink} target="_blank" rel="noreferrer">{sourceLabel}</a>
+                        : sourceLabel}</td>
                       <td style={cell}>
                         {state}
                       </td>

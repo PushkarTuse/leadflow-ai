@@ -1,6 +1,6 @@
 import { z } from "zod";
 import {externalOrigin, pullExternalLeads} from './external-leads';
-import {pullLocalBusinesses, saveLocalBusinessFollowup} from './local-business-sync';
+import {pullLocalBusinesses, pullManualProspects, saveManualProspectFollowup} from './local-business-sync';
 import { configSchema, inputSchema, dedupKey, hash } from "../../packages/core/model";
 import { assess } from "../../packages/core/scoring";
 import { inboundToLead, verifyEnvelope } from "../../packages/core/intake";
@@ -363,7 +363,10 @@ export function setup() {
       const tab = book.getSheetByName(name) || book.insertSheet(name);
       if (tab.getLastRow() > 0) {
         const old = tab.getRange(1, 1, 1, tab.getLastColumn()).getValues()[0];
-        if (JSON.stringify(old) !== JSON.stringify(headers))
+        const manualQueue = name === "Local Businesses" || name === "New Companies";
+        if (manualQueue && JSON.stringify(old) === JSON.stringify(headers.slice(0, -2))) {
+          tab.getRange(1, old.length + 1, 1, 2).setValues([headers.slice(-2)]);
+        } else if (JSON.stringify(old) !== JSON.stringify(headers))
           throw new Error(
             "Existing " +
               name +
@@ -409,6 +412,8 @@ export function onOpen() {
     .addSeparator()
     .addItem("Sync local business prospects", "syncLocalBusinessProspects")
     .addItem("Save selected local business follow-up", "saveSelectedLocalBusinessFollowup")
+    .addItem("Sync new companies", "syncNewCompanies")
+    .addItem("Save selected new-company follow-up", "saveSelectedNewCompanyFollowup")
     .addItem("Run one bounded cycle", "tick")
     .addItem("Update selected lead", "updateSelectedLead")
     .addItem("Reprocess selected lead", "reprocessSelectedLead")
@@ -446,31 +451,72 @@ export function syncLocalBusinessProspects() {
     return `Local Businesses updated: ${result.imported} new, ${result.duplicates} refreshed, ${result.excluded} Google Places records excluded, ${result.invalid} invalid.`;
   });
 }
-export function saveSelectedLocalBusinessFollowup() {
+export function syncNewCompanies() {
   return locked(() => {
-    if (dry()) throw new Error("Set DRY_RUN=false before saving local-business campaign status");
-    if (!enabled("LOCAL_BUSINESS_SYNC_ENABLED")) throw new Error("Set LOCAL_BUSINESS_SYNC_ENABLED=true to enable the manual sync");
+    if (dry()) throw new Error("Set DRY_RUN=false before syncing new companies");
+    if (!enabled("LOCAL_BUSINESS_SYNC_ENABLED")) throw new Error("Set LOCAL_BUSINESS_SYNC_ENABLED=true to enable manual prospect sync");
+    deadline = Date.now() + integer("MAX_RUN_SECONDS",45,10,120)*1000;
+    const store = new SheetStore(new GasTables(spreadsheet()));
+    let result: ReturnType<typeof pullManualProspects>|undefined;
+    runSource("new-company-sync",store,()=>{
+      result=pullManualProspects(
+        http,
+        {origin:setting("EXTERNAL_LEADS_API_ORIGIN"),token:setting("EXTERNAL_LEADS_API_TOKEN"),category:"new_company"},
+        (row)=>store.upsertNewCompany(row),
+        guard,
+      );
+      return {imported:result.imported,duplicates:result.duplicates,invalid:result.invalid+result.excluded};
+    });
+    return result ? `New Companies updated: ${result.imported} new, ${result.duplicates} refreshed, ${result.invalid} invalid.` :
+      "New-company sync failed; inspect SourceRuns.";
+  });
+}
+export function saveSelectedNewCompanyFollowup() {
+  return saveSelectedManualFollowup("new_company", "New Companies", "new-company");
+}
+export function saveSelectedLocalBusinessFollowup() {
+  return saveSelectedManualFollowup("local_business", "Local Businesses", "local-business");
+}
+function saveSelectedManualFollowup(category: "local_business" | "new_company", name: "Local Businesses" | "New Companies", label: string) {
+  return locked(() => {
+    if (dry()) throw new Error("Set DRY_RUN=false before saving manual campaign status");
+    if (!enabled("LOCAL_BUSINESS_SYNC_ENABLED")) throw new Error("Set LOCAL_BUSINESS_SYNC_ENABLED=true to enable manual prospect sync");
     deadline = Date.now() + integer("MAX_RUN_SECONDS", 45, 10, 120) * 1000;
     const book = spreadsheet();
     const tab = book.getActiveSheet();
-    if (!tab || tab.getName() !== "Local Businesses") throw new Error("Select a row in the Local Businesses tab first");
+    if (!tab || tab.getName() !== name) throw new Error(`Select a row in the ${name} tab first`);
     const rowIndex = tab.getActiveRange()?.getRow();
-    if (!rowIndex || rowIndex < 2) throw new Error("Select a Local Businesses data row");
-    const values = tab.getRange(rowIndex, 1, 1, tableHeaders["Local Businesses"].length).getValues()[0];
-    const record = Object.fromEntries(tableHeaders["Local Businesses"].map((header, index) => [header, values[index]]));
+    if (!rowIndex || rowIndex < 2) throw new Error(`Select a ${name} data row`);
+    const headers = tableHeaders[name];
+    const values = tab.getRange(rowIndex, 1, 1, headers.length).getValues()[0];
+    const record = Object.fromEntries(headers.map((header, index) => [header, values[index]]));
+    const expectedRevision = Number(record.queue_revision);
+    if (!/^\d+$/.test(String(record.queue_revision ?? "")) || !Number.isSafeInteger(expectedRevision))
+      return "This row has no base revision. Sync, review its upstream version, then set the base revision before saving.";
     const store = new SheetStore(new GasTables(book));
-    let result: ReturnType<typeof saveLocalBusinessFollowup> | undefined;
-    runSource("local-business-outreach-update", store, () => {
-      result = saveLocalBusinessFollowup(
-        http,
-        { origin: setting("EXTERNAL_LEADS_API_ORIGIN"), token: setting("EXTERNAL_LEADS_API_TOKEN") },
-        { apiId: String(record.api_id ?? ""), status: String(record.campaign_status ?? ""), notes: String(record.campaign_notes ?? "") },
-        guard,
-      );
+    let result: ReturnType<typeof saveManualProspectFollowup> | undefined;
+    let conflict = false;
+    runSource(`${label}-outreach-update`, store, () => {
+      try {
+        const receipt = saveManualProspectFollowup(
+          http,
+          { origin: setting("EXTERNAL_LEADS_API_ORIGIN"), token: setting("EXTERNAL_LEADS_API_TOKEN"), category },
+          { apiId: String(record.api_id ?? ""), status: String(record.campaign_status ?? ""), notes: String(record.campaign_notes ?? ""), expectedRevision },
+          guard,
+        );
+        const revisionColumn = headers.indexOf("queue_revision") + 1;
+        tab.getRange(rowIndex, revisionColumn, 1, 2).setValues([[receipt.revision, receipt.revision]]);
+        result = receipt;
+      } catch (error) {
+        conflict = error instanceof Error && error.message === "Provider request failed: HTTP 409";
+        throw error;
+      }
       return { imported: 1, duplicates: 0, invalid: 0 };
     });
+    if (conflict) return "Revision conflict. Sync, compare your edits with the upstream row, and update the base revision only after review.";
     if (!result) return "Follow-up update failed; inspect SourceRuns for the safe error code.";
-    return `Saved local-business status ${result.status} to API record ${result.apiId}.`;
+    SpreadsheetApp.flush();
+    return `Saved ${label} status ${result.status} to API record ${result.apiId}.`;
   });
 }
 export function installTriggers() {
@@ -555,15 +601,18 @@ export function tick() {
         });
       if (enabled('EXTERNAL_LEADS_ENABLED'))
         runSource('external-leads',store,()=>{
+          const origin=setting('EXTERNAL_LEADS_API_ORIGIN');
+          const allowedSources=[...new Set(setting('EXTERNAL_LEADS_SOURCES','hackernews').split(',').map(s=>s.trim()))].sort();
+          const key='external_cursor_'+hash(JSON.stringify([origin,allowedSources,1]));
+          const cursor=z.object({after:z.number().int().nonnegative(),until:z.number().int().nonnegative().optional()}).parse(JSON.parse(setting(key,'{"after":0}')));
           const result=pullExternalLeads(http,{
-            origin:setting('EXTERNAL_LEADS_API_ORIGIN'),token:setting('EXTERNAL_LEADS_API_TOKEN'),
-            offset:integer('EXTERNAL_LEADS_OFFSET',0,0,1000000),
+            origin,token:setting('EXTERNAL_LEADS_API_TOKEN'),offset:0,cursor,
             limit:integer('EXTERNAL_LEADS_BATCH_SIZE',5,1,5),
-            allowedSources:setting('EXTERNAL_LEADS_SOURCES','hackernews').split(',').map(s=>s.trim()),
+            allowedSources,
           },lead=>engine.ingest(lead),guard);
           // Flush CRM before checkpointing; interrupted pages replay through Engine dedup.
           SpreadsheetApp.flush();
-          properties().setProperty('EXTERNAL_LEADS_OFFSET',String(result.nextOffset));
+          properties().setProperty(key,JSON.stringify(result.nextCursor));
           return {imported:result.imported,duplicates:result.duplicates,invalid:result.invalid};
         });
       properties().setProperty("last_source_cycle", now());

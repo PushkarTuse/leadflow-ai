@@ -5,7 +5,8 @@ import {Engine,canRouteDiscoveryLead,isDiscoveryCandidate,notification} from '..
 import {MemoryStore} from '../packages/core/memory-store';
 import {configSchema} from '../packages/core/model';
 import {classifyGemini,classifyDiscoveryAI,openAICompletionEndpoint,type Http} from '../apps/automation/adapters';
-import {pullExternalLeads} from '../apps/automation/external-leads';
+import {pullExternalLeads,type ExternalCursor} from '../apps/automation/external-leads';
+import {loopbackOrigin,stateDirectory} from './external-local-config.mjs';
 
 interface EmailTestState{status:string;at:string;to:string;messageId:string;error:string}
 const emptyEmailTest:EmailTestState={status:'DISABLED',at:'',to:'',messageId:'',error:''};
@@ -176,7 +177,8 @@ async function main(){
   const allowDiscoveryNotifications=qualificationMode==='enforce'&&!requalificationRun;
   if(!preview&&!on('EXTERNAL_LEADS_ENABLED')){console.log('External ingestion OFF. Set EXTERNAL_LEADS_ENABLED=true in .env.external; preview: npm run external:run -- --dry-run');return;}
   // Intentionally local-only. Hosted APIs use the existing Apps Script connector.
-  if(!requalifyAll&&get('EXTERNAL_LEADS_API_ORIGIN','http://127.0.0.1:8787')!=='http://127.0.0.1:8787')throw new Error('Local runner only accepts http://127.0.0.1:8787');
+  const upstream=loopbackOrigin(get('EXTERNAL_LEADS_API_ORIGIN','http://127.0.0.1:8787'));
+  process.env.EXTERNAL_LEADS_API_ORIGIN=upstream;
   let token=get('EXTERNAL_LEADS_API_TOKEN');
   if(!token&&!requalifyAll){const vars=await readFile('../leadflow-leads/.dev.vars','utf8');token=vars.split(/\r?\n/).find(l=>l.startsWith('API_TOKEN='))?.slice(10).trim()||'';}
   if(!token&&!requalifyAll)throw new Error('Local API token missing');
@@ -195,15 +197,20 @@ async function main(){
   if(aiEnabled&&aiProvider==='openai')openAICompletionEndpoint(aiBaseUrl);
   if(telegram&&(!/^\d+:[\w-]+$/.test(get('TELEGRAM_BOT_TOKEN'))||!/^\d+$/.test(get('TELEGRAM_OWNER_CHAT_ID'))||get('TELEGRAM_OWNER_CHAT_ID')!==get('TELEGRAM_OWNER_USER_ID')))throw new Error('Private Telegram owner settings missing or mismatched');
   const limit=Number(get('EXTERNAL_LEADS_BATCH_SIZE','5'));if(!Number.isInteger(limit)||limit<1||limit>5)throw new Error('Batch must be 1–5');
-  const file=preview?'data/external-preview.json':aiEnabled?`data/external-${aiProvider}.json`:'data/external-pipeline.json';
-  await mkdir('data',{recursive:true});await mkdir('outputs/external',{recursive:true});
+  const directory=stateDirectory(get('EXTERNAL_LOCAL_PROFILE'));
+  const output=get('EXTERNAL_LOCAL_PROFILE')?`outputs/external/${get('EXTERNAL_LOCAL_PROFILE')}`:'outputs/external';
+  const file=`${directory}/${preview?'external-preview.json':aiEnabled?`external-${aiProvider}.json`:'external-pipeline.json'}`;
+  await mkdir(directory,{recursive:true});await mkdir(output,{recursive:true});
   const lock=await open(file+'.lock','wx');
   try{
-    const store=new MemoryStore();let offset=0;let emailTest:EmailTestState={...emptyEmailTest};
-    try{const old=JSON.parse(await readFile(file,'utf8'));Object.assign(store,old.store);offset=old.offset;if(old.emailTest)emailTest=old.emailTest as EmailTestState;}
+    const store=new MemoryStore();let cursor:ExternalCursor={after:0};let emailTest:EmailTestState={...emptyEmailTest};
+    const allowedSources=[...new Set(get('EXTERNAL_LEADS_SOURCES','hackernews').split(',').map(s=>s.trim()))].sort();
+    const checkpointKey=JSON.stringify([upstream,allowedSources,1]);
+    let sourceHealth:unknown=null;
+    try{const old=JSON.parse(await readFile(file,'utf8'));Object.assign(store,old.store);if(old.checkpointKey===checkpointKey&&old.cursor)cursor=old.cursor;if(old.emailTest)emailTest=old.emailTest as EmailTestState;sourceHealth=old.sourceHealth??null;}
     catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('Unreadable local state; restore before retrying');}
-    if(requalifyMissing&&!requalifyAll)offset=0;
-    const save=async()=>{await writeFile(file+'.tmp',JSON.stringify({offset,store,emailTest},null,2));await rename(file+'.tmp',file);};
+    if(requalifyMissing&&!requalifyAll)cursor={after:0};
+    const save=async()=>{await writeFile(file+'.tmp',JSON.stringify({offset:0,checkpointKey,cursor,store,emailTest,sourceHealth},null,2));await rename(file+'.tmp',file);};
     let httpCount=0;
     const network:Http={json(url,request){
       if(++httpCount>16)throw new Error('Local per-run HTTP budget reached');
@@ -212,13 +219,15 @@ async function main(){
         // external-http.mjs writes only a safe, credential-free detail to stderr
         // (HTTP status or network error code). Bound and flatten it before use.
         const detail=(result.stderr||'').replace(/[\r\n]+/g,' ').trim().slice(0,200);
-        throw new Error(`Provider request failed${detail?` (${detail})`:''}; interrupted batch will deduplicate on retry`);
+        const safeDetail=/^(?:HTTP \d{3}|[A-Z0-9_]{1,50}|request failed|host blocked|response too large|invalid JSON response)$/.test(detail)?detail:'timeout or transport failure';
+        if(url.startsWith(upstream+'/'))throw new Error(`Upstream ${upstream} returned ${safeDetail}. Check Wrangler's listening port and local API token.`);
+        throw new Error(`Provider request failed (${safeDetail})`);
       }
       return JSON.parse(result.stdout);
     }};
     const origin='https://local-runner.example.com',transportToken='local-adapter-transport-placeholder-only';
     const http:Http={json(url,request){
-      if(url.startsWith(origin+'/leads?'))return network.json('http://127.0.0.1:8787'+url.slice(origin.length),{headers:{Authorization:`Bearer ${token}`}});
+      if(url.startsWith(origin+'/leads?'))return network.json(upstream+url.slice(origin.length),{headers:{Authorization:`Bearer ${token}`}});
       if(!url.startsWith('https://hacker-news.firebaseio.com/v0/item/'))throw new Error('Unexpected source URL');
       if(request?.headers)throw new Error('No token may be sent to HN');return network.json(url);
     }};
@@ -240,16 +249,17 @@ async function main(){
       return {warning:'OpenAI-compatible extraction is limited to discovery; local rules used'};
     }:undefined);
     let requalified=0,requalificationSkipped=0;
-    let result:{imported:number;duplicates:number;invalid:number;nextOffset:number};
+    let result:{imported:number;duplicates:number;invalid:number;nextOffset:number;fetched?:number;sourceState?:string};
     if(requalifyAll){
       for(const lead of store.leads().filter(isDiscoveryCandidate)){
         if(!lead.discovery_context){requalificationSkipped++;continue;}
         engine.requalifyDiscovery(lead.lead_id,lead,true);
         requalified++;
       }
-      result={imported:0,duplicates:0,invalid:0,nextOffset:offset};
+      result={imported:0,duplicates:0,invalid:0,nextOffset:0};
     }else{
-      result=pullExternalLeads(http,{origin,token:transportToken,offset,limit,allowedSources:get('EXTERNAL_LEADS_SOURCES','hackernews').split(',').map(s=>s.trim())},lead=>{
+      try {
+      const pulled=pullExternalLeads(http,{origin,token:transportToken,offset:0,cursor,limit,allowedSources},lead=>{
         const ingested=engine.ingest(lead);
         if(requalifyMissing&&ingested.duplicate&&lead.discovery_context){
           const stored=store.get(ingested.lead.lead_id);
@@ -260,7 +270,16 @@ async function main(){
         }
         return ingested;
       });
-      offset=result.nextOffset;
+      result=pulled;
+      cursor=pulled.nextCursor ?? cursor;
+      let diagnostics: unknown=null;
+      try { diagnostics=network.json(upstream+'/diagnostics',{headers:{Authorization:`Bearer ${token}`}}); } catch { /* Optional for older Workers. */ }
+      sourceHealth={origin:upstream,state:pulled.sourceState,at:new Date().toISOString(),fetched:pulled.fetched,diagnostics};
+      } catch(error) {
+        sourceHealth={origin:upstream,state:'UPSTREAM_ERROR',at:new Date().toISOString(),error:error instanceof Error&&error.message.startsWith('Upstream ')?error.message:'Lead intake failed. Check the Worker version, response and provider health.'};
+        await save();
+        throw error;
+      }
     }
     await save();
     const alerts=[];
@@ -299,7 +318,7 @@ async function main(){
         summaryStatus='SENT';
       }catch{summaryStatus='FAILED';}
     }
-    await save();await writeFile('outputs/external/review-preview.json',JSON.stringify(alerts,null,2));
+    await save();await writeFile(`${output}/review-preview.json`,JSON.stringify(alerts,null,2));
     console.log(JSON.stringify({mode:preview?'DRY RUN — real reads, local rules, preview only':requalificationRun?'LOCAL REQUALIFICATION — NOTIFICATIONS SUPPRESSED':`LOCAL ONE-SHOT — ${qualificationMode.toUpperCase()}`,...result,requalified,requalification_skipped_missing_context:requalificationSkipped,
       total:store.leads().length,pending:store.leads().filter(l=>l.status==='PENDING_APPROVAL').length,
       ai_attempted:aiEnabled,ai_provider:aiProvider,gemini_attempted:aiEnabled&&aiProvider==='gemini',methods:store.leads().map(l=>({id:l.lead_id,method:l.method,warning:l.extractionWarning})),

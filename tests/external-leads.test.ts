@@ -15,6 +15,31 @@ const options={origin:'https://scout.example.com',token:'x'.repeat(40),offset:0,
 const page=(leads:unknown[],total=leads.length)=>({ok:true,total,count:leads.length,offset:0,leads});
 
 describe('external discovery pull',()=>{
+  it('maps strict WordPress RSS evidence and rejects missing evidence',()=>{
+    const evidence={
+      version:1,
+      original_title:'Build a React booking system',
+      original_url:'https://jobs.wordpress.net/project/101/',
+      raw_text:'<p>Client needs a React booking application. Budget USD 900.</p>',
+      decoded_text:'Client needs a React booking application. Budget USD 900.',
+      published_at:time,
+      observed_at:time,
+      link_targets:['https://jobs.wordpress.net/project/101/'],
+      content_hash:'a'.repeat(64),
+      complete:true,
+      truncated:false,
+    };
+    const rss={...row,source:'wordpress_jobs_rss',source_id:'post:101',category:'freelance_request',
+      name:'Unverified requester',title:evidence.original_title,url:evidence.original_url,
+      published_at:time,listing_evidence:evidence};
+    const lead=externalToLead(rss);
+    expect(lead.source).toBe('csv');
+    expect(lead.source_external_id).toBe('wordpress_jobs_rss:post:101');
+    expect(lead.discovery_context).toMatchObject({
+      provider:'wordpress_jobs_rss',item_type:'listing',source_hash:'a'.repeat(64),complete:true,
+    });
+    expect(()=>externalToLead({...rss,listing_evidence:undefined})).toThrow();
+  });
   it('maps actual HN evidence and never imports upstream authority/contact consent',()=>{
     const lead=externalToLead(row,item);
     expect(lead).toMatchObject({source:'hn',source_external_id:'12345',source_url:'https://news.ycombinator.com/item?id=12345',
@@ -27,7 +52,8 @@ describe('external discovery pull',()=>{
     const store=new MemoryStore(),engine=new Engine(store,defaults,{now:()=>time});
     const calls:string[]=[];
     const http:Http={json:(url,request)=>{calls.push(url);if(url.includes('/leads?')){
-      expect(url).toContain('sort=found_at&order=desc&source=hackernews');
+      expect(url).toContain('category=freelance_request');
+      expect(url).toContain('source=hackernews');
       expect(request?.headers?.Authorization).toBe(`Bearer ${options.token}`);return page([row]);
     }expect(request?.headers).toBeUndefined();return item;}};
     expect(pullExternalLeads(http,options,l=>engine.ingest(l))).toMatchObject({imported:1,nextOffset:0});
@@ -48,19 +74,19 @@ describe('external discovery pull',()=>{
     const local={...row,category:'local_business'};
     const http:Http={json:url=>url.includes('/leads?')?page([hiring,local]):item};
     let ingested=0;
-    expect(pullExternalLeads(http,options,()=>{ingested++;return {duplicate:false};})).toMatchObject({imported:1,invalid:1});
-    expect(ingested).toBe(1);
+    expect(pullExternalLeads(http,options,()=>{ingested++;return {duplicate:false};})).toMatchObject({imported:0,invalid:2});
+    expect(ingested).toBe(0);
 
     const boardOptions={...options,allowedSources:['arbeitnow']};
     const boardRow={...row,source:'arbeitnow',category:'company_hiring'};
     const boardHttp:Http={json:url=>url.includes('/leads?')?page([boardRow]):undefined};
-    expect(pullExternalLeads(boardHttp,boardOptions,()=>{ingested++;return {duplicate:false};})).toMatchObject({imported:0,invalid:1});
-    expect(ingested).toBe(1);
+    expect(()=>pullExternalLeads(boardHttp,boardOptions,()=>{ingested++;return {duplicate:false};})).toThrow();
+    expect(ingested).toBe(0);
   });
   it('keeps non-HN identities namespaced with incomplete evidence notes',()=>{
     const lead=externalToLead({...row,source:'arbeitnow',source_id:'company-job',category:'company_hiring',name:'Company',title:'React engineer'});
     expect(lead.source).toBe('csv');expect(lead.source_external_id).toBe('arbeitnow:company-job');
-    expect(lead.owner_notes).toContain('Incomplete');expect(lead.posted_at).toBeUndefined();
+    expect(lead.owner_notes).toContain('evidence unavailable');expect(lead.posted_at).toBeUndefined();
   });
   it('aborts provider failure instead of returning a checkpoint; validates page bounds',()=>{
     const http:Http={json:url=>{if(url.includes('/leads?'))return page([row],10);throw new Error('Provider failure');}};

@@ -334,7 +334,7 @@ describe("Stage E qualification routing and persistence", () => {
       schema_version: "freelance.v2",
       rules_version: "rules.v1",
       prompt_version: "prompt.v1",
-      policy_version: "policy.v1",
+      policy_version: "policy.v2",
       source_hash: lead.discovery_context?.source_hash,
       method: "rules",
     });

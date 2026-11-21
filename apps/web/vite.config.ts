@@ -6,14 +6,12 @@ import { readFile, writeFile, rename, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
+import { stateDirectory } from "../../scripts/external-local-config.mjs";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const envFile = path.join(repoRoot, ".env.external");
-const stateFiles = [
-  "external-pipeline.json",
-  "external-gemini.json",
-  "external-openai.json",
-].map((name) => path.join(repoRoot, "data", name));
+const stateNames = ["external-pipeline.json", "external-gemini.json", "external-openai.json"];
+const profile = process.env.EXTERNAL_LOCAL_PROFILE || "";
 const emptyState = {
   offset: 0,
   store: { rows: [], events: [], draftRows: [], requestRows: [] },
@@ -26,6 +24,9 @@ const emptyState = {
  * does not exist, so the UI can tell "missing" apart from "off".
  */
 async function readEnabled(): Promise<boolean | null> {
+  if (process.env.EXTERNAL_LEADS_ENABLED !== undefined) {
+    return process.env.EXTERNAL_LEADS_ENABLED === "true";
+  }
   try {
     const text = await readFile(envFile, "utf8");
     const line = text
@@ -67,8 +68,10 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 async function readLatestState() {
+  const directory = stateDirectory(profile);
   const candidates = await Promise.all(
-    stateFiles.map(async (file) => {
+    stateNames.map(async (name) => {
+      const file = path.join(repoRoot, directory, name);
       try {
         return { file, modified: (await stat(file)).mtimeMs };
       } catch (error) {
@@ -80,9 +83,18 @@ async function readLatestState() {
   const latest = candidates
     .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
     .sort((a, b) => b.modified - a.modified)[0];
-  if (!latest) return { ...emptyState, stateFile: null };
+  if (!latest) return { ...emptyState, stateFile: null, directory };
+  const { offset, store, emailTest, sourceHealth } = JSON.parse(await readFile(latest.file, "utf8"));
+  const visibleRows = store.rows.filter((row: {discovery_context?: {expires_at?: string}}) => {
+    const expires = row.discovery_context?.expires_at;
+    return !expires || Date.parse(expires) > Date.now();
+  });
   return {
-    ...JSON.parse(await readFile(latest.file, "utf8")),
+    offset,
+    store: { rows: visibleRows, requestRows: store.requestRows },
+    emailTest,
+    sourceHealth,
+    directory,
     stateFile: path.basename(latest.file),
   };
 }
@@ -113,6 +125,13 @@ function localPipeline(): Plugin {
         if (!/^(::1|127\.0\.0\.1|::ffff:127\.0\.0\.1)$/.test(address)) {
           return json(403, { error: "Local development only" });
         }
+        if (!/^(127\.0\.0\.1|localhost|\[::1\]):\d{1,5}$/.test(req.headers.host || "")) {
+          return json(403, { error: "Loopback host required" });
+        }
+        if (req.method === "POST" && (req.headers.origin !== `http://${req.headers.host}`
+          || req.headers["x-leadflow-local"] !== "1")) {
+          return json(403, { error: "Same-origin dashboard request required" });
+        }
 
         void (async () => {
           try {
@@ -133,9 +152,13 @@ function localPipeline(): Plugin {
                 return json(200, {
                   enabled: enabled === true,
                   configured: enabled !== null,
+                  locked: process.env.EXTERNAL_LEADS_ENABLED !== undefined,
                 });
               }
               if (req.method === "POST") {
+                if (process.env.EXTERNAL_LEADS_ENABLED !== undefined) {
+                  return json(409, { error: "The launch environment sets the switch for this session." });
+                }
                 const current = await readEnabled();
                 if (current === null) {
                   return json(409, {
@@ -167,16 +190,16 @@ function localPipeline(): Plugin {
               pathname === "/api/local/pipeline/run" &&
               req.method === "POST"
             ) {
-              if (running) {
-                return json(409, {
-                  status: "error",
-                  error: "A pipeline run is already in progress",
-                });
-              }
               if ((await readEnabled()) !== true) {
                 return json(409, {
                   status: "error",
                   error: "Pipeline is disabled. Enable it first.",
+                });
+              }
+              if (running) {
+                return json(409, {
+                  status: "error",
+                  error: "A pipeline run is already in progress",
                 });
               }
 
@@ -207,22 +230,15 @@ function localPipeline(): Plugin {
               child.on("close", (code) => {
                 clearTimeout(timer);
                 if (code === 0) {
-                  finish(200, { status: "completed", code, output });
+                  finish(200, { status: "completed", code });
                   return;
                 }
-                const tail = output.trim().slice(-3000);
-                console.error(
-                  `[external-pipeline] "npm run external:run" exited with code ${code}.\n${tail || "(no output captured)"}`,
-                );
+                const detail = output.split(/\r?\n/).find(line =>
+                  /^External run failed: Upstream http:\/\/127\.0\.0\.1:\d{1,5} returned /.test(line));
                 finish(500, {
                   status: "error",
                   code,
-                  output,
-                  error: `Pipeline exited with code ${code}.${
-                    tail
-                      ? ` Last output:\n${tail}`
-                      : " No output was captured; see the terminal running npm run dev."
-                  }`,
+                  error: detail || "Pipeline failed. Check upstream health, local configuration and the runner lock.",
                 });
               });
               child.on("error", (err) => {
@@ -251,5 +267,5 @@ export default defineConfig({
   envDir: fileURLToPath(new URL("../..", import.meta.url)),
   plugins: [react(), tailwindcss(), localPipeline()],
   build: { outDir: "dist", emptyOutDir: true },
-  server: { port: 5173, strictPort: true },
+  server: { host: "127.0.0.1", port: 5173, strictPort: true },
 });

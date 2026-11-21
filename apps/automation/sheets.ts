@@ -94,6 +94,32 @@ export const tableHeaders: Record<string, string[]> = {
     "last_contacted_at",
     "campaign_notes",
     "synced_at",
+    "queue_revision",
+    "upstream_queue_revision",
+  ],
+  "New Companies": [
+    "company_key",
+    "api_id",
+    "source",
+    "source_id",
+    "name",
+    "category",
+    "title",
+    "registered_on",
+    "activity_code",
+    "activity_label",
+    "city",
+    "country",
+    "address",
+    "score",
+    "signal",
+    "source_url",
+    "campaign_status",
+    "last_contacted_at",
+    "campaign_notes",
+    "synced_at",
+    "queue_revision",
+    "upstream_queue_revision",
   ],
 };
 export interface TablePort {
@@ -108,6 +134,12 @@ function fromCell(x: unknown): unknown {
     ? x.slice(1)
     : x;
 }
+function manualRevision(current: Record<string, unknown> | undefined, incoming: Record<string, unknown>) {
+  if (!current || (current.campaign_status === incoming.campaign_status && current.campaign_notes === incoming.campaign_notes))
+    return incoming.queue_revision;
+  return current.queue_revision ?? "";
+}
+
 export class SheetStore implements Store {
   constructor(public port: TablePort) {}
   records(name: string): Record<string, unknown>[] {
@@ -165,6 +197,18 @@ export class SheetStore implements Store {
       campaign_status: current?.campaign_status || data.campaign_status || "new",
       last_contacted_at: current?.last_contacted_at || data.last_contacted_at || "",
       campaign_notes: current?.campaign_notes ?? data.campaign_notes ?? "",
+      queue_revision: manualRevision(current, data),
+    });
+    return Boolean(current);
+  }
+  upsertNewCompany(data: Record<string, unknown>) {
+    const current = this.records("New Companies").find((record) => record.company_key === data.company_key);
+    this.upsert("New Companies", "company_key", {
+      ...data,
+      campaign_status: current?.campaign_status || data.campaign_status || "new",
+      last_contacted_at: current?.last_contacted_at || data.last_contacted_at || "",
+      campaign_notes: current?.campaign_notes ?? data.campaign_notes ?? "",
+      queue_revision: manualRevision(current, data),
     });
     return Boolean(current);
   }

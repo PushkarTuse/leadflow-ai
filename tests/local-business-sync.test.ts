@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pullLocalBusinesses, saveLocalBusinessFollowup } from "../apps/automation/local-business-sync";
+import { pullLocalBusinesses, pullManualProspects, saveLocalBusinessFollowup, saveManualProspectFollowup } from "../apps/automation/local-business-sync";
 import type { Http } from "../apps/automation/adapters";
 
 const origin = "https://scout.example.com";
@@ -25,6 +25,29 @@ const row = {
 };
 
 describe("isolated local-business Sheet sync", () => {
+  it("syncs new companies only into a separate manual category",()=>{
+    const http:Http={json:()=>({ok:true,total:1,count:1,offset:0,leads:[{
+      id:31,source:"mca",source_id:"U74110PN2026PTC000099",category:"new_company",
+      name:"Manifest Company",title:"Retail",registered_on:"2026-11-10",
+      activity_code:"46909",activity_label:"Retail",city:"Pune",country:"IN",
+      address:"Pune",score:75,signal:"Registered recently",url:"https://example.com",
+    }]})};
+    const rows:Record<string,unknown>[]=[];
+    expect(pullManualProspects(http,{origin,token,category:"new_company"},(row)=>{rows.push(row);return false;}))
+      .toEqual({imported:1,duplicates:0,invalid:0,excluded:0});
+    expect(rows[0]).toMatchObject({category:"new_company",source:"mca",registered_on:"2026-11-10"});
+  });
+  it("checks category identity and expected revision before a manual save",()=>{
+    const calls:{method:string}[]=[];
+    const http:Http={json:(_url,request)=>{
+      calls.push({method:request?.method||"get"});
+      return request?.method==="patch"?{ok:true,lead:{queue_revision:3}}:{ok:true,lead:{category:"new_company",source:"mca"}};
+    }};
+    expect(saveManualProspectFollowup(http,{origin,token,category:"new_company"},{
+      apiId:"31",status:"contacted",notes:"Owner review",expectedRevision:2,
+    })).toMatchObject({apiId:"31",status:"contacted"});
+    expect(calls.map(x=>x.method)).toEqual(["get","patch"]);
+  });
   it("requests only local businesses, maps the calling fields, and excludes Google Places", () => {
     let requestUrl = "";
     let requestHeaders: Record<string, string> | undefined;

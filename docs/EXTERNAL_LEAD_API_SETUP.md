@@ -121,14 +121,17 @@ EXTERNAL_LEADS_API_ORIGIN=https://your-api.your-subdomain.workers.dev
 EXTERNAL_LEADS_API_TOKEN=<same private random 32+ character API_TOKEN>
 EXTERNAL_LEADS_SOURCES=hackernews
 EXTERNAL_LEADS_BATCH_SIZE=5
-EXTERNAL_LEADS_OFFSET=0
 ```
 
 Origin must be HTTPS with no path, trailing slash, credentials, query or port. The connector follows no redirects. After checking account quotas and source use, set EXTERNAL_LEADS_ENABLED=true and use the existing tick trigger. DRY_RUN=true still blocks all network effects; activation needs the already reviewed live runtime settings. Do not alter email/test-mode flags. SOURCE_INTERVAL_MINUTES controls polling; the existing HTTP/Gemini budgets and runtime deadline apply. Invalid external configuration is logged as a redacted SourceRuns failure without disabling standard Telegram/inbound operations.
 
-Each source cycle processes at most five upstream rows, then flushes CRM before saving EXTERNAL_LEADS_OFFSET. At end it wraps to zero. This is a repeated scan, not exactly-once delivery: upstream deletion/inserts/tied timestamps can shift offsets, so later scans recover missed rows under stable data. A large database can delay newly appended records; filtering/keyset pagination should be an upstream follow-up. Do not sort by producer score or filter by mutable status. Upstream itself deduplicates at company/domain level and may discard distinct opportunities; review `src/db.ts` before scaling.
+Each source cycle requests at most five `freelance_request` candidates with evidence and approved provider IDs, ordered by ascending D1 ID. The first page freezes an upper ID. Further pages use `after_id` and `until_id`, then the next cycle opens a new snapshot for newer records. Apps Script flushes the CRM before saving the cursor. The cursor is scoped to the Worker origin and the sorted source allowlist.
 
-Malformed/unsupported/disabled rows count as invalid and advance the page. HN provider failure aborts the page and preserves the old offset; already-written leads deduplicate on retry. Repeated identical input does not create another record. Changed repeated IDs retain the first LeadFlow record under the existing engine; richer evidence needs explicit reprocessing. Reset offset to zero when replacing API origin/database, and after correcting previously invalid rows. SourceRuns counts and the private Sheet are the audit surface; no row text/token appears in general errors.
+Malformed/unsupported rows count as invalid and advance the page. An upstream failure aborts the page and preserves the cursor. Already-written leads deduplicate on retry. Existing IDs retain their first qualification until explicitly reprocessed. For a provider database replacement at the same origin or a corrected historical row, save the old checkpoint before deliberately replaying the scoped cursor. SourceRuns counts and the private Sheet are the audit surface.
+
+Locally, set `EXTERNAL_LEADS_API_ORIGIN=http://127.0.0.1:8787` to match the default Worker, or use the actual port Wrangler prints. Run the disposable producer fixture harness and set `EXTERNAL_LOCAL_PROFILE` for a separate ignored ledger. See [local reproduction commands](IMPLEMENTATION_CHANGE_LOG_STEPS_1_TO_8.md#reproduction).
+
+The live-source shadow trial added Himalayas, Jobicy RSS and Remotive. See the [five-source local verification](FREELANCE_SOURCE_LOCAL_VERIFICATION.md) for the exact source scope, local flags, request sequence, results, and publisher-specific handling. These collectors default off in the checked-in Worker configuration.
 
 ## Verification / next acceptance gate
 

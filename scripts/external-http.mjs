@@ -1,4 +1,5 @@
 // Private subprocess transport: request data arrives on stdin, never command-line arguments.
+import {loopbackOrigin} from './external-local-config.mjs';
 let input='';
 for await (const chunk of process.stdin) input+=chunk;
 // Only a safe, credential-free detail is ever written to stderr:
@@ -22,8 +23,11 @@ try {
       }
     }catch{}
   }
+  const local=loopbackOrigin(process.env.EXTERNAL_LEADS_API_ORIGIN);
+  const localRead=(!request.method||request.method==='get')&&
+    (url.startsWith(local+'/leads?')||url===local+'/diagnostics');
   if(!/^https:\/\/(hacker-news\.firebaseio\.com|generativelanguage\.googleapis\.com|api\.telegram\.org)\//.test(url)
-    && !/^http:\/\/127\.0\.0\.1:8787\/leads\?/.test(url)
+    && !localRead
     && !(aiEndpoint&&url===aiEndpoint)){detail='host blocked';throw new Error('Host blocked');}
   const response=await fetch(url,{method:request.method||'get',headers:{'Content-Type':'application/json',...request.headers},
     ...(request.body===undefined?{}:{body:JSON.stringify(request.body)}),redirect:'error',signal:AbortSignal.timeout(15000)});
@@ -35,8 +39,8 @@ try {
 } catch (error) {
   if(detail==='request failed'){
     const cause=error&&typeof error==='object'?error.cause:undefined;
-    if(cause&&typeof cause==='object'&&typeof cause.code==='string')detail=cause.code;
+    if(cause&&typeof cause==='object'&&typeof cause.code==='string'&&/^[A-Z0-9_]{1,50}$/.test(cause.code))detail=cause.code;
   }
-  process.stderr.write(`Provider request failed (${detail})`);
+  process.stderr.write(detail);
   process.exitCode=1;
 }

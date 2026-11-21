@@ -175,3 +175,12 @@ export function exportCsv(leads: Lead[]): string {
     ),
   ].join("\r\n");
 }
+
+export function exportManualProspectCsv(headers: readonly string[], rows: Record<string, unknown>[]): string {
+  const escape = (value: unknown) =>
+    '"' + String(safeCell(value)).replace(/"/g, '""') + '"';
+  return [
+    headers.map(escape).join(","),
+    ...rows.map((row) => headers.map((header) => escape(row[header])).join(",")),
+  ].join("\r\n");
+}

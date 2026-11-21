@@ -221,15 +221,16 @@ describe("built Apps Script runtime with mocked Google/Telegram services", () =>
       FREELANCE_QUALIFICATION_MODE:'enforce',
       TELEGRAM_ENABLED:'true',TELEGRAM_BOT_TOKEN:'123:token',TELEGRAM_OWNER_CHAT_ID:'99',TELEGRAM_OWNER_USER_ID:'99'}))h.props.set(k,v);
     const fixture=inputSchema.parse(fixtures(new Date().toISOString())[0]);
-    h.setSourceReply(url=>url.includes('/leads?')?{ok:true,total:1,count:1,offset:0,leads:[{
-      source:'hackernews',source_id:'12345',category:'company_hiring',name:'Company',title:'React website developer',
+    h.setSourceReply(url=>url.includes('/leads?')?{ok:true,total:1,count:1,offset:0,snapshot_until_id:1,next_after_id:1,has_more:false,leads:[{
+      id:1,source:'hackernews',source_id:'12345',category:'freelance_request',name:'Company',title:'React website developer',
       url:'https://news.ycombinator.com/item?id=12345',found_at:new Date().toISOString()}]}:
-      {id:12345,type:'job',title:fixture.title,text:fixture.raw_description,time:Math.floor(Date.now()/1000)});
+      {id:12345,type:'job',title:fixture.title,text:`SEEKING FREELANCER: ${fixture.raw_description}`,time:Math.floor(Date.now()/1000)});
     h.run('tick');expect(h.records()).toHaveLength(1);
     expect(h.records()[0].status).toBe('PENDING_APPROVAL');
     expect(h.calls.some(c=>c.method==='sendMessage')).toBe(true);
     expect(h.tabs.get('EmailOutbox')!.rows).toHaveLength(1);expect(h.sent).toHaveLength(0);
-    expect(h.props.get('EXTERNAL_LEADS_OFFSET')).toBe('0');
+    expect([...h.props.entries()].find(([key])=>key.startsWith('external_cursor_'))?.[1]).toBe('{"after":1}');
+    h.setSourceReply(()=>({ok:true,total:1,count:0,offset:0,snapshot_until_id:1,next_after_id:1,has_more:false,leads:[]}));
     h.props.delete('last_source_cycle');h.run('tick');expect(h.records()).toHaveLength(1);
   });
   it('defaults discovery notifications to shadow while still persisting qualification',()=>{
@@ -238,10 +239,10 @@ describe("built Apps Script runtime with mocked Google/Telegram services", () =>
       EXTERNAL_LEADS_API_ORIGIN:'https://scout.example.com',EXTERNAL_LEADS_API_TOKEN:'x'.repeat(40),
       TELEGRAM_ENABLED:'true',TELEGRAM_BOT_TOKEN:'123:token',TELEGRAM_OWNER_CHAT_ID:'99',TELEGRAM_OWNER_USER_ID:'99'}))h.props.set(k,v);
     const fixture=inputSchema.parse(fixtures(new Date().toISOString())[0]);
-    h.setSourceReply(url=>url.includes('/leads?')?{ok:true,total:1,count:1,offset:0,leads:[{
-      source:'hackernews',source_id:'12345',category:'company_hiring',name:'Company',title:'React website developer',
+    h.setSourceReply(url=>url.includes('/leads?')?{ok:true,total:1,count:1,offset:0,snapshot_until_id:1,next_after_id:1,has_more:false,leads:[{
+      id:1,source:'hackernews',source_id:'12345',category:'freelance_request',name:'Company',title:'React website developer',
       url:'https://news.ycombinator.com/item?id=12345',found_at:new Date().toISOString()}]}:
-      {id:12345,type:'job',title:fixture.title,text:fixture.raw_description,time:Math.floor(Date.now()/1000)});
+      {id:12345,type:'job',title:fixture.title,text:`SEEKING FREELANCER: ${fixture.raw_description}`,time:Math.floor(Date.now()/1000)});
     h.run('tick');
     expect(h.records()).toHaveLength(1);
     expect(h.records()[0].qualification).toBeDefined();
@@ -270,8 +271,8 @@ describe("built Apps Script runtime with mocked Google/Telegram services", () =>
       ],
     };
     h.setSourceReply(url=>{
-      if(url.includes('/leads?'))return {ok:true,total:1,count:1,offset:0,leads:[{
-        source:'hackernews',source_id:'12345',category:'freelance_request',name:'founder',
+      if(url.includes('/leads?'))return {ok:true,total:1,count:1,offset:0,snapshot_until_id:1,next_after_id:1,has_more:false,leads:[{
+        id:1,source:'hackernews',source_id:'12345',category:'freelance_request',name:'founder',
         title:'SEEKING FREELANCER',url:'https://news.ycombinator.com/item?id=12345',found_at:foundAt}]};
       if(url.endsWith('/item/12345.json'))return {id:12345,type:'comment',parent:100,time:Math.floor(Date.now()/1000),text};
       if(url.endsWith('/item/100.json'))return {id:100,type:'job',title:'Who is hiring? November',time:Math.floor(Date.now()/1000)};
@@ -360,7 +361,7 @@ describe("built Apps Script runtime with mocked Google/Telegram services", () =>
       name: "Kothrud Dental", title: "dentist", city: "Pune", phone: "+91 98765 43210",
       website: null, pagespeed_mobile: null, rating: null, rating_count: null,
       score: 90, signal: "No website listed", url: "https://www.openstreetmap.org/node/21",
-      status: "new", notes: null,
+      status: "new", notes: null, queue_revision: 0,
     };
     const google = { ...local, id: 22, source: "google_nearby", source_id: "place/22" };
     h.setSourceReply((url) => {
@@ -384,10 +385,39 @@ describe("built Apps Script runtime with mocked Google/Telegram services", () =>
     h.setActiveSheet("Local Businesses");
     h.setSourceReply((url, method) => {
       expect(url).toContain("/leads/21");
-      return method === "patch" ? { ok: true } : { ok: true, lead: { category: "local_business", source: "osm" } };
+      return method === "patch" ? { ok: true, lead: { queue_revision: 1 } } : { ok: true, lead: { category: "local_business", source: "osm" } };
     });
     expect(h.run("saveSelectedLocalBusinessFollowup")).toContain("Saved local-business status contacted");
+    expect(queue.rows[1][queue.rows[0].indexOf("queue_revision")]).toBe(1);
     expect(h.externalCalls.slice(-2).map((call) => call.method)).toEqual(["get", "patch"]);
+    expect(h.records()).toHaveLength(0);
+    expect(h.calls).toHaveLength(0);
+    expect(h.sent).toHaveLength(0);
+  });
+  it("syncs and saves the new-company queue with a revision and no email fields", () => {
+    const h = harness();
+    h.run("setup");
+    for (const [key,value] of Object.entries({ DRY_RUN:"false", LOCAL_BUSINESS_SYNC_ENABLED:"true",
+      EXTERNAL_LEADS_API_ORIGIN:"https://scout.example.com", EXTERNAL_LEADS_API_TOKEN:"x".repeat(40) }))
+      h.props.set(key,value);
+    h.setSourceReply((url, method) => {
+      if (method === "patch") return {ok:true,lead:{queue_revision:3}};
+      if (url.endsWith("/leads/31")) return {ok:true,lead:{category:"new_company",source:"mca"}};
+      expect(url).toContain("category=new_company");
+      expect(url).toContain("verified_prospects=true");
+      return {ok:true,total:1,count:1,offset:0,leads:[{id:31,source:"mca",source_id:"U47110PN2026PTC000001",
+        category:"new_company",name:"Fixture Retail",score:85,signal:"Recently incorporated",queue_revision:2,
+        email:"private@fixture.example"}]};
+    });
+    expect(h.run("syncNewCompanies")).toContain("1 new");
+    const queue=h.tabs.get("New Companies")!;
+    const revision=queue.rows[0].indexOf("queue_revision");
+    expect(queue.rows[1][revision]).toBe(2);
+    expect(queue.rows.flat()).not.toContain("private@fixture.example");
+    queue.rows[1][queue.rows[0].indexOf("campaign_status")]="contacted";
+    h.setActiveSheet("New Companies");
+    expect(h.run("saveSelectedNewCompanyFollowup")).toContain("Saved new-company status contacted");
+    expect(queue.rows[1][revision]).toBe(3);
     expect(h.records()).toHaveLength(0);
     expect(h.calls).toHaveLength(0);
     expect(h.sent).toHaveLength(0);

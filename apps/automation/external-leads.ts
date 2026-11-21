@@ -1,20 +1,47 @@
 import {z} from 'zod';
 import {hash, inputSchema, type LeadInput} from '../../packages/core/model';
 import {cleanText} from '../../packages/core/scoring';
-import {discoveryContextSchema, type DiscoveryContext} from '../../packages/core/qualification';
+import {discoveryContextSchema, FREELANCE_BUYER_SOURCES, type DiscoveryContext} from '../../packages/core/qualification';
 import type {Http} from './adapters';
 
-export const externalSources = ['hackernews','osm','remoteok','arbeitnow','jobicy'] as const;
+export const externalSources = [...FREELANCE_BUYER_SOURCES,'osm','remoteok','arbeitnow','jobicy'] as const;
+const buyerSources = new Set<string>(FREELANCE_BUYER_SOURCES);
+const listingHosts: Record<(typeof FREELANCE_BUYER_SOURCES)[number],readonly string[]> = {
+  hackernews:['news.ycombinator.com'], wordpress_jobs_rss:['jobs.wordpress.net'],
+  freelancer_rss:['www.freelancer.com','freelancer.com'], himalayas:['himalayas.app'],
+  jobicy_rss:['jobicy.com'],remotive:['remotive.com'],
+};
+const listingEvidenceSchema=z.object({
+  version:z.literal(1),
+  original_title:z.string().min(1).max(300),
+  original_url:z.string().url().max(2000),
+  raw_text:z.string().max(20000),
+  decoded_text:z.string().max(12000),
+  published_at:z.string().datetime().nullable(),
+  observed_at:z.string().datetime(),
+  link_targets:z.array(z.string().url()).max(10),
+  content_hash:z.string().regex(/^[0-9a-f]{64}$/),
+  complete:z.boolean(),
+  truncated:z.boolean(),
+  expires_at:z.string().datetime().optional(),
+  source_updated_at:z.string().datetime().optional(),
+  application_url:z.string().url().max(2000).optional(),
+}).strict();
 const rowSchema = z.object({
   source:z.enum(externalSources), source_id:z.string().min(1).max(500),
-  category:z.enum(['local_business','company_hiring','freelance_request']),
+  category:z.enum(['local_business','company_hiring','freelance_request','new_company']),
   name:z.string().max(500), title:z.string().max(2000).nullish(),
   url:z.string().max(2000), city:z.string().max(500).nullish(), country:z.string().max(500).nullish(),
   found_at:z.string().datetime(),
+  published_at:z.string().datetime().nullable().optional(),
+  listing_evidence:z.unknown().optional(),
 });
 const pageSchema = z.object({ok:z.literal(true),total:z.number().int().nonnegative(),
   count:z.number().int().min(0).max(5), offset:z.number().int().nonnegative(),
-  leads:z.array(z.unknown()).max(5)});
+  leads:z.array(z.unknown()).max(5),snapshot_until_id:z.number().int().nonnegative().optional(),
+  next_after_id:z.number().int().nonnegative().optional(),has_more:z.boolean().optional()});
+
+export interface ExternalCursor { after:number; until?:number }
 
 /** Only a configured HTTPS origin can receive the bearer token. No paths/credentials/ports. */
 export function externalOrigin(value:string):string {
@@ -74,9 +101,10 @@ function fetchHnThread(http:Http, parentId:number):unknown|undefined {
 export function externalToLead(raw:unknown, hnItem?:unknown, hnThread?:unknown):LeadInput {
   const row=rowSchema.parse(raw);
   const hn=row.source==='hackernews';
+  const hasListingContract=Object.hasOwn(listingHosts,row.source);
   let title=cleanText(row.title || row.name), description='', posted_at:string|undefined;
   let discovery_context:DiscoveryContext|undefined;
-  if(hn){
+  if(hn && hnItem!==undefined){
     if(!/^[1-9]\d{0,14}$/.test(row.source_id))throw new Error('Invalid HN id');
     const item=z.object({id:z.number().int().positive(),type:z.enum(['comment','job']),
       text:z.string().optional(),title:z.string().optional(),time:z.number().int().positive().optional(),
@@ -119,6 +147,50 @@ export function externalToLead(raw:unknown, hnItem?:unknown, hnThread?:unknown):
       truncated,
       complete:!truncated,
     });
+  }else if(hasListingContract){
+    if(row.category!=='freelance_request') throw new Error('Listing must be a freelance_request');
+    const evidence=listingEvidenceSchema.parse(row.listing_evidence);
+    if(evidence.original_url!==row.url || !evidence.original_url.startsWith('https://')) throw new Error('Listing URL mismatch');
+    const listingUrl = new URL(evidence.original_url);
+    const allowedHosts = listingHosts[row.source as keyof typeof listingHosts];
+    if (!allowedHosts.includes(listingUrl.hostname) || listingUrl.port || listingUrl.username || listingUrl.password)
+      throw new Error('Unapproved listing host');
+    if (row.source==='himalayas' && (!evidence.expires_at || !evidence.application_url ||
+      !/^https:\/\/himalayas\.app\//.test(evidence.application_url) || !evidence.link_targets.includes(evidence.application_url)))
+      throw new Error('Himalayas expiry or application link missing');
+    if(hn && (row.url!==`https://news.ycombinator.com/item?id=${row.source_id}` || !/^seeking freelancer\b/i.test(evidence.decoded_text.trim())))
+      throw new Error('HN buyer evidence mismatch');
+    title=evidence.original_title.slice(0,200);
+    description=evidence.decoded_text;
+    posted_at=evidence.published_at||undefined;
+    discovery_context=discoveryContextSchema.parse({
+      provider:row.source,
+      provider_record_id:String(row.source_id).slice(0,160),
+      original_url:evidence.original_url,
+      item_type:hn?'comment':'listing',
+      author_handle:'',
+      parent_id:'',
+      thread_id:'',
+      thread_title:'',
+      thread_date:null,
+      original_title:evidence.original_title,
+      raw_text:evidence.raw_text,
+      decoded_text:evidence.decoded_text,
+      published_at:evidence.published_at,
+      expires_at:evidence.expires_at,
+      source_updated_at:evidence.source_updated_at,
+      application_url:evidence.application_url,
+      collected_at:row.found_at,
+      fetched_at:evidence.observed_at,
+      tags:['freelance_request',row.source],
+      location:'',
+      contact_link_targets:evidence.link_targets,
+      deleted:false,
+      dead:false,
+      source_hash:evidence.content_hash,
+      truncated:evidence.truncated,
+      complete:evidence.complete,
+    });
   }else{
     // These are observed fields, not a fabricated project brief or a claimed original body.
     description=cleanText(`Listing title: ${title}\nListed business: ${row.name}\nListed location: ${[row.city,row.country].filter(Boolean).join(', ')}`);
@@ -132,38 +204,47 @@ export function externalToLead(raw:unknown, hnItem?:unknown, hnThread?:unknown):
     country_or_region:cleanText([row.city,row.country].filter(Boolean).join(', ')).slice(0,100),
     contact_permission_state:'UNKNOWN',contact_email:'',
     contact_channel:'Review original listing instructions manually',
-    owner_notes:`External leadflow-leads; provider=${row.source}; category=${row.category}. ${hn?'Original HN text/time verified via official API.':'Incomplete listing summary; original description/date unavailable; verify fit and source terms manually. OSM attribution: © OpenStreetMap contributors, ODbL (https://www.openstreetmap.org/copyright).'} Producer score/status/contact fields ignored. No opt-in or sending authority.`,
+    owner_notes:`External leadflow-leads; provider=${row.source}; category=${row.category}. ${hnItem?'HN item read through the official API.':discovery_context?'Original listing evidence supplied by the producer.':'Original listing evidence unavailable.'} Verify source terms before responding. No opt-in or sending authority.`,
     ...(discovery_context?{discovery_context}:{}),
   });
 }
 
-export function pullExternalLeads(http:Http, options:{origin:string;token:string;offset:number;limit:number;allowedSources:readonly string[]},
+export function pullExternalLeads(http:Http, options:{origin:string;token:string;offset:number;limit:number;allowedSources:readonly string[];cursor?:ExternalCursor},
   ingest:(lead:LeadInput)=>{duplicate:boolean}, guard:()=>void=()=>{}) {
   const origin=externalOrigin(options.origin);
   if(options.token.length<32 || /[\r\n]/.test(options.token))throw new Error('External API token must be at least 32 characters');
   if(!Number.isInteger(options.limit)||options.limit<1||options.limit>5||!Number.isInteger(options.offset)||options.offset<0)
     throw new Error('Invalid external page bounds');
-  if(!options.allowedSources.length||options.allowedSources.some(s=>!externalSources.includes(s as typeof externalSources[number])))
+  if(!options.allowedSources.length||options.allowedSources.some(s=>!buyerSources.has(s)))
     throw new Error('Invalid external source allowlist');
   guard();
-  const sourceFilter=options.allowedSources.length===1?`&source=${encodeURIComponent(options.allowedSources[0])}`:'';
-  const page=pageSchema.parse(http.json(`${origin}/leads?sort=found_at&order=desc${sourceFilter}&limit=${options.limit}&offset=${options.offset}`,
+  const sourceFilter=options.allowedSources.length===1?`source=${encodeURIComponent(options.allowedSources[0])}`:`sources=${encodeURIComponent(options.allowedSources.join(','))}`;
+  const cursor=options.cursor;
+  const paging=cursor?`order=asc&after_id=${cursor.after}${cursor.until===undefined?'':`&until_id=${cursor.until}`}`
+    :`sort=found_at&order=desc&offset=${options.offset}`;
+  const page=pageSchema.parse(http.json(`${origin}/leads?category=freelance_request&${sourceFilter}&include=evidence&limit=${options.limit}&${paging}`,
     {headers:{Authorization:`Bearer ${options.token}`}}));
-  if(page.offset!==options.offset || page.count!==page.leads.length || page.count>options.limit)throw new Error('External page mismatch');
+  if(page.offset!==(cursor?0:options.offset) || page.count!==page.leads.length || page.count>options.limit)throw new Error('External page mismatch');
+  let nextCursor:ExternalCursor|undefined;
+  if(cursor){
+    const {snapshot_until_id:snapshot,next_after_id:after,has_more:more}=page;
+    if(snapshot===undefined||after===undefined||more===undefined||snapshot<after||after<cursor.after||
+      (cursor.until!==undefined&&snapshot!==cursor.until)||(page.count>0&&after<=cursor.after)||(more&&(!page.count||after===snapshot)))
+      throw new Error('External cursor response mismatch. Restart the updated upstream Worker.');
+    nextCursor=more?{after,until:snapshot}:{after:snapshot};
+  }
   const counts={imported:0,duplicates:0,invalid:0};
   for(const raw of page.leads){
     guard();
     const parsed=rowSchema.safeParse(raw);
     if(!parsed.success||!options.allowedSources.includes(parsed.data.source)){counts.invalid++;continue;}
     const row=parsed.data;
-    // Keep local-business prospects and ordinary job-board listings out of the freelance CRM.
-    // HN hiring threads retain their original evidence so Stage C can reject them explicitly.
-    if(row.category==='local_business'||(row.source!=='hackernews'&&row.category!=='freelance_request')){
+    if(row.category!=='freelance_request'){
       counts.invalid++;continue;
     }
     if(row.source==='hackernews'&&!/^[1-9]\d{0,14}$/.test(row.source_id)){counts.invalid++;continue;}
     // Provider failures abort this page; cursor is not committed and retries deduplicate prior writes.
-    const item=row.source==='hackernews'?http.json(`https://hacker-news.firebaseio.com/v0/item/${row.source_id}.json`):undefined;
+    const item=row.source==='hackernews'&&!row.listing_evidence?http.json(`https://hacker-news.firebaseio.com/v0/item/${row.source_id}.json`):undefined;
     const record=item && typeof item==='object'?item as {parent?:unknown}:undefined;
     const parent=typeof record?.parent==='number'&&record.parent>0?record.parent:0;
     const thread=parent>0?fetchHnThread(http,parent):undefined;
@@ -172,5 +253,6 @@ export function pullExternalLeads(http:Http, options:{origin:string;token:string
     if(lead.discovery_context?.dead||lead.discovery_context?.deleted){counts.invalid++;continue;}
     ingest(lead).duplicate?counts.duplicates++:counts.imported++;
   }
-  return {...counts,nextOffset:page.count===0||options.offset+page.count>=page.total?0:options.offset+page.count};
+  return {...counts,fetched:page.count,sourceState:page.count?'OK':page.total?'NO_NEW_BUYERS':'NO_BUYER_CANDIDATES',nextCursor,
+    nextOffset:cursor?0:page.count===0||options.offset+page.count>=page.total?0:options.offset+page.count};
 }

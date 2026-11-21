@@ -9,7 +9,7 @@ export const QUALIFICATION_SCHEMA_VERSION = "freelance.v2";
 export const QUALIFICATION_RULES_VERSION = "rules.v1";
 export const QUALIFICATION_PROMPT_VERSION = "prompt.v1";
 export const CAPABILITY_LIST_VERSION = "capabilities.v1";
-export const QUALIFICATION_POLICY_VERSION = "policy.v1";
+export const QUALIFICATION_POLICY_VERSION = "policy.v2";
 
 export const qualificationVersions = {
   schema_version: QUALIFICATION_SCHEMA_VERSION,
@@ -74,6 +74,9 @@ export const discoveryContextSchema = z
     raw_text: z.string().max(20000).default(""),
     decoded_text: z.string().max(12000).default(""),
     published_at: z.string().datetime().nullable().default(null),
+    expires_at: z.string().datetime().optional(),
+    source_updated_at: z.string().datetime().optional(),
+    application_url: httpsUrl.optional(),
     collected_at: z.string().datetime(),
     fetched_at: z.string().datetime(),
     tags: z.array(z.string().min(1).max(60)).max(20).default([]),
@@ -697,10 +700,12 @@ export type QualificationAudit = z.infer<typeof qualificationAuditSchema>;
 /* ------------------------------------------------------------------ */
 
 /**
- * Allowed HN sources for discovery classification. Other external sources
- * (OSM, job boards) are not approved for the discovery pipeline yet.
+ * Sources that supply original listing evidence for discovery classification.
  */
-const ALLOWED_SOURCES = new Set(["hackernews"]);
+export const FREELANCE_BUYER_SOURCES = [
+  "hackernews", "wordpress_jobs_rss", "freelancer_rss", "himalayas", "jobicy_rss", "remotive",
+] as const;
+const ALLOWED_SOURCES = new Set<string>(FREELANCE_BUYER_SOURCES);
 
 /**
  * Service capabilities the agency can deliver. Used for scope dimension scoring.
@@ -844,6 +849,9 @@ export function prefilterDiscovery(
   }
 
   // Staleness
+  if (context.expires_at && Date.parse(context.expires_at) <= Date.parse(now)) {
+    return { pass:false, reason:"STALE_OR_CLOSED", evidence:"Publisher expiry has passed" };
+  }
   if (context.published_at) {
     const ageDays = (Date.parse(now) - Date.parse(context.published_at)) / 86400000;
     if (ageDays > policy.max_age_days) {
