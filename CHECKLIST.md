@@ -4,7 +4,7 @@
 
 | Area | Status | Evidence / remaining |
 |---|---|---|
-| Stages A–F: evidence, gates, scoring, persistence/routing and dashboard | Implemented locally | Current `npm test`: 173 passed; `npm run typecheck` passed. Dashboard distinguishes eligible, low, rejected, incomplete, quarantined and needs-requalification |
+| Stages A–F: evidence, gates, scoring, persistence/routing and dashboard | Implemented locally | Current `npm test`: 173 passed; `npm run typecheck` passed; `npm run build:automation` passed locally; full `npm run build` passed. Dashboard distinguishes eligible, low, rejected, incomplete, quarantined and needs-requalification |
 | Stage D provider handoff | Gemini exercised locally; OpenAI-compatible adapter covered by mocked tests | Validated signals from the selected provider reach Stage C; deterministic hard exclusions remain authoritative. Provider errors fall back to rules. No live OpenAI-compatible request has been verified |
 | Stage G: shadow/enforce | Implemented and tested locally; default `shadow` | Enforce routes only eligible MEDIUM/HIGH records with confidence >=0.85. Local Apps Script bundle built but **not redeployed**; live Script Properties/runtime are unverified |
 | Stage H documentation | Updated locally | Documentation records local behavior/evidence and clearly separates it from production deployment |

@@ -2,7 +2,7 @@
 
 ## Stage G/H freelance qualification — local verification, 19 November 2026
 
-`npm test` passed **161 tests**, `npm run typecheck` passed, and `npm run build:automation` built the Apps Script bundle locally. The GAS runtime test verifies that missing `FREELANCE_QUALIFICATION_MODE` defaults to shadow, qualification is persisted, and no discovery Telegram message is sent. Another test explicitly opts into enforce and verifies the eligible notification path. `apps/automation/settings.example.json` parses as valid JSON.
+`npm test` passed **173 tests**, `npm run typecheck` passed, `npm run build:automation` built the Apps Script bundle locally, and `npm run build` passed. The GAS runtime test verifies that missing `FREELANCE_QUALIFICATION_MODE` defaults to shadow, qualification is persisted, and no discovery Telegram message is sent. Another test explicitly opts into enforce and verifies the eligible notification path. `apps/automation/settings.example.json` parses as valid JSON.
 
 The Stage C fixture suite covers classic employee openings, fixed-term contract roles, seller availability posts, true buyer projects, negation and mixed posts. Validated Gemini `discoverySignals` were exercised end-to-end and reached Stage C; deterministic hard exclusions remained authoritative. The configured `gemini-3.5-flash-lite` model was confirmed to support `generateContent`. Live local extraction succeeded on multiple HN records, while intermittent HTTP 503/transport errors used deterministic fallback. No 429 was observed in this bounded run; quota remains a possible provider limit.
 
