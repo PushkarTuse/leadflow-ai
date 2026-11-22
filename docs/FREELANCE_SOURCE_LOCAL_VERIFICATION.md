@@ -86,3 +86,123 @@ Reruns followed each cursor until `until` disappeared from the saved state. The 
 The combined `live-five-sources` local profile used the same flags and the complete source list. `npm run dev -- --port 5174` exposed [the dashboard](http://127.0.0.1:5174/pipeline). Chromium verified all five health entries, 57 candidates, one eligible result, 20 publisher-provided Himalayas apply links, zero Telegram records, and a disabled email receipt.
 
 `npm run typecheck`, producer `npm test` (37 passed), fixture `npx tsx scripts/verify-local-fixtures.ts --check`, consumer `npm test` (177 passed), `npm run build` including Apps Script, and `git diff --check` passed. No deployment, remote migration, external notification, or account signup was performed.
+
+## 23 November 2026 engagement evidence replay
+
+The first change added formal buyer wording for Himalayas, Jobicy RSS, and Remotive. The second preserved Himalayas `employmentType=Contractor` and Jobicy's per-item `job_type` through `/leads?include=evidence`. The rules may use that metadata to fill missing intent or engagement, with `provider_signal` recording which fields used it. Payment and scope still require text evidence. Explicit exclusions and incomplete evidence can block metadata fallback. Mixed Jobicy type tags supply no verified signal.
+
+The same Worker on port 8791 collected the three sources. The local dashboard on port 5174 used profile `verified-engagement-20261123`. The table counts rows refreshed by this poll, using `last_seen_at` to exclude earlier rows from the comparison. The dashboard includes all 80 active rows in the isolated snapshot. The current feed contents can differ from the 21 November baseline.
+
+| Source | Fetched | Eligible LOW / MEDIUM / HIGH | Primary reasons | Used publisher metadata |
+| --- | ---: | --- | --- | ---: |
+| Himalayas | 20 | 4 / 0 / 0 | `AMBIGUOUS_DIRECTION` 5, `PAYMENT_UNCLEAR` 6, `SCOPE_MISSING` 5 | 13 |
+| Jobicy RSS | 20 | 0 / 3 / 0 | `FULL_TIME_ONLY` 2, `PAYMENT_UNCLEAR` 4, `SCOPE_MISSING` 11 | 14 |
+| Remotive | 16 | 0 / 0 / 0 | `AMBIGUOUS_DIRECTION` 10, `FULL_TIME_ONLY` 5, `UNPAID_OR_EQUITY_ONLY` 1 | 0 |
+
+Shadow ingestion reported zero invalid rows and alerts. A replay of the saved snapshot also verified the final qualification schema, audit schema, and exact source offsets of every eligible record. The replay corrected a collision where a single listing span could supply two evidence fields. The only existing fixture expectation that changed was `rules_version`, from `rules.v1` to `rules.v2`. Final checks passed with 37 producer and 189 consumer tests, the local D1 fixture check, both typechecks, and the build. Gemini, Telegram and email remained disabled.
+
+## Application path, freshness, and payment replay
+
+The three source polls on port 8791 returned `DEFERRED` during their cooldowns. The dashboard on port 5174 was refreshed from the 80 stored rows in profile `verified-engagement-20261123`. These counts use the same 56 listings as the preceding table.
+
+| Source | Replayed | LOW / MEDIUM / HIGH | Known contact paths | Primary reasons |
+| --- | ---: | --- | ---: | --- |
+| Himalayas | 20 | 0 / 6 / 3 | 20 | `SCOPE_MISSING` 6, `AMBIGUOUS_DIRECTION` 5 |
+| Jobicy RSS | 20 | 1 / 6 / 2 | 20 | `SCOPE_MISSING` 9, `FULL_TIME_ONLY` 2 |
+| Remotive | 16 | 0 / 0 / 0 | 16 | `AMBIGUOUS_DIRECTION` 10, `FULL_TIME_ONLY` 5, `UNPAID_OR_EQUITY_ONLY` 1 |
+
+The live Himalayas response exposed `pubDate` and `expiryDate` as its only job-level date fields. The publisher describes `pubDate` as the last update. All 20 replayed Himalayas listings had a recent update that qualified under the existing freshness window. Their `published_at` values remain null. [Himalayas API reference](https://himalayas.app/docs/remote-jobs-api)
+
+Application paths retain their provider provenance in the audit without implying permission to contact. The team chose zero payment points for inferred paid intent. All 80 records passed the qualification and audit schemas and source evidence validation. The browser confirmed 80 expandable descriptions and labeled held rows as pending review. The only previous fixture expectation changed in this pass was the audit rules version from `rules.v2` to `rules.v3`. The D1 fixture check, 37 producer tests, 203 consumer tests, both typechecks, and build passed. Shadow replay produced zero alerts and kept Gemini, Telegram, and email disabled.
+
+## Freelance project boundary verification
+
+The same 80 saved board listings were pulled through the local Worker into `gemini-freelance-check-20261123`. Gemini produced validated semantic classifications for 20 listings across the three sources. HTTP 429, HTTP 503, and invalid model responses led to conservative fallback. Bounded retries recovered one Himalayas and one Remotive classification.
+
+| Source | Raw | Prior HIGH / MEDIUM / LOW | Current HIGH / MEDIUM / LOW | Held | Rejected | Gemini / rules |
+| --- | ---: | --- | --- | ---: | ---: | --- |
+| Jobicy RSS | 26 | 2 / 6 / 1 | 0 / 0 / 0 | 20 | 6 | 18 / 8 |
+| Himalayas | 38 | 3 / 8 / 0 | 0 / 0 / 0 | 26 | 12 | 1 / 37 |
+| Remotive | 16 | 0 / 0 / 0 | 0 / 0 / 0 | 8 | 8 | 1 / 15 |
+
+The leading reasons were `ENGAGEMENT_UNCLEAR` (35), `FULL_TIME_ONLY` (25), and `AMBIGUOUS_DIRECTION` (19). A final replay validated the schemas, quote offsets, and exact semantic excerpts for all 80 records. The browser confirmed Gemini attribution, project-boundary labels, and expandable descriptions. A bounded freelance checkout project still passes in a fixture with inferred pay at zero points. The live cohort had zero accepted listings, so it does not establish recall.
+
+Run the Worker in its own PowerShell from the producer repo.
+
+```powershell
+Set-Location D:\freelance_personal\leadflow-leads
+npm run db:local -- --persist-to .wrangler/state-source-verification
+npm run dev -- --ip 127.0.0.1 --port 8791 --persist-to .wrangler/state-source-verification
+```
+
+Run qualification from the consumer repo. The runner reads the bearer token and approved Gemini settings from the existing ignored local files. An unavailable approved Gemini setup falls back to rules.
+
+```powershell
+Set-Location D:\freelance_personal\leadflow-ai
+$env:EXTERNAL_LEADS_API_ORIGIN='http://127.0.0.1:8791'
+$env:EXTERNAL_LEADS_ENABLED='true'
+$env:EXTERNAL_LEADS_SOURCES='himalayas,jobicy_rss,remotive'
+$env:EXTERNAL_LEADS_BATCH_SIZE='5'
+$env:FREELANCE_QUALIFICATION_MODE='shadow'
+$env:TELEGRAM_ENABLED='false'
+$env:SAFE_OWNER_EMAIL_TEST='false'
+$env:AI_PROVIDER='gemini'
+$env:AI_ENABLED='true'
+$env:GEMINI_ENABLED='true'
+$env:EXTERNAL_LOCAL_PROFILE='gemini-freelance-check-20261123'
+npm run external:run
+```
+
+Repeat `external:run` until the snapshot cursor has no `until` value. After a provider quota error, set `EXTERNAL_DISCOVERY_AI_MAX_REQUESTS=0` to finish paging in the same profile with rules. After the quota resets, use a positive budget and `npm run external:run -- --retry-discovery-ai` to retry saved rules-only rows for the sources selected in `EXTERNAL_LEADS_SOURCES`. This preserves successful Gemini results and the ingestion cursor.
+
+Start Vite with the same profile and shadow flags in a separate PowerShell with those variables set.
+
+```powershell
+npm run dev -- --port 5174 --strictPort --host 127.0.0.1
+```
+
+Open [the dashboard](http://127.0.0.1:5174/pipeline) and compare the classification method, qualification reason, and project boundary. The verification created zero approval requests or alerts and left the email test disabled.
+
+## Binary AI discovery decisions
+
+The model returns `ACCEPT` or `REJECT`. The operator sees **Accepted** or **Rejected**. The old rule state, categorization, score, and reasons are available as advisory information. A valid AI acceptance can route at any advisory score. Missing, invalid, or skipped model verdicts fail closed to Rejected. Source access, unavailability, and unsafe-input checks can block classification. Contact permission and the separate approval process still apply.
+
+Reuse the Worker and shadow environment from the preceding commands. Select a fresh profile and run from the consumer repo. The existing local Gemini settings and API bearer stay in their ignored files.
+
+```powershell
+$env:DISCOVERY_AI_PROVIDER='gemini'
+$env:EXTERNAL_LOCAL_PROFILE='gemini-binary-check-20261123'
+$env:EXTERNAL_DISCOVERY_AI_MAX_REQUESTS='100'
+npm run external:run
+```
+
+Repeat until the saved cursor ends. The Worker supplies up to five candidates per page. The former 16-call source HTTP guard no longer counts classifier requests. The classifier cap defaults to 100 provider requests per invocation and can be set from 0 to 500. Provider quota, authorization failures, and timeouts are separate limits. `ai_attempted` counts candidates sent to a provider in that invocation, `ai_succeeded` counts validated verdicts including cache hits, `ai_failed` counts failed candidate requests, and `ai_skipped` counts processed candidates without a call or verdict. `accepted` and `rejected` describe the stored profile.
+
+After provider quota recovers, retry rows without a valid model verdict. Existing model decisions and the source cursor are preserved.
+
+```powershell
+$env:EXTERNAL_LEADS_SOURCES='himalayas,jobicy_rss,remotive'
+$env:EXTERNAL_DISCOVERY_AI_MAX_REQUESTS='20'
+npm run external:run -- --retry-discovery-ai
+```
+
+OpenRouter is a manually selectable alternative for the local runner. Create an API key in OpenRouter and keep it in the ignored `.env.external` file. Use `openrouter/free` or an explicitly free model that supports JSON mode. Provider availability and quotas still apply. [OpenRouter setup](https://openrouter.ai/docs/quickstart) · [Free model options](https://openrouter.ai/docs/faq#what-free-tier-options-exist)
+
+```dotenv
+DISCOVERY_AI_PROVIDER=openrouter
+OPENROUTER_API_KEY=<your key>
+OPENROUTER_MODEL=openrouter/free
+AI_ENABLED=true
+AI_DATA_USE_APPROVED=true
+GEMINI_ENABLED=false
+FREELANCE_QUALIFICATION_MODE=shadow
+TELEGRAM_ENABLED=false
+SAFE_OWNER_EMAIL_TEST=false
+EXTERNAL_LOCAL_PROFILE=openrouter-binary-check
+```
+
+Use `npm run external:run` to build the alternate provider profile and start Vite with that same profile to view it. For an OpenAI account, use `DISCOVERY_AI_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL` instead. This switch is local and manual.
+
+The 23 November shadow replay used the same 80 candidates. The previous profile had valid Gemini results on 20 rows. Its run logs recorded 29 requests and 9 unsuccessful requests, including retries. The final binary profile covered 76 rows with 100 cumulative requests and 24 unsuccessful attempts. The reasons for unsuccessful attempts were 10 service errors, 5 exact-quote mismatches, 4 JSON/schema errors, 3 other provider or validation failures, and 2 rate-limit errors. Of the four remaining rows without a verdict, two ended with invalid JSON/schema, one with a quote mismatch, and one exceeded the input bound. Coverage was 24/26 Jobicy, 38/38 Himalayas, and 14/16 Remotive.
+
+Final result was 0 Accepted and 80 Rejected. Gemini classified 57 as ongoing contractor seats, 17 as full-time jobs, one as a seller promotion, and one as unknown. The remaining four had no validated model verdict. All 80 rows passed schema and exact-quote validation. The local browser confirmed 80 binary badges and zero Pending review badges. Telegram, the email test, and deployment stayed disabled. The bundled Apps Script still has a separate configurable `DAILY_AI_LIMIT` with a default of 10 requests per day. This run used only the local runner.

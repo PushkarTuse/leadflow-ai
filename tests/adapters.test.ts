@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DiscoverySignals } from "../packages/core/scoring";
 import type { DiscoveryContext } from "../packages/core/qualification";
+import { discoveryAiChain, freeDiscoveryBackups } from "../scripts/external-discovery-ai";
 import {
   classifyDiscoveryAI,
   classifyGeminiDiscovery,
@@ -36,6 +37,15 @@ const context: DiscoveryContext = {
 };
 
 const signals: DiscoverySignals = {
+  decision: "REJECT",
+  decision_reason: "Project details are insufficient.",
+  lead_kind: "UNKNOWN",
+  buyer_or_seller: "BUYER",
+  engagement_boundary: "UNKNOWN",
+  term_hint: "UNKNOWN",
+  engagement_evidence: null,
+  paid_evidence: null,
+  scope_evidence: "build a React checkout",
   intent: "BUYER",
   lead_type: "CONTRACT_ROLE",
   requester_type: "COMPANY",
@@ -67,6 +77,46 @@ const options = {
   apiKey: "test-key",
   model: "gemini-3.5-flash-lite",
 };
+
+describe("local discovery AI failover", () => {
+  const backups = freeDiscoveryBackups(key => ({
+    GROQ_API_KEY: "test-groq-key",
+    CLOUDFLARE_AI_API_TOKEN: "test-cloudflare-key",
+    CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
+    OPENROUTER_API_KEY: "test-openrouter-key",
+  } as Record<string, string>)[key] || "");
+
+  it("uses the next valid AI decision and isolates a quota cooldown across runs", () => {
+    const providers = [{ id: "gemini" as const, options }, ...backups];
+    const cooldowns = {};
+    const calls: string[] = [];
+    const transport: Http = {
+      json(url) {
+        calls.push(new URL(url).hostname);
+        if (url.includes("googleapis")) throw new Error("HTTP 429 retry-after=120");
+        if (url.includes("groq")) return { choices: [{ message: { content: "invalid JSON" } }] };
+        if (url.includes("cloudflare")) return { choices: [{ message: { content: JSON.stringify(signals) } }] };
+        throw new Error("unneeded fallback");
+      },
+    };
+    const first = discoveryAiChain(providers, transport, 10, cooldowns, () => 1_000);
+    expect(first.classify({ ...context, source_hash: context.source_hash + "-chain-a" }))
+      .toMatchObject({ discoveryProvider: "cloudflare", discoverySignals: { decision: "REJECT" } });
+    expect(calls).toEqual(["generativelanguage.googleapis.com", "api.groq.com", "api.cloudflare.com"]);
+    calls.length = 0;
+    const next = discoveryAiChain(providers, transport, 10, cooldowns, () => 70_000);
+    expect(next.classify({ ...context, source_hash: context.source_hash + "-chain-b" }))
+      .toHaveProperty("discoveryProvider", "cloudflare");
+    expect(calls).toEqual(["api.groq.com", "api.cloudflare.com"]);
+  });
+
+  it("reports no AI verdict when the available providers fail", () => {
+    const chain = discoveryAiChain(backups, { json() { throw new Error("HTTP 503"); } }, 10, {});
+    expect(chain.classify(context)).toEqual({ warning: expect.stringMatching(/^No AI verdict:/) });
+    expect(chain.coverage).toEqual({ requests: 3, attempted: 1, succeeded: 0, failed: 1 });
+    expect(chain.available()).toBe(false);
+  });
+});
 
 describe("Gemini discovery adapter", () => {
   it("returns validated extraction signals to the qualification workflow", () => {

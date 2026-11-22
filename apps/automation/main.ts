@@ -166,16 +166,23 @@ function runtime() {
   const engine = new Engine(store, config, { now }, (input) => {
     if (input.discovery_context) {
       if (dry() || !discoveryAIEnabled())
-        return { warning: "AI disabled; local rules used" };
-      spend("ai", integer("DAILY_AI_LIMIT", 10, 1, 100));
+        return { warning: "Discovery AI disabled; no AI verdict" };
+      let budgetWarning: string | undefined;
       const extraction = classifyDiscoveryAI(
-        http,
+        { json(url, request) {
+          try { spend("ai", integer("DAILY_AI_LIMIT", 10, 1, 100)); }
+          catch (error) {
+            budgetWarning = error instanceof Error ? error.message : "Discovery AI budget unavailable";
+            throw error;
+          }
+          return http.json(url, request);
+        } },
         input.discovery_context,
         discoveryAIOptions(),
       );
       return {
         discoverySignals: extraction.signals,
-        warning: extraction.warning,
+        warning: budgetWarning ?? extraction.warning,
         method: extraction.method,
       };
     }

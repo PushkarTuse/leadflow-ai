@@ -1,91 +1,78 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 
-export type QualificationState =
-  | "ELIGIBLE"
-  | "REVIEW_INCOMPLETE"
-  | "REJECTED"
-  | "QUARANTINED"
-  | "NEEDS_REQUALIFICATION";
+export type QualificationState = "ACCEPTED" | "REJECTED";
 
 export interface LeadRow {
   lead_id: string;
   title: string;
+  raw_description?: string;
   client_name_if_public: string;
   source: string;
-  discovery_context?: {provider?: string; original_url?: string; application_url?: string; expires_at?: string};
+  discovery_context?: {
+    provider?: string;
+    original_url?: string;
+    application_url?: string;
+    expires_at?: string;
+    decoded_text?: string;
+    provider_verified_engagement?: { value: string } | null;
+  };
   qualification_status?: string;
   qualification?: {
     is_valid_freelance_lead: boolean;
     eligibility_state: string;
+    operator_decision?: QualificationState;
     priority: string;
     quality_score: number;
     confidence_score: number;
     rejection_reason: string | null;
     evidence_quotes: { field: string; quote: string }[];
+    budget_signal?: { kind: string; minimum: number | null; maximum: number | null; currency: string; unit: string };
+    required_skills?: string[];
+    contact_method?: { type: string; value: string | null };
+    provider_signal?: { engagement?: { value: string }; application?: { value: string } };
   };
-  qualification_audit?: { method: string };
+  qualification_audit?: {
+    method: string;
+    discovery_provider?: "gemini" | "groq" | "cloudflare" | "openrouter" | "openai";
+    decision_source?: "MODEL" | "NO_MODEL" | "SOURCE_GUARD";
+    project_boundary?: "BOUNDED" | "ONGOING_SEAT" | "UNVERIFIED";
+    discovery_semantics?: { lead_kind: string; decision?: "ACCEPT" | "REJECT"; decision_reason?: string };
+  };
   extractionWarning: string;
   status: string;
 }
 
 export function qualificationState(row: LeadRow): QualificationState {
-  const state = row.qualification?.eligibility_state;
-  if (
-    state === "ELIGIBLE" ||
-    state === "REVIEW_INCOMPLETE" ||
-    state === "REJECTED" ||
-    state === "QUARANTINED"
-  ) {
-    if (
-      (state === "ELIGIBLE" && !row.qualification?.is_valid_freelance_lead) ||
-      (state !== "ELIGIBLE" && row.qualification?.is_valid_freelance_lead)
-    ) {
-      return "NEEDS_REQUALIFICATION";
-    }
-    return state;
+  return row.qualification?.operator_decision === "ACCEPTED" &&
+    row.qualification_audit?.decision_source === "MODEL" &&
+    row.qualification_audit.discovery_semantics?.decision === "ACCEPT" ? "ACCEPTED" : "REJECTED";
+}
+
+export function displayPriority(state: QualificationState, priority?: string) {
+  return state === "ACCEPTED" ? priority || "—" : "—";
+}
+
+function paymentLabel(budget?: NonNullable<LeadRow["qualification"]>["budget_signal"]) {
+  if (!budget || budget.kind === "UNKNOWN" || budget.kind === "BOARD_PAID_INTENT_INFERRED")
+    return "Not stated";
+  if (budget.kind === "UNPAID_OR_EQUITY_ONLY") return "Unpaid or equity only";
+  if (budget.kind === "AMOUNT_STATED") {
+    const amounts = [...new Set([budget.minimum, budget.maximum].filter(amount => amount !== null))];
+    const unit = ["HOUR", "DAY", "WEEK", "MONTH", "PROJECT"].includes(budget.unit) ? "/" + budget.unit.toLowerCase() : "";
+    return [budget.currency !== "UNKNOWN" ? budget.currency : "", amounts.join("–") + unit].filter(Boolean).join(" ");
   }
-  return "NEEDS_REQUALIFICATION";
+  return budget.kind === "COMMERCIAL_HIRING" ? "Hiring language · rate not stated" : "Paid · rate not stated";
 }
 
 export function qualificationCounts(rows: LeadRow[]) {
-  const counts = {
-    raw: rows.length,
-    eligible: 0,
-    high: 0,
-    medium: 0,
-    low: 0,
-    rejected: 0,
-    incomplete: 0,
-    quarantined: 0,
-    needsRequalification: 0,
-  };
-
-  for (const row of rows) {
-    const state = qualificationState(row);
-    if (state === "ELIGIBLE" && row.qualification?.is_valid_freelance_lead) {
-      if (row.qualification?.priority === "HIGH") {
-        counts.eligible++;
-        counts.high++;
-      } else if (row.qualification?.priority === "MEDIUM") {
-        counts.eligible++;
-        counts.medium++;
-      } else if (row.qualification?.priority === "LOW") {
-        counts.low++;
-      }
-    } else if (state === "REJECTED") {
-      counts.rejected++;
-    } else if (state === "REVIEW_INCOMPLETE") {
-      counts.incomplete++;
-    } else if (state === "QUARANTINED") {
-      counts.quarantined++;
-    } else {
-      counts.needsRequalification++;
-    }
-  }
-  return counts;
+  const accepted = rows.filter(row => qualificationState(row) === "ACCEPTED").length;
+  return { raw: rows.length, accepted, rejected: rows.length - accepted };
 }
 
 export function qualificationMethod(row: LeadRow) {
+  if (row.qualification_audit?.decision_source === "NO_MODEL") return "No AI verdict";
+  if (row.qualification_audit?.decision_source === "SOURCE_GUARD") return "Source guard";
+  if (row.qualification_audit?.discovery_provider) return row.qualification_audit.discovery_provider;
   const method = row.qualification_audit?.method;
   return method === "rules" || method === "gemini" || method === "openai-compatible"
     ? method
@@ -401,12 +388,8 @@ export function PipelineDashboard() {
         >
           {[
             ["Raw candidates", counts.raw],
-            ["Eligible opportunities (HIGH/MEDIUM)", counts.eligible],
-            ["Low", counts.low],
+            ["Accepted", counts.accepted],
             ["Rejected", counts.rejected],
-            ["Incomplete", counts.incomplete],
-            ["Quarantined", counts.quarantined],
-            ["Needs requalification", counts.needsRequalification],
           ].map(([label, count]) => (
             <span
               key={label}
@@ -455,11 +438,15 @@ export function PipelineDashboard() {
                   {[
                     "Candidate / company",
                     "Source",
-                    "Eligibility",
-                    "Priority",
+                    "Decision",
+                    "Advisory priority",
                     "Quality score / confidence",
                     "Classification method",
-                    "Primary rejection reason",
+                    "Qualification reason",
+                    "Payment",
+                    "Publisher engagement",
+                    "Scope and skills",
+                    "Contact path",
                     "Evidence highlights",
                     "Prior Telegram message ID",
                     "Email test",
@@ -483,25 +470,35 @@ export function PipelineDashboard() {
                   const qualification = lead.qualification;
                   const evidence = qualification?.evidence_quotes ?? [];
                   const context = lead.discovery_context;
+                  const description = context?.decoded_text?.trim() || lead.raw_description?.trim();
+                  const engagement = context?.provider_verified_engagement ?? qualification?.provider_signal?.engagement;
+                  const scope = evidence.find(quote => quote.field === "scope")?.quote;
+                  const contact = qualification?.contact_method;
                   const sourceLabel = attribution[context?.provider || ""] || lead.source;
                   const sourceLink = context?.provider === "himalayas" ? context.application_url : context?.original_url;
                   return (
                     <tr key={lead.lead_id}>
                       <td style={cell}>
-                        {short(
-                          lead.client_name_if_public ||
-                            lead.title ||
-                            lead.lead_id,
-                        )}
+                        <strong>{lead.title || lead.lead_id}</strong>
+                        {lead.client_name_if_public && lead.client_name_if_public !== lead.title &&
+                          <div>{lead.client_name_if_public}</div>}
+                        {description ? (
+                          <details style={{ minWidth: "14rem", maxWidth: "28rem", marginTop: "0.35rem" }}>
+                            <summary style={{ cursor: "pointer" }}>Job description</summary>
+                            <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "20rem", overflowY: "auto", marginTop: "0.35rem" }}>
+                              {description}
+                            </div>
+                          </details>
+                        ) : <div>Job description unavailable</div>}
                       </td>
                       <td style={cell}>{sourceLink && /^https:\/\//.test(sourceLink)
                         ? <a href={sourceLink} target="_blank" rel="noreferrer">{sourceLabel}</a>
                         : sourceLabel}</td>
                       <td style={cell}>
-                        {state}
+                        <strong>{state === "ACCEPTED" ? "Accepted" : "Rejected"}</strong>
                       </td>
                       <td style={cell}>
-                        {qualification?.priority || "—"}
+                        {displayPriority(state, qualification?.priority)}
                       </td>
                       <td style={cell}>
                         {qualification
@@ -510,8 +507,37 @@ export function PipelineDashboard() {
                       </td>
                       <td style={cell}>{qualificationMethod(lead)}</td>
                       <td style={cell}>
-                        {qualification?.rejection_reason ||
-                          (state === "NEEDS_REQUALIFICATION" ? state : "—")}
+                        {lead.qualification_audit?.discovery_semantics?.decision_reason ||
+                          lead.extractionWarning || qualification?.rejection_reason ||
+                          (state === "REJECTED" ? "No validated AI verdict" : "—")}
+                        {lead.qualification_audit?.project_boundary && (
+                          <div>{{
+                            BOUNDED: "Defined project boundary",
+                            ONGOING_SEAT: "Ongoing contractor seat",
+                            UNVERIFIED: "Project boundary unverified",
+                          }[lead.qualification_audit.project_boundary]}</div>
+                        )}
+                        {lead.qualification_audit?.discovery_semantics && (
+                          <div>{lead.qualification_audit.discovery_semantics.lead_kind.replaceAll("_", " ")}</div>
+                        )}
+                      </td>
+                      <td style={cell}>{paymentLabel(qualification?.budget_signal)}
+                        {qualification?.budget_signal?.kind === "BOARD_PAID_INTENT_INFERRED" &&
+                          <div>Paid intent inferred · 0 points</div>}
+                      </td>
+                      <td style={cell}>{engagement ? <strong>{engagement.value}</strong> : "—"}</td>
+                      <td style={{ ...cell, minWidth: "12rem" }}>
+                        <div>{scope || "Scope not located"}</div>
+                        <div>{qualification?.required_skills?.join(", ") || "Skills not identified"}</div>
+                      </td>
+                      <td style={cell}>
+                        {contact?.value ? (
+                          contact.type === "APPLICATION_URL" || contact.type === "FORM_URL"
+                            ? /^https:\/\/[^\s/@]+(?:[/:?#][^\s@]*)?$/i.test(contact.value)
+                              ? <a href={contact.value} target="_blank" rel="noreferrer">Open application path</a>
+                              : contact.value
+                            : contact.value
+                        ) : "Not found"}
                       </td>
                       <td style={cell}>
                         {evidence.length ? (

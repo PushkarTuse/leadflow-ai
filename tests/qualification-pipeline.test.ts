@@ -82,9 +82,33 @@ function approvalRequest(lead_id: string) {
   };
 }
 
+function projectVerdict(text: string, decision: "ACCEPT" | "REJECT" = "ACCEPT"): DiscoverySignals {
+  const excerpt = text.slice(0, 150);
+  return {
+    decision,
+    decision_reason: decision === "ACCEPT" ? "The buyer describes paid project work." : "The role is not a freelance project.",
+    lead_kind: decision === "ACCEPT" ? "FREELANCE_PROJECT" : "FULL_TIME_JOB",
+    buyer_or_seller: "BUYER", engagement_boundary: decision === "ACCEPT" ? "FIXED_SCOPE_PROJECT" : "EMPLOYMENT",
+    term_hint: "UNKNOWN", engagement_evidence: excerpt, scope_evidence: excerpt, paid_evidence: null,
+    intent: "UNKNOWN", lead_type: "UNKNOWN", requester_type: "UNKNOWN", engagement_type: "UNKNOWN",
+    budget_signal: {kind:"UNKNOWN", minimum:null, maximum:null, currency:"UNKNOWN", unit:"UNKNOWN"},
+    timeline_signal:null, required_skills:[], seniority:"UNKNOWN", location_or_remote_policy:null,
+    contact_method:{type:"UNKNOWN",value:null}, rejection_reason:null, evidence_quotes:[],
+  };
+}
+
 describe("Stage E qualification routing and persistence", () => {
   it("uses validated discovery extraction for skills and qualification", () => {
     const extracted: DiscoverySignals = {
+      decision: "ACCEPT",
+      decision_reason: "Paid, fixed-scope checkout delivery.",
+      lead_kind: "FREELANCE_PROJECT",
+      buyer_or_seller: "BUYER",
+      engagement_boundary: "FIXED_SCOPE_PROJECT",
+      term_hint: "SHORT",
+      engagement_evidence: "This is a paid fixed-scope project.",
+      paid_evidence: "paid fixed-scope project",
+      scope_evidence: "implement our SvelteKit checkout",
       intent: "BUYER",
       lead_type: "CLIENT_PROJECT",
       requester_type: "COMPANY",
@@ -124,8 +148,17 @@ describe("Stage E qualification routing and persistence", () => {
     expect(lead.qualification_audit?.method).toBe("openai-compatible");
   });
 
-  it("does not let Gemini extraction override deterministic employment rejection", () => {
+  it("rejects a full-time job on the model verdict even when advisory fields disagree", () => {
     const extracted: DiscoverySignals = {
+      decision: "REJECT",
+      decision_reason: "The listing explicitly seeks a full-time employee.",
+      lead_kind: "UNKNOWN",
+      buyer_or_seller: "UNKNOWN",
+      engagement_boundary: "UNKNOWN",
+      term_hint: "UNKNOWN",
+      engagement_evidence: null,
+      paid_evidence: null,
+      scope_evidence: null,
       intent: "BUYER",
       lead_type: "CLIENT_PROJECT",
       requester_type: "COMPANY",
@@ -231,7 +264,7 @@ describe("Stage E qualification routing and persistence", () => {
     );
     expect(() => engine.prepareApproval(lead, "testnonce12345678")).toThrow();
     expect(() => notification(lead, approvalRequest(lead.lead_id))).toThrow(
-      /Cannot notify/,
+      /ACCEPT verdict/,
     );
   });
 
@@ -262,21 +295,22 @@ describe("Stage E qualification routing and persistence", () => {
     }
   });
 
-  it("keeps LOW and incomplete discoveries out of approval and notification", () => {
+  it("rejects discoveries without an AI verdict and never creates a review queue", () => {
     const store = new MemoryStore();
-    const engine = new Engine(store);
+    const engine = new Engine(store, undefined, undefined, () => ({warning:"Gemini quota (HTTP 429)"}));
     const low = engine.ingest(
       discoveryInput(
         "We are hiring an independent React contractor.",
         "Independent React contractor",
       ),
     ).lead;
-    expect(low.qualification?.eligibility_state).toBe("ELIGIBLE");
-    expect(low.qualification?.priority).toBe("LOW");
-    expect(low.status).toBe("QUALIFIED");
+    expect(low.qualification?.operator_decision).toBe("REJECTED");
+    expect(low.qualification_audit?.decision_source).toBe("NO_MODEL");
+    expect(low.extractionWarning).toContain("429");
+    expect(low.status).toBe("REJECTED");
     expect(() => engine.prepareApproval(low, "testnonce12345678")).toThrow();
     expect(() => notification(low, approvalRequest(low.lead_id))).toThrow(
-      /Cannot notify/,
+      /ACCEPT verdict/,
     );
 
     const incomplete = engine.ingest(
@@ -285,12 +319,12 @@ describe("Stage E qualification routing and persistence", () => {
         "Need React help.",
       ),
     ).lead;
-    expect(incomplete.qualification?.eligibility_state).toBe("REVIEW_INCOMPLETE");
-    expect(incomplete.status).toBe("NEW");
+    expect(incomplete.qualification?.eligibility_state).toBe("REJECTED");
+    expect(incomplete.status).toBe("REJECTED");
     expect(() => engine.prepareApproval(incomplete, "testnonce12345678")).toThrow();
     expect(
       () => notification(incomplete, approvalRequest(incomplete.lead_id)),
-    ).toThrow(/Cannot notify/);
+    ).toThrow(/ACCEPT verdict/);
 
     const quarantined = engine.ingest(
       discoveryInput(
@@ -298,11 +332,12 @@ describe("Stage E qualification routing and persistence", () => {
         "React contractor",
       ),
     ).lead;
-    expect(quarantined.qualification?.eligibility_state).toBe("QUARANTINED");
-    expect(quarantined.status).toBe("ARCHIVED");
+    expect(quarantined.qualification?.operator_decision).toBe("REJECTED");
+    expect(quarantined.qualification_audit?.decision_source).toBe("SOURCE_GUARD");
+    expect(quarantined.status).toBe("REJECTED");
     expect(
       () => notification(quarantined, approvalRequest(quarantined.lead_id)),
-    ).toThrow(/Cannot notify/);
+    ).toThrow(/ACCEPT verdict/);
     expect(store.requests()).toHaveLength(0);
   });
 
@@ -316,12 +351,10 @@ describe("Stage E qualification routing and persistence", () => {
       maxAgeDays: 30,
       minBudgets: { INR: 15000, USD: 200, EUR: 180, GBP: 160 },
       approvalHours: 24,
-    });
-    const lead = engine.ingest(
-      discoveryInput(
-        "We need an independent React contractor to build our checkout with Stripe integration and tests. Fixed budget USD 4,000. Deadline in four weeks. Apply using this form: https://example.com/apply.",
-      ),
-    ).lead;
+    }, undefined, input => ({discoverySignals: projectVerdict(input.raw_description)}));
+    const lead = engine.ingest(discoveryInput(
+      "We need an independent React contractor to build our checkout with Stripe integration and tests. Fixed budget USD 4,000. Deadline in four weeks. Apply using this form: https://example.com/apply.",
+    )).lead;
 
     expect(lead.status).toBe("PENDING_APPROVAL");
     expect(lead.qualification).toMatchObject({
@@ -332,11 +365,11 @@ describe("Stage E qualification routing and persistence", () => {
     });
     expect(lead.qualification_audit).toMatchObject({
       schema_version: "freelance.v2",
-      rules_version: "rules.v1",
-      prompt_version: "prompt.v1",
-      policy_version: "policy.v2",
+      rules_version: "rules.v5",
+      prompt_version: "prompt.v3",
+      policy_version: "policy.v4",
       source_hash: lead.discovery_context?.source_hash,
-      method: "rules",
+      method: "gemini",
     });
     expect(lead.qualification_audit?.breakdown).toEqual(
       expect.objectContaining({
@@ -352,6 +385,40 @@ describe("Stage E qualification routing and persistence", () => {
     expect(payload.text).toContain("freelance opportunity");
     expect(payload.reply_markup.inline_keyboard).toHaveLength(2);
     expect(store.requests()).toHaveLength(1);
+  });
+
+  it("uses an AI ACCEPT even when the advisory rules cannot qualify the project", () => {
+    const store = new MemoryStore();
+    const input = discoveryInput("USD 2,000 will be released when the replacement site is delivered and handed over.", "Website makeover");
+    const fallback = new Engine(store, undefined, undefined, () => ({warning:"Gemini quota"}));
+    const rejected = fallback.ingest(input).lead;
+    expect(rejected.qualification?.operator_decision).toBe("REJECTED");
+    const engine = new Engine(store, undefined, undefined, () => ({
+      discoverySignals: { ...projectVerdict(input.raw_description), lead_kind:"UNKNOWN" },
+    }));
+    const accepted = engine.requalifyDiscovery(rejected.lead_id, input, true);
+    expect(accepted.qualification).toMatchObject({operator_decision:"ACCEPTED", quality_score:0, priority:"LOW"});
+    expect(accepted.status).toBe("PENDING_APPROVAL");
+    expect(accepted.qualification_audit?.advisory_state).not.toBe("ELIGIBLE");
+    expect(engine.prepareApproval(accepted, "testnonce12345678").state).toBe("PREPARED");
+  });
+
+  it("makes the model's contractor-seat rejection terminal even when the advisory score is high", () => {
+    const input = discoveryInput(
+      "We need an independent React contractor to build our checkout with Stripe integration and tests. Fixed budget USD 4,000. Deadline in four weeks. Apply using this form: https://example.com/apply.",
+    );
+    const engine = new Engine(new MemoryStore(), undefined, undefined, () => ({
+      discoverySignals: {
+        ...projectVerdict(input.raw_description, "REJECT"),
+        lead_kind: "LONG_TERM_CONTRACT_SEAT",
+        engagement_boundary: "ONGOING_SEAT",
+      },
+    }));
+    const lead = engine.ingest(input).lead;
+    expect(lead.qualification?.operator_decision).toBe("REJECTED");
+    expect(lead.qualification_audit?.decision_source).toBe("MODEL");
+    expect(lead.status).toBe("REJECTED");
+    expect(commandReply("/stats", [lead], new Date().toISOString())).toContain("Accepted: 0, Rejected: 1");
   });
 
   it("persists qualification, audit, and legacy requalification state in Sheets JSON", () => {
@@ -380,7 +447,7 @@ describe("Stage E qualification routing and persistence", () => {
     }).lead;
     expect(legacy.qualification).toBeUndefined();
     expect(legacy.qualification_status).toBe("NEEDS_REQUALIFICATION");
-    expect(legacy.status).toBe("NEW");
+    expect(legacy.status).toBe("REJECTED");
     memory.save({
       ...legacy,
       qualification_status: undefined,
@@ -391,7 +458,7 @@ describe("Stage E qualification routing and persistence", () => {
     const reconciled = memory.get(legacy.lead_id)!;
     expect(reconciled.qualification).toBeUndefined();
     expect(reconciled.qualification_status).toBe("NEEDS_REQUALIFICATION");
-    expect(reconciled.status).toBe("ARCHIVED");
+    expect(reconciled.status).toBe("REJECTED");
     expect(memory.requests()).toHaveLength(0);
     sheets.save(reconciled);
     expect(sheets.get(reconciled.lead_id)?.qualification_status).toBe(
@@ -439,7 +506,9 @@ describe("Stage E qualification routing and persistence", () => {
 
   it("force-rescores an already-qualified discovery record without creating an approval", () => {
     const store = new MemoryStore();
-    const engine = new Engine(store);
+    const engine = new Engine(store, undefined, undefined, input => ({
+      discoverySignals: projectVerdict(input.raw_description, /full-time/.test(input.raw_description) ? "REJECT" : "ACCEPT"),
+    }));
     const original = discoveryInput(
       "We need an independent React contractor for a fixed-scope checkout. Fixed budget USD 2,000; reply by email.",
       "We need an independent React contractor",

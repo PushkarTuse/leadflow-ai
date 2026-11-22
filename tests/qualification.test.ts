@@ -5,6 +5,7 @@ import {
   canonicalEvidence,
   discoveryContextSchema,
   locateEvidence,
+  qualificationSchema,
   validateQualificationEvidence,
   prefilterDiscovery,
   extractRuleEvidence,
@@ -279,6 +280,219 @@ function classify(
   const ev = extractRuleEvidence(canonicalEvidence(ctx), ctx);
   return scoreFreelanceQualification(ev, ctx, NOW);
 }
+
+describe("Formal job-board text evidence", () => {
+  it("recognizes formal contract labels only on the selected boards", () => {
+    const body = "Employment Type: Contract\nOur team uses React. Compensation: USD 100 per hour.";
+    const title = "Frontend development";
+    for (const provider of ["himalayas", "jobicy_rss", "remotive"]) {
+      const ctx = makeCtx(title, body, { provider, item_type: "listing" });
+      const evidence = extractRuleEvidence(canonicalEvidence(ctx), ctx);
+      expect(evidence.intent).toBe("BUYER");
+      expect(evidence.engagement_type).toBe("INDEPENDENT_CONTRACT");
+      expect(evidence.evidence_quotes).toContainEqual({ field: "intent", quote: "Employment Type: Contract" });
+    }
+    for (const provider of ["hackernews", "wordpress_jobs_rss"]) {
+      const ctx = makeCtx(title, body, { provider });
+      expect(extractRuleEvidence(canonicalEvidence(ctx), ctx).intent).toBe("UNKNOWN");
+    }
+  });
+
+  it("holds a scope heading without a separate engagement or payment signal", () => {
+    const ctx = makeCtx("Frontend development", "Scope of work: maintain a React website.", { provider: "remotive" });
+    const evidence = extractRuleEvidence(canonicalEvidence(ctx), ctx);
+    expect(evidence.intent).toBe("BUYER");
+    expect(evidence.all_reasons).toEqual(expect.arrayContaining(["ENGAGEMENT_UNCLEAR", "PAYMENT_UNCLEAR"]));
+  });
+
+  it("locates a single skill mention separately for both skill and scope", () => {
+    const { record } = classify("Frontend development",
+      "This is a contract role. Our team uses React. Compensation: USD 100 per hour.",
+      { provider: "jobicy_rss", item_type: "listing" });
+    expect(record.eligibility_state).toBe("REVIEW_INCOMPLETE");
+    expect(record.rejection_reason).toBe("ENGAGEMENT_UNCLEAR");
+    expect(qualificationSchema.safeParse(record).success).toBe(true);
+    const skill = record.evidence_quotes.find(quote => quote.field === "skill");
+    expect(record.evidence_quotes).toContainEqual({ ...skill, field: "scope" });
+  });
+});
+
+describe("Publisher-confirmed engagement", () => {
+  const hints = { provider: "jobicy_rss", item_type: "listing", original_url: "https://jobicy.com/jobs/555-react",
+    provider_verified_engagement: { field: "job_type", value: "contract" } } as const;
+  const body = "Project scope: implement a React checkout integration. Compensation: USD 100 per hour.";
+
+  it.each([
+    ["himalayas", "https://himalayas.app/companies/acme/jobs/react", "application_url"],
+    ["jobicy_rss", "https://jobicy.com/jobs/555-react", "contact_link_targets"],
+    ["remotive", "https://remotive.com/remote-jobs/software-dev/react-555", "contact_link_targets"],
+  ])("audits a verified %s path separately from textual quotes", (provider, listing, field) => {
+    const value = listing + "?ref=feed";
+    const input = { provider, item_type: "listing" as const, original_url: listing,
+      ...(field === "application_url" ? { application_url: value } : { contact_link_targets: [value] }) };
+    const text = "We need an independent contractor to build a React checkout system with tests. Budget $3000. Deadline within 2 weeks.";
+    const context = makeCtx("React development", text, input);
+    const {record, audit} = classify("React development", text, input);
+    expect(record).toMatchObject({ priority: "HIGH", contact_method: { type: "APPLICATION_URL", value, permission_state: "UNKNOWN" } });
+    expect(audit.provider_signal).toEqual({ provider, application: { field, value }, used_for: ["contact"] });
+    expect(record.evidence_quotes.some(quote => quote.field === "contact")).toBe(false);
+    expect(qualificationSchema.safeParse(record).success).toBe(true);
+    expect(() => validateQualificationEvidence(record, context)).not.toThrow();
+    expect(() => validateQualificationEvidence(record, { ...context, application_url: undefined, contact_link_targets: [] })).toThrow();
+  });
+
+  it("ignores unrelated, insecure, and lookalike metadata links", () => {
+    const context = makeCtx("Frontend development", body, { ...hints, contact_link_targets: [
+      "https://jobicy.com/blog/guide", "https://jobicy.com/jobs/999-elsewhere", "http://jobicy.com/jobs/555-react",
+      "https://jobicy.com.example.net/jobs/555-react",
+    ] });
+    expect(extractRuleEvidence(canonicalEvidence(context), context).contact_method.type).toBe("UNKNOWN");
+  });
+
+  it("uses a cached Jobicy listing URL only when it matches the stored job ID", () => {
+    const row = classify("Frontend development", body, { ...hints, provider_record_id: "post:555" });
+    expect(row.audit.provider_signal?.application).toEqual({ field: "original_url", value: hints.original_url });
+    const wrongId = classify("Frontend development", body, { ...hints, provider_record_id: "post:556" });
+    expect(wrongId.record.contact_method.type).toBe("UNKNOWN");
+  });
+
+  it("uses a recent Himalayas update as freshness evidence without claiming publication", () => {
+    const listing = "https://himalayas.app/companies/acme/jobs/react";
+    const text = "We need an independent contractor to build a React checkout system with tests. Budget $3000. Deadline within 2 weeks.";
+    const input = { provider: "himalayas", item_type: "listing" as const, original_url: listing,
+      application_url: listing, published_at: null };
+    const fresh = classify("React development", text, { ...input, source_updated_at: NOW });
+    expect(fresh.record.priority).toBe("HIGH");
+    expect(fresh.audit.freshness_basis).toBe("HIMALAYAS_LAST_UPDATE");
+    expect(fresh.audit.breakdown.freshness).toBe(5);
+    for (const source_updated_at of [undefined, "2026-10-01T00:00:00.000Z", "2026-11-17T00:00:00.000Z"]) {
+      const result = classify("React development", text, { ...input, source_updated_at });
+      expect(result.record.quality_score).toBe(64);
+      expect(result.audit.freshness_basis).toBeUndefined();
+    }
+  });
+
+  it("keeps zero-point inferred payment separate from a missing project boundary", () => {
+    const title = "Sales Support Specialist";
+    const text = "Coordinate rapid demos and maintain product records for customer onboarding.";
+    const input = { ...hints, contact_link_targets: [hints.original_url] };
+    const context = makeCtx(title, text, input);
+    const { record, audit } = classify(title, text, input);
+    expect(record).toMatchObject({ eligibility_state: "REVIEW_INCOMPLETE", rejection_reason: "ENGAGEMENT_UNCLEAR", budget_signal: {
+      kind: "BOARD_PAID_INTENT_INFERRED", minimum: null, maximum: null,
+    } });
+    expect(audit.breakdown.paid_intent).toBeUndefined();
+    expect(record.required_skills).toEqual([]);
+    expect(audit.breakdown.service_fit).toBeUndefined();
+    expect(audit.missing_fields).toContain("payment_signal");
+    expect(record.evidence_quotes).toContainEqual({ field: "scope", quote: title, start: 0, end: title.length });
+    expect(record.evidence_quotes.some(quote => quote.field === "payment")).toBe(false);
+    expect(qualificationSchema.safeParse(record).success).toBe(true);
+    expect(() => validateQualificationEvidence(record, context)).not.toThrow();
+    expect(classify("Opportunity", text, input).record.rejection_reason).toBe("ENGAGEMENT_UNCLEAR");
+    expect(classify(title, text + " This is unpaid.", input).record.rejection_reason).toBe("UNPAID_OR_EQUITY_ONLY");
+  });
+
+  it("still admits a bounded project with inferred pay at zero points", () => {
+    const text = "Project scope: build a React checkout system and hand it over to our team.";
+    const result = classify("React checkout build", text, { ...hints, contact_link_targets: [hints.original_url] });
+    expect(result.record.eligibility_state).toBe("ELIGIBLE");
+    expect(result.audit.project_boundary).toBe("BOUNDED");
+    expect(result.audit.breakdown.paid_intent).toBe(0);
+  });
+
+  it.each([
+    ["Founding Engineer", "Join our team in an ongoing role. USD 100 per hour."],
+    ["Language QA Contractor", "Evaluate prompts for a contractor roster, 80 hours per month. USD 50 per hour."],
+    ["Contract Developer", "Responsibilities include ownership of a React checkout integration. USD 100 per hour."],
+    ["Contract", "Remote. Apply now."],
+  ])("holds %s when Gemini is unavailable and there is no project boundary", (title, text) => {
+    const {record, audit} = classify(title, text, { ...hints, contact_link_targets: [hints.original_url] });
+    expect(record).toMatchObject({ eligibility_state: "REVIEW_INCOMPLETE", quality_score: 0, rejection_reason: "ENGAGEMENT_UNCLEAR" });
+    expect(audit.method).toBe("rules");
+    expect(audit.missing_fields).toContain("project_boundary");
+  });
+
+  it("rejects an explicit full-time board JD even with contractor metadata", () => {
+    const {record} = classify("Frontend lead",
+      "We need a freelance contractor. This is a full-time role with employee benefits.",
+      { ...hints, contact_link_targets: [hints.original_url] });
+    expect(record).toMatchObject({ eligibility_state: "REJECTED", rejection_reason: "FULL_TIME_ONLY", quality_score: 0 });
+  });
+
+  it.each([
+    ["LONG_TERM_CONTRACT_SEAT", "BUYER", "ONGOING_SEAT", "ENGAGEMENT_UNCLEAR"],
+    ["FULL_TIME_JOB", "BUYER", "EMPLOYMENT", "FULL_TIME_ONLY"],
+    ["SELLER_PROMO", "SELLER", "UNKNOWN", "SELLER_SELF_PROMOTION"],
+  ] as const)("uses grounded %s feedback to veto a rules-qualified listing", (lead_kind, buyer_or_seller, engagement_boundary, reason) => {
+    const context = makeCtx("Frontend React", body, { ...hints, contact_link_targets: [hints.original_url] });
+    const rules = extractRuleEvidence(canonicalEvidence(context), context);
+    const sourceClause = "implement a React checkout integration";
+    const {record,audit} = scoreFreelanceQualification({
+      ...rules, discovery_semantics: {
+        decision: "REJECT", decision_reason: "The role is not an independent project.",
+        lead_kind, buyer_or_seller, engagement_boundary, term_hint: "UNKNOWN",
+        engagement_evidence: sourceClause, paid_evidence: null, scope_evidence: sourceClause,
+      },
+    }, context, NOW);
+    expect(record).toMatchObject({ is_valid_freelance_lead: false, rejection_reason: reason, quality_score: 0 });
+    expect(audit.discovery_semantics?.lead_kind).toBe(lead_kind);
+    expect(() => validateQualificationEvidence(record, context)).not.toThrow();
+  });
+
+  it.each(["Compensation: competitive", "Salary range: DOE", "Rate: negotiable after interview", "DOE", "Budget available"])(
+    "retains %s as a weak cue and quotes the responsibility for scope", cue => {
+      const text = "Responsibilities:\nTrack vendor renewals and document purchasing activity.\n" + cue;
+      const { record, audit } = classify("Opportunity", text, { ...hints, contact_link_targets: [hints.original_url] });
+      expect(record.budget_signal.kind).toBe("BOARD_PAID_INTENT_INFERRED");
+      expect(audit.project_boundary).toBe("UNVERIFIED");
+      expect(record.quality_score).toBe(0);
+      expect(record.evidence_quotes.find(quote => quote.field === "scope")?.quote).toContain("Track vendor renewals");
+    },
+  );
+
+  it("preserves both endpoints and the unit of a stated board pay range", () => {
+    const { record, audit } = classify("DevOps", "Project scope: build a service health dashboard.\nRate: $50–$75/hr", hints);
+    expect(record.budget_signal).toEqual({ kind: "AMOUNT_STATED", minimum: 50, maximum: 75, currency: "USD", unit: "HOUR" });
+    expect(audit.breakdown.paid_intent).toBe(20);
+    expect(record.evidence_quotes.some(quote => quote.field === "payment" && quote.quote === "$50–$75")).toBe(true);
+  });
+
+  it("qualifies a formal paid listing with separate, context-validated publisher evidence", () => {
+    const context = makeCtx("Frontend development", body, hints);
+    const { record, audit } = classify("Frontend development", body, hints);
+    expect(record).toMatchObject({ eligibility_state: "ELIGIBLE", engagement_type: "INDEPENDENT_CONTRACT", requester_type: "UNKNOWN" });
+    expect(audit.provider_signal).toEqual({ provider: "jobicy_rss", engagement: hints.provider_verified_engagement,
+      used_for: ["intent", "engagement"] });
+    expect(record.provider_signal).toEqual(audit.provider_signal);
+    expect(record.evidence_quotes.every(quote => quote.field !== "intent" && quote.field !== "engagement")).toBe(true);
+    expect(qualificationSchema.safeParse(record).success).toBe(true);
+    expect(() => validateQualificationEvidence(record, context)).not.toThrow();
+    expect(() => validateQualificationEvidence(record, { ...context, provider_verified_engagement: null })).toThrow();
+  });
+
+  it("only fills the gaps left by the text and leaves unsupported or incomplete inputs held", () => {
+    const hiring = "We need a React developer to implement the checkout integration. Compensation: USD 100 per hour.";
+    expect(classify("Frontend development", hiring, hints).audit.provider_signal?.used_for).toEqual(["engagement"]);
+    expect(classify("Frontend development", body, { ...hints, provider: "remotive" }).record.rejection_reason).toBe("AMBIGUOUS_DIRECTION");
+    expect(classify("Frontend development", body, { ...hints, truncated: true }).record.rejection_reason).toBe("AMBIGUOUS_DIRECTION");
+    expect(classify("Frontend development", "Project scope: implement a React checkout integration.", hints).record.rejection_reason).toBe("PAYMENT_UNCLEAR");
+    expect(classify("Opportunity", "Compensation: USD 100 per hour.", hints).record.rejection_reason).toBe("ENGAGEMENT_UNCLEAR");
+  });
+
+  it.each([
+    ["Full-time, salaried position.", "FULL_TIME_ONLY"],
+    ["This is an unpaid collaboration.", "UNPAID_OR_EQUITY_ONLY"],
+    ["SEEKING FREELANCE: available for work.", "SELLER_SELF_PROMOTION"],
+    ["Here are 10 remote jobs.", "AGGREGATOR_ONLY"],
+    ["Try our new product.", "NO_CLIENT_NEED"],
+    ["Internship opportunity.", "INTERNSHIP"],
+  ])("keeps the exclusion for %s", (exclusion, reason) => {
+    const { record, audit } = classify("Frontend development", `${body}\n${exclusion}`, hints);
+    expect(record.rejection_reason).toBe(reason);
+    expect(audit.provider_signal).toBeUndefined();
+  });
+});
 
 /* ================================================================== */
 /* Stage C — Section 9 concrete acceptance cases                        */

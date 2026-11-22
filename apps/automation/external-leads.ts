@@ -1,7 +1,7 @@
 import {z} from 'zod';
 import {hash, inputSchema, type LeadInput} from '../../packages/core/model';
 import {cleanText} from '../../packages/core/scoring';
-import {discoveryContextSchema, FREELANCE_BUYER_SOURCES, type DiscoveryContext} from '../../packages/core/qualification';
+import {discoveryContextSchema, FREELANCE_BUYER_SOURCES, matchProviderEngagement, providerVerifiedEngagementSchema, type DiscoveryContext} from '../../packages/core/qualification';
 import type {Http} from './adapters';
 
 export const externalSources = [...FREELANCE_BUYER_SOURCES,'osm','remoteok','arbeitnow','jobicy'] as const;
@@ -26,6 +26,7 @@ const listingEvidenceSchema=z.object({
   expires_at:z.string().datetime().optional(),
   source_updated_at:z.string().datetime().optional(),
   application_url:z.string().url().max(2000).optional(),
+  provider_verified_engagement:providerVerifiedEngagementSchema.nullish(),
 }).strict();
 const rowSchema = z.object({
   source:z.enum(externalSources), source_id:z.string().min(1).max(500),
@@ -180,6 +181,7 @@ export function externalToLead(raw:unknown, hnItem?:unknown, hnThread?:unknown):
       expires_at:evidence.expires_at,
       source_updated_at:evidence.source_updated_at,
       application_url:evidence.application_url,
+      provider_verified_engagement:matchProviderEngagement(row.source,evidence.provider_verified_engagement),
       collected_at:row.found_at,
       fetched_at:evidence.observed_at,
       tags:['freelance_request',row.source],

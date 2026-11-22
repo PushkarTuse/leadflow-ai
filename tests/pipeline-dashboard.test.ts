@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  displayPriority,
   qualificationCounts,
   qualificationMethod,
   qualificationState,
@@ -34,38 +35,19 @@ function row(
 }
 
 describe("qualification dashboard view", () => {
-  it("labels records without qualification as needing requalification", () => {
-    expect(qualificationState(row("legacy"))).toBe("NEEDS_REQUALIFICATION");
-  });
-
-  it("separates high/medium opportunities from low and held candidates", () => {
-    const counts = qualificationCounts([
-      row("high", "ELIGIBLE", "HIGH", true),
-      row("medium", "ELIGIBLE", "MEDIUM", true),
-      row("low", "ELIGIBLE", "LOW", true),
-      row("rejected", "REJECTED"),
-      row("incomplete", "REVIEW_INCOMPLETE"),
-      row("quarantined", "QUARANTINED"),
-      row("legacy"),
-    ]);
-
-    expect(counts).toEqual({
-      raw: 7,
-      eligible: 2,
-      high: 1,
-      medium: 1,
-      low: 1,
-      rejected: 1,
-      incomplete: 1,
-      quarantined: 1,
-      needsRequalification: 1,
-    });
-  });
-
-  it("does not promote a contradictory eligibility record", () => {
-    expect(
-      qualificationState(row("invalid", "ELIGIBLE", "HIGH", false)),
-    ).toBe("NEEDS_REQUALIFICATION");
+  it("shows only the binary outcome and ignores old priority or review states", () => {
+    const accepted = row("accepted", "ELIGIBLE", "LOW", true);
+    accepted.qualification!.operator_decision = "ACCEPTED";
+    accepted.qualification_audit = {method:"gemini", decision_source:"MODEL",
+      discovery_semantics:{lead_kind:"FREELANCE_PROJECT",decision:"ACCEPT"}};
+    expect(displayPriority(qualificationState(accepted), "LOW")).toBe("LOW");
+    expect(displayPriority("REJECTED", "REJECTED")).toBe("—");
+    expect(qualificationCounts([
+      accepted, row("old-high", "ELIGIBLE", "HIGH", true), row("legacy"),
+      row("incomplete", "REVIEW_INCOMPLETE"), row("quarantined", "QUARANTINED"),
+    ])).toEqual({raw:5, accepted:1, rejected:4});
+    accepted.qualification_audit.discovery_semantics!.decision = "REJECT";
+    expect(qualificationState(accepted)).toBe("REJECTED");
   });
 
   it("shows OpenAI-compatible provider attribution", () => {

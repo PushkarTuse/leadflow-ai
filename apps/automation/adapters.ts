@@ -38,6 +38,8 @@ export const geminiResponse = z.object({
 });
 function discoveryFailureWarning(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
+  if (message === "Discovery evidence must match source text exactly")
+    return "Gemini evidence did not match the listing; no AI verdict";
   const status = Number(message.match(/\bHTTP\s+(\d{3})\b/)?.[1] || 0);
   if (status === 429) return "Gemini quota/rate limit (HTTP 429); deterministic rules used";
   if (status === 400) return "Gemini rejected the request/schema (HTTP 400); check model/API compatibility; deterministic rules used";
@@ -125,6 +127,13 @@ export function classifyGemini(
 
 const discoveryExtractionCache = new Map<string, DiscoverySignals>();
 
+function cacheDiscoveryExtraction(key: string, signals: DiscoverySignals) {
+  const oldest = discoveryExtractionCache.keys().next().value;
+  if (discoveryExtractionCache.size >= 256 && oldest !== undefined)
+    discoveryExtractionCache.delete(oldest);
+  discoveryExtractionCache.set(key, signals);
+}
+
 /**
  * Stage D: Bounded Gemini extraction for freelance discovery classification.
  * One extraction request per candidate; ≤2500 input tokens, ≤800 output tokens.
@@ -157,6 +166,9 @@ export function classifyGeminiDiscovery(
   // Cache by source/thread context and all classification contract versions.
   const sourceThreadHash = hash([
     context.source_hash,
+    context.provider,
+    context.decoded_text,
+    JSON.stringify(context.provider_verified_engagement ?? null),
     context.original_title || "",
     context.parent_id || "none",
     context.thread_id || "none",
@@ -193,7 +205,10 @@ export function classifyGeminiDiscovery(
     ? `Thread context: thread=${context.thread_id}, parent=${context.parent_id || "none"}\n\n`
     : "";
   const inputText = JSON.stringify({
-    DATA: `${threadContext}${canonical}`,
+    source: context.provider,
+    publisher_engagement_hint: context.provider_verified_engagement?.value ?? null,
+    thread_context: threadContext,
+    DATA: canonical,
   });
 
   try {
@@ -227,7 +242,7 @@ export function classifyGeminiDiscovery(
       .join("");
     // No auto-retry: validate or fall back
     const signals = validateDiscoveryExtraction(text, context);
-    discoveryExtractionCache.set(cacheKey, signals);
+    cacheDiscoveryExtraction(cacheKey, signals);
     return { signals };
   } catch (error) {
     return {
@@ -272,9 +287,10 @@ function openAIFailureWarning(error: unknown): string {
   if (status === 404) return "AI model or compatible endpoint not found (HTTP 404); verify AI_MODEL and AI_API_BASE_URL; deterministic rules used";
   if (status === 429) return "AI provider quota/rate limit (HTTP 429); deterministic rules used";
   if (status === 402) return "AI provider rejected the request for billing/credit reasons (HTTP 402); deterministic rules used";
+  if (status === 400) return "AI provider could not complete the requested format (HTTP 400); deterministic rules used";
   if (status >= 500) return `AI provider service error (HTTP ${status}); deterministic rules used`;
   if (error instanceof SyntaxError || error instanceof z.ZodError) return "AI provider returned invalid JSON/schema; deterministic rules used";
-  if (message.includes("Evidence quote not found")) return "AI provider returned an unsupported evidence quote; deterministic rules used";
+  if (/Evidence quote not found|Discovery evidence must match source text exactly/i.test(message)) return "AI provider returned an unsupported evidence quote; deterministic rules used";
   const networkCode = message.match(/\b(ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET)\b/)?.[1];
   return networkCode
     ? `AI provider transport failure (${networkCode}); deterministic rules used`
@@ -291,6 +307,7 @@ export function classifyOpenAICompatibleDiscovery(
     apiKey: string;
     model: string;
     baseUrl?: string;
+    reasoningEffort?: "low";
   },
 ): { signals?: DiscoverySignals; warning?: string; method?: "openai-compatible" } {
   if (!options.enabled) return { warning: "AI disabled; local rules used" };
@@ -298,7 +315,7 @@ export function classifyOpenAICompatibleDiscovery(
   if (!options.apiKey || !/^[\w.-]+$/.test(options.apiKey) || options.apiKey.length > 500) {
     return { warning: "AI_API_KEY missing or invalid; local rules used" };
   }
-  if (!options.model || !/^[a-zA-Z0-9._:/-]{1,120}$/.test(options.model)) {
+  if (!options.model || !/^@?[a-zA-Z0-9._:/-]{1,120}$/.test(options.model)) {
     return { warning: "AI_MODEL missing or invalid; local rules used" };
   }
 
@@ -315,6 +332,9 @@ export function classifyOpenAICompatibleDiscovery(
   }
   const sourceThreadHash = hash([
     context.source_hash,
+    context.provider,
+    context.decoded_text,
+    JSON.stringify(context.provider_verified_engagement ?? null),
     title,
     context.parent_id || "none",
     context.thread_id || "none",
@@ -352,18 +372,21 @@ export function classifyOpenAICompatibleDiscovery(
           },
           {
             role: "user",
-            content: JSON.stringify({ DATA: `${threadContext}${canonical}` }),
+            content: JSON.stringify({ source: context.provider, thread_context: threadContext,
+              publisher_engagement_hint: context.provider_verified_engagement?.value ?? null, DATA: canonical }),
           },
         ],
         temperature: 0,
-        max_tokens: 800,
+        ...(options.reasoningEffort
+          ? { reasoning_effort: options.reasoningEffort, max_completion_tokens: 1600 }
+          : { max_tokens: 800 }),
         response_format: { type: "json_object" },
       },
     }));
     const text = result.choices[0].message.content;
     if (text.length > 12000) throw new Error("Oversized classification");
     const signals = validateDiscoveryExtraction(text, context);
-    discoveryExtractionCache.set(cacheKey, signals);
+    cacheDiscoveryExtraction(cacheKey, signals);
     return { signals, method: "openai-compatible" };
   } catch (error) {
     return { warning: openAIFailureWarning(error) };
@@ -381,6 +404,7 @@ export function classifyDiscoveryAI(
     apiKey: string;
     model: string;
     baseUrl?: string;
+    reasoningEffort?: "low";
   },
 ): { signals?: DiscoverySignals; warning?: string; method?: "gemini" | "openai-compatible" } {
   const provider = options.provider || "gemini";

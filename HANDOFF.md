@@ -2,6 +2,12 @@
 
 This is the entry point for any AI (or human) picking up this repository. Read this file first, then open the latest capsule.
 
+## Local discovery reset and AI failover — 23 November 2026
+
+The local dashboard is at http://127.0.0.1:5174/pipeline and the producer API is at http://127.0.0.1:8787. The previous D1 state, qualification ledger, and generated output were moved to the sibling backup folder `leadflow-local-backups/runtime-20261123-050126-577`. The fresh local D1 was migrated with `npm run db:local` before source collection.
+
+`DISCOVERY_AI_PROVIDER=auto` enables Gemini → Groq → Cloudflare Workers AI → OpenRouter Free. The first schema-valid decision with source-grounded evidence supplies the binary discovery outcome. Rules remain advisory. The dashboard method column shows the provider or **No AI verdict**. Use `npm run external:run -- --retry-discovery-ai` to retry saved no-verdict records after cooldown. Keep shadow mode, Telegram off, and owner email testing off for local verification. See `docs/EXTERNAL_LEAD_API_SETUP.md` and the latest entry in `HANDOFF_EXTERNAL_LEAD_INTEGRATION.md` for commands and results.
+
 ## Freelance discovery qualification — current as of 19 November 2026
 
 The live local workflow runs `prefilterDiscovery` → validated provider `discoverySignals` / `extractRuleEvidence` → `scoreFreelanceQualification`, then persists the full qualification, audit/version envelope, source hash, evidence and warnings. Discovery extraction supports Gemini and an opt-in OpenAI-compatible endpoint; deterministic hard exclusions remain authoritative over either provider. Classic HN “Who is hiring?” posts, missing-title role posts and seller-availability posts have strengthened employment/contract/seller gates; ambiguous non-classic posts can still be review-incomplete. The importer filters to the configured source (`hackernews`) and requests newest-first (`sort=found_at&order=desc`). The dashboard distinguishes eligible, low, rejected, incomplete, quarantined and needs-requalification. Do not call rejected or incomplete records leads.

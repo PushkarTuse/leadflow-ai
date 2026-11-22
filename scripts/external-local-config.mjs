@@ -9,3 +9,14 @@ export function stateDirectory(profile = '') {
   if (!/^[a-z0-9_-]{0,40}$/.test(profile)) throw new Error('Invalid EXTERNAL_LOCAL_PROFILE');
   return profile ? `data/external-profiles/${profile}` : 'data';
 }
+
+/** Fixed endpoints for the local free-provider chain. */
+export function discoveryBackupBaseUrls(accountId = '') {
+  return {
+    groq: 'https://api.groq.com/openai/v1',
+    cloudflare: /^[a-f0-9]{32}$/i.test(accountId)
+      ? `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`
+      : '',
+    openrouter: 'https://openrouter.ai/api/v1',
+  };
+}

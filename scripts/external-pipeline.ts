@@ -4,9 +4,10 @@ import {randomBytes} from 'node:crypto';
 import {Engine,canRouteDiscoveryLead,isDiscoveryCandidate,notification} from '../packages/core/workflow';
 import {MemoryStore} from '../packages/core/memory-store';
 import {configSchema} from '../packages/core/model';
-import {classifyGemini,classifyDiscoveryAI,openAICompletionEndpoint,type Http} from '../apps/automation/adapters';
+import {classifyGemini,openAICompletionEndpoint,type Http} from '../apps/automation/adapters';
 import {pullExternalLeads,type ExternalCursor} from '../apps/automation/external-leads';
 import {loopbackOrigin,stateDirectory} from './external-local-config.mjs';
+import {discoveryAiChain,freeDiscoveryBackups,type DiscoveryProvider} from './external-discovery-ai';
 
 interface EmailTestState{status:string;at:string;to:string;messageId:string;error:string}
 const emptyEmailTest:EmailTestState={status:'DISABLED',at:'',to:'',messageId:'',error:''};
@@ -51,22 +52,11 @@ function smtpHint(stage:string,code:number):string{
 function executiveSummary(store:MemoryStore,run:{imported:number;duplicates:number;invalid:number},emailTest:EmailTestState){
   const allRecords=store.leads();
   const discovery=allRecords.filter(isDiscoveryCandidate);
-  const eligible=discovery.filter(l=>
-    l.qualification?.eligibility_state==='ELIGIBLE'&&
-    l.qualification.is_valid_freelance_lead&&
-    (l.qualification.priority==='HIGH'||l.qualification.priority==='MEDIUM')
-  );
-  const low=discovery.filter(l=>
-    l.qualification?.eligibility_state==='ELIGIBLE'&&
-    l.qualification.priority==='LOW'
-  );
-  const rejected=discovery.filter(l=>l.qualification?.eligibility_state==='REJECTED');
-  const incomplete=discovery.filter(l=>l.qualification?.eligibility_state==='REVIEW_INCOMPLETE');
-  const quarantined=discovery.filter(l=>l.qualification?.eligibility_state==='QUARANTINED');
-  const legacy=discovery.filter(l=>l.qualification_status==='NEEDS_REQUALIFICATION'||!l.qualification);
+  const eligible=discovery.filter(canRouteDiscoveryLead);
+  const rejected=discovery.filter(lead=>!canRouteDiscoveryLead(lead));
   const inbound=allRecords.filter(l=>!isDiscoveryCandidate(l));
   const reasonCounts=new Map<string,number>();
-  for(const candidate of [...rejected,...incomplete,...quarantined]){
+  for(const candidate of rejected){
     const reason=candidate.qualification?.rejection_reason;
     if(reason)reasonCounts.set(reason,(reasonCounts.get(reason)||0)+1);
   }
@@ -83,22 +73,18 @@ function executiveSummary(store:MemoryStore,run:{imported:number;duplicates:numb
     '',
     `Processed this run: ${run.imported+run.duplicates+run.invalid} (imported ${run.imported}, duplicates ${run.duplicates}, skipped ${run.invalid})`,
     `Raw candidates: ${discovery.length}`,
-    `Eligible opportunities (HIGH/MEDIUM): ${eligible.length} (HIGH: ${eligible.filter(l=>l.qualification?.priority==='HIGH').length}, MEDIUM: ${eligible.filter(l=>l.qualification?.priority==='MEDIUM').length})`,
-    `Low-priority eligible candidates: ${low.length}`,
+    `Accepted candidates: ${eligible.length}`,
     `Rejected candidates: ${rejected.length}`,
-    `Incomplete candidates: ${incomplete.length}`,
-    quarantined.length?`Quarantined candidates: ${quarantined.length}`:'',
-    legacy.length?`Needs requalification: ${legacy.length}`:'',
     reasonCounts.size?`Primary reasons: ${[...reasonCounts].map(([reason,count])=>`${reason} (${count})`).join(', ')}`:'',
     inbound.length?`  • Consented inbound enquiries: ${inbound.length}`:'',
     '',
-    'Top eligible opportunities:',
+    'Top accepted opportunities:',
     ...(top.length
       ? top.flatMap((l,i)=>[
           `${i+1}. ${(l.client_name_if_public||l.title||l.lead_id).slice(0,90)} — ${l.qualification?.priority}, ${l.qualification?.quality_score}/100, ${Math.round((l.qualification?.confidence_score||0)*100)}% confidence (${l.qualification_audit?.method||'unknown'})`,
           ...(safeEvidence(l).length?[`   Evidence: ${safeEvidence(l).join(' · ')}`]:[]),
         ])
-      : ['  none above LOW priority']),
+      : ['  none']),
     '',
     'Errors / skipped:',
     ...(run.invalid||warned.length
@@ -162,7 +148,7 @@ async function ownerEmailTest(enabled:boolean,get:(key:string,fallback?:string)=
 async function main(){
   const preview=process.argv.includes('--dry-run');
   try {const text=await readFile('.env.external','utf8');for(const line of text.split(/\r?\n/)){
-    const m=line.match(/^([A-Z][A-Z0-9_]*)=(.*)$/);if(m&&process.env[m[1]]===undefined)process.env[m[1]]=m[2].trim();
+    const m=line.match(/^\s*([A-Z][A-Z0-9_]*)\s*=(.*)$/);if(m&&process.env[m[1]]===undefined)process.env[m[1]]=m[2].trim().replace(/^(["'])(.*)\1$/, '$2');
   }}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
   const get=(key:string,fallback='')=>process.env[key]??fallback;
   const on=(key:string)=>get(key)==='true';
@@ -170,7 +156,9 @@ async function main(){
     ['1','true'].includes(get('REQUALIFY_MISSING').toLowerCase());
   const requalifyAll=process.argv.includes('--requalify-all')||
     ['1','true'].includes(get('FORCE_REQUALIFY').toLowerCase());
-  const requalificationRun=requalifyMissing||requalifyAll;
+  const retryDiscoveryAi=process.argv.includes('--retry-discovery-ai');
+  const replayStored=requalifyAll||retryDiscoveryAi;
+  const requalificationRun=requalifyMissing||replayStored;
   const qualificationMode=get('FREELANCE_QUALIFICATION_MODE','shadow');
   if(qualificationMode!=='shadow'&&qualificationMode!=='enforce')
     throw new Error('FREELANCE_QUALIFICATION_MODE must be shadow or enforce');
@@ -180,21 +168,47 @@ async function main(){
   const upstream=loopbackOrigin(get('EXTERNAL_LEADS_API_ORIGIN','http://127.0.0.1:8787'));
   process.env.EXTERNAL_LEADS_API_ORIGIN=upstream;
   let token=get('EXTERNAL_LEADS_API_TOKEN');
-  if(!token&&!requalifyAll){const vars=await readFile('../leadflow-leads/.dev.vars','utf8');token=vars.split(/\r?\n/).find(l=>l.startsWith('API_TOKEN='))?.slice(10).trim()||'';}
-  if(!token&&!requalifyAll)throw new Error('Local API token missing');
-  const aiProvider=get('AI_PROVIDER','gemini');
-  if(aiProvider!=='gemini'&&aiProvider!=='openai')throw new Error('AI_PROVIDER must be gemini or openai');
-  const aiEnabled=!preview&&(aiProvider==='gemini'
+  if(!token&&!replayStored){const vars=await readFile('../leadflow-leads/.dev.vars','utf8');token=vars.split(/\r?\n/).find(l=>l.startsWith('API_TOKEN='))?.slice(10).trim()||'';}
+  if(!token&&!replayStored)throw new Error('Local API token missing');
+  const providerSetting=get('DISCOVERY_AI_PROVIDER',get('AI_PROVIDER','gemini'));
+  if(!['auto','gemini','openai','openrouter'].includes(providerSetting))throw new Error('DISCOVERY_AI_PROVIDER must be auto, gemini, openai or openrouter');
+  const automatic=providerSetting==='auto';
+  const aiProvider=automatic||providerSetting==='gemini'?'gemini':'openai';
+  const aiRequested=!preview&&(aiProvider==='gemini'
     ? on('AI_ENABLED')||on('GEMINI_ENABLED')
     : on('AI_ENABLED'));
   const telegram=!preview&&on('TELEGRAM_ENABLED')&&allowDiscoveryNotifications;
   const safeEmailTest=!preview&&on('SAFE_OWNER_EMAIL_TEST')&&!requalificationRun;
-  const aiApiKey=aiProvider==='gemini'?(get('AI_API_KEY')||get('GEMINI_API_KEY')):get('AI_API_KEY');
-  const aiModel=aiProvider==='gemini'?(get('AI_MODEL')||get('GEMINI_MODEL')):get('AI_MODEL');
-  const aiBaseUrl=get('AI_API_BASE_URL','https://api.openai.com/v1');
-  if(aiEnabled&&aiProvider==='gemini'&&(!aiApiKey||!aiModel||!on('GEMINI_FREE_TIER_CONFIRMED')||!on('GEMINI_DATA_USE_APPROVED')))throw new Error('Complete approved Gemini settings first');
-  if(aiEnabled&&aiProvider==='openai'&&(!aiApiKey||!aiModel||!on('AI_DATA_USE_APPROVED')))throw new Error('Set AI_API_KEY, AI_MODEL and AI_DATA_USE_APPROVED=true before using the OpenAI-compatible provider');
-  if(aiEnabled&&aiProvider==='openai')openAICompletionEndpoint(aiBaseUrl);
+  const aiApiKey=aiProvider==='gemini'?(get('GEMINI_API_KEY')||get('AI_API_KEY')):
+    (get(providerSetting==='openrouter'?'OPENROUTER_API_KEY':'OPENAI_API_KEY')||get('AI_API_KEY'));
+  const aiModel=aiProvider==='gemini'?(get('GEMINI_MODEL')||get('AI_MODEL')):
+    (get(providerSetting==='openrouter'?'OPENROUTER_MODEL':'OPENAI_MODEL')||get('AI_MODEL'));
+  const aiBaseUrl=providerSetting==='openrouter'?'https://openrouter.ai/api/v1':get('AI_API_BASE_URL','https://api.openai.com/v1');
+  const geminiReady=Boolean(aiApiKey&&aiModel&&on('GEMINI_FREE_TIER_CONFIRMED')&&on('GEMINI_DATA_USE_APPROVED'));
+  const compatibleReady=Boolean(aiApiKey&&aiModel&&on('AI_DATA_USE_APPROVED'));
+  const providers:DiscoveryProvider[]=[];
+  if(aiRequested&&(aiProvider==='gemini'?geminiReady:compatibleReady)){
+    providers.push({
+      id:providerSetting==='openrouter'?'openrouter':aiProvider,
+      options:{enabled:true,provider:aiProvider,freeTierConfirmed:aiProvider==='gemini',
+        dataUseApproved:true,apiKey:aiApiKey,model:aiModel,baseUrl:aiBaseUrl},
+    });
+  }
+  if(automatic&&aiRequested&&on('AI_ENABLED')&&on('AI_DATA_USE_APPROVED')){
+    process.env.DISCOVERY_AI_PROVIDER='auto';
+    providers.push(...freeDiscoveryBackups(get));
+  }
+  const aiEnabled=providers.length>0;
+  const aiSetupWarning=aiRequested&&!aiEnabled?'Approved classifier settings unavailable; no AI verdict':'';
+  const discoveryAiLimit=Number(get('EXTERNAL_DISCOVERY_AI_MAX_REQUESTS','100'));
+  if(!Number.isInteger(discoveryAiLimit)||discoveryAiLimit<0||discoveryAiLimit>500)throw new Error('EXTERNAL_DISCOVERY_AI_MAX_REQUESTS must be 0–500');
+  if(retryDiscoveryAi&&(!aiEnabled||discoveryAiLimit===0))throw new Error('AI retry needs an approved classifier and a positive request budget');
+  if(aiEnabled&&aiProvider==='openai'){
+    openAICompletionEndpoint(aiBaseUrl);
+    // The private subprocess binds requests to this exact configured endpoint.
+    process.env.AI_PROVIDER='openai';
+    process.env.AI_API_BASE_URL=aiBaseUrl;
+  }
   if(telegram&&(!/^\d+:[\w-]+$/.test(get('TELEGRAM_BOT_TOKEN'))||!/^\d+$/.test(get('TELEGRAM_OWNER_CHAT_ID'))||get('TELEGRAM_OWNER_CHAT_ID')!==get('TELEGRAM_OWNER_USER_ID')))throw new Error('Private Telegram owner settings missing or mismatched');
   const limit=Number(get('EXTERNAL_LEADS_BATCH_SIZE','5'));if(!Number.isInteger(limit)||limit<1||limit>5)throw new Error('Batch must be 1–5');
   const directory=stateDirectory(get('EXTERNAL_LOCAL_PROFILE'));
@@ -205,25 +219,29 @@ async function main(){
   try{
     const store=new MemoryStore();let cursor:ExternalCursor={after:0};let emailTest:EmailTestState={...emptyEmailTest};
     const allowedSources=[...new Set(get('EXTERNAL_LEADS_SOURCES','hackernews').split(',').map(s=>s.trim()))].sort();
-    const checkpointKey=JSON.stringify([upstream,allowedSources,1]);
+    let checkpointKey=JSON.stringify([upstream,allowedSources,1]);
     let sourceHealth:unknown=null;
-    try{const old=JSON.parse(await readFile(file,'utf8'));Object.assign(store,old.store);if(old.checkpointKey===checkpointKey&&old.cursor)cursor=old.cursor;if(old.emailTest)emailTest=old.emailTest as EmailTestState;sourceHealth=old.sourceHealth??null;}
+    let cooldowns:Parameters<typeof discoveryAiChain>[3]={};
+    try{const old=JSON.parse(await readFile(file,'utf8'));Object.assign(store,old.store);if(replayStored&&old.checkpointKey)checkpointKey=old.checkpointKey;if(old.checkpointKey===checkpointKey&&old.cursor)cursor=old.cursor;if(old.emailTest)emailTest=old.emailTest as EmailTestState;sourceHealth=old.sourceHealth??null;cooldowns=old.cooldowns??{};}
     catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('Unreadable local state; restore before retrying');}
-    if(requalifyMissing&&!requalifyAll)cursor={after:0};
-    const save=async()=>{await writeFile(file+'.tmp',JSON.stringify({offset:0,checkpointKey,cursor,store,emailTest,sourceHealth},null,2));await rename(file+'.tmp',file);};
+    if(requalifyMissing&&!replayStored)cursor={after:0};
+    const save=async()=>{await writeFile(file+'.tmp',JSON.stringify({offset:0,checkpointKey,cursor,store,emailTest,sourceHealth,cooldowns},null,2));await rename(file+'.tmp',file);};
     let httpCount=0;
-    const network:Http={json(url,request){
-      if(++httpCount>16)throw new Error('Local per-run HTTP budget reached');
+    function requestJson(url:string,request?:Parameters<Http['json']>[1]){
       const result=spawnSync(process.execPath,['scripts/external-http.mjs'],{input:JSON.stringify({url,request}),encoding:'utf8',timeout:20000,maxBuffer:2000000});
       if(result.status!==0){
         // external-http.mjs writes only a safe, credential-free detail to stderr
         // (HTTP status or network error code). Bound and flatten it before use.
         const detail=(result.stderr||'').replace(/[\r\n]+/g,' ').trim().slice(0,200);
-        const safeDetail=/^(?:HTTP \d{3}|[A-Z0-9_]{1,50}|request failed|host blocked|response too large|invalid JSON response)$/.test(detail)?detail:'timeout or transport failure';
+        const safeDetail=/^(?:HTTP \d{3}(?: retry-after=\d{1,5})?|[A-Z0-9_]{1,50}|request failed|host blocked|response too large|invalid JSON response)$/.test(detail)?detail:'timeout or transport failure';
         if(url.startsWith(upstream+'/'))throw new Error(`Upstream ${upstream} returned ${safeDetail}. Check Wrangler's listening port and local API token.`);
         throw new Error(`Provider request failed (${safeDetail})`);
       }
       return JSON.parse(result.stdout);
+    }
+    const network:Http={json(url,request){
+      if(++httpCount>16)throw new Error('Local per-run source/notification HTTP budget reached');
+      return requestJson(url,request);
     }};
     const origin='https://local-runner.example.com',transportToken='local-adapter-transport-placeholder-only';
     const http:Http={json(url,request){
@@ -232,27 +250,25 @@ async function main(){
       if(request?.headers)throw new Error('No token may be sent to HN');return network.json(url);
     }};
     const config=configSchema.parse({ownerUserId:get('TELEGRAM_OWNER_USER_ID','local-owner'),ownerChatId:get('TELEGRAM_OWNER_CHAT_ID','local-owner')});
-    const engine=new Engine(store,config,undefined,aiEnabled?input=>{
+    const chain=discoveryAiChain(providers,{json:requestJson},discoveryAiLimit,cooldowns);
+    const engine=new Engine(store,config,undefined,aiRequested?input=>{
       if (input.discovery_context) {
-        const res = classifyDiscoveryAI(network, input.discovery_context, {
-          enabled: true,
-          provider: aiProvider,
-          freeTierConfirmed: aiProvider==='gemini',
-          dataUseApproved: true,
-          apiKey: aiApiKey,
-          model: aiModel,
-          baseUrl: aiBaseUrl,
-        });
-        return { discoverySignals: res.signals, warning: res.warning, method: res.method };
+        return chain.classify(input.discovery_context);
       }
-      if(aiProvider==='gemini')return classifyGemini(network,input,{enabled:true,freeTierConfirmed:true,dataUseApproved:true,apiKey:aiApiKey,model:aiModel});
+      if (!aiEnabled) return { warning: aiSetupWarning };
+      if(aiProvider==='gemini'&&geminiReady)return classifyGemini(network,input,{enabled:true,freeTierConfirmed:true,dataUseApproved:true,apiKey:aiApiKey,model:aiModel});
       return {warning:'OpenAI-compatible extraction is limited to discovery; local rules used'};
     }:undefined);
     let requalified=0,requalificationSkipped=0;
     let result:{imported:number;duplicates:number;invalid:number;nextOffset:number;fetched?:number;sourceState?:string};
-    if(requalifyAll){
+    if(replayStored){
       for(const lead of store.leads().filter(isDiscoveryCandidate)){
         if(!lead.discovery_context){requalificationSkipped++;continue;}
+        if(retryDiscoveryAi){
+          if(!chain.available()||chain.exhausted())break;
+          const decisionSource=lead.qualification_audit?.decision_source;
+          if(!allowedSources.includes(lead.discovery_context.provider)||decisionSource==='MODEL'||decisionSource==='SOURCE_GUARD')continue;
+        }
         engine.requalifyDiscovery(lead.lead_id,lead,true);
         requalified++;
       }
@@ -319,9 +335,17 @@ async function main(){
       }catch{summaryStatus='FAILED';}
     }
     await save();await writeFile(`${output}/review-preview.json`,JSON.stringify(alerts,null,2));
+    const discoveryRows=store.leads().filter(isDiscoveryCandidate);
+    const accepted=discoveryRows.filter(canRouteDiscoveryLead).length;
+    const {requests,attempted,succeeded,failed}=chain.coverage;
     console.log(JSON.stringify({mode:preview?'DRY RUN — real reads, local rules, preview only':requalificationRun?'LOCAL REQUALIFICATION — NOTIFICATIONS SUPPRESSED':`LOCAL ONE-SHOT — ${qualificationMode.toUpperCase()}`,...result,requalified,requalification_skipped_missing_context:requalificationSkipped,
       total:store.leads().length,pending:store.leads().filter(l=>l.status==='PENDING_APPROVAL').length,
-      ai_attempted:aiEnabled,ai_provider:aiProvider,gemini_attempted:aiEnabled&&aiProvider==='gemini',methods:store.leads().map(l=>({id:l.lead_id,method:l.method,warning:l.extractionWarning})),
+      accepted,rejected:discoveryRows.length-accepted,ai_attempted:attempted,ai_succeeded:succeeded,ai_failed:failed,
+      ai_skipped:Math.max(0,result.imported+requalified-succeeded-failed),
+      ai_failure_reasons:chain.failures,ai_provider:providerSetting,gemini_attempted:Boolean(chain.callsByProvider.gemini),
+      discovery_ai_requests:requests,ai_requests_by_provider:chain.callsByProvider,ai_verdicts_by_provider:chain.verdictsByProvider,
+      discovery_ai_pause:!chain.available()?(aiSetupWarning||Object.values(cooldowns).map(item=>item.warning).join('; ')):'',
+      methods:store.leads().map(l=>({id:l.lead_id,method:l.method,warning:l.extractionWarning})),
       telegram:requalificationRun?'suppressed during requalification':qualificationMode==='shadow'?'suppressed by shadow mode':telegram?'owner preview notifications + executive summary':'local payloads only',
       telegram_summary:summaryStatus,
       email_test:emailTest,

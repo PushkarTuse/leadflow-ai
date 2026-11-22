@@ -48,6 +48,25 @@ describe('external discovery pull',()=>{
     expect(lead.raw_description).toContain('React website');expect(lead).not.toHaveProperty('score');
     expect(lead).not.toHaveProperty('status');expect(lead).not.toHaveProperty('consent_at');
   });
+  it('carries only source-matched structured engagement through normal ingestion',()=>{
+    const body='Project scope: implement a React checkout integration. Compensation: USD 100 per hour.';
+    const candidate=(source:string,url:string,engagement?:unknown)=>({...row,source,url,source_id:'post:555',
+      listing_evidence:{version:1,original_title:'Frontend development',original_url:url,raw_text:body,decoded_text:body,
+        published_at:time,observed_at:time,link_targets:[],content_hash:'a'.repeat(64),complete:true,truncated:false,
+        provider_verified_engagement:engagement}});
+    const jobicyUrl='https://jobicy.com/jobs/555-react';
+    const signal={field:'job_type',value:'contract'};
+    const input=externalToLead(candidate('jobicy_rss',jobicyUrl,signal));
+    const engine=new Engine(new MemoryStore(),defaults,{now:()=>time});
+    const lead=engine.ingest(input).lead;
+    expect(lead.qualification?.operator_decision).toBe('REJECTED');
+    expect(lead.qualification_audit?.decision_source).toBe('NO_MODEL');
+    expect(lead.qualification_audit?.provider_signal?.engagement).toEqual(signal);
+    expect(lead.contact_permission_state).toBe('UNKNOWN');
+    expect(externalToLead(candidate('jobicy_rss',jobicyUrl)).discovery_context?.provider_verified_engagement).toBeUndefined();
+    expect(externalToLead(candidate('remotive','https://remotive.com/remote-jobs/software-dev/react-555',signal))
+      .discovery_context?.provider_verified_engagement).toBeUndefined();
+  });
   it('ingests through the existing classifier and deduplicates repeat pages',()=>{
     const store=new MemoryStore(),engine=new Engine(store,defaults,{now:()=>time});
     const calls:string[]=[];

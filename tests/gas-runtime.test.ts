@@ -219,9 +219,19 @@ describe("built Apps Script runtime with mocked Google/Telegram services", () =>
     for(const [k,v] of Object.entries({DRY_RUN:'false',EXTERNAL_LEADS_ENABLED:'true',
       EXTERNAL_LEADS_API_ORIGIN:'https://scout.example.com',EXTERNAL_LEADS_API_TOKEN:'x'.repeat(40),
       FREELANCE_QUALIFICATION_MODE:'enforce',
+      AI_ENABLED:'true',AI_PROVIDER:'openai',AI_API_KEY:'test-key',AI_MODEL:'test-model',AI_DATA_USE_APPROVED:'true',
       TELEGRAM_ENABLED:'true',TELEGRAM_BOT_TOKEN:'123:token',TELEGRAM_OWNER_CHAT_ID:'99',TELEGRAM_OWNER_USER_ID:'99'}))h.props.set(k,v);
     const fixture=inputSchema.parse(fixtures(new Date().toISOString())[0]);
-    h.setSourceReply(url=>url.includes('/leads?')?{ok:true,total:1,count:1,offset:0,snapshot_until_id:1,next_after_id:1,has_more:false,leads:[{
+    const quote=fixture.raw_description.slice(0,120);
+    h.setSourceReply(url=>url.endsWith('/chat/completions')?{choices:[{message:{content:JSON.stringify({
+      decision:'ACCEPT',decision_reason:'Defined independent delivery.',
+      lead_kind:'FREELANCE_PROJECT', buyer_or_seller:'BUYER',engagement_boundary:'FIXED_SCOPE_PROJECT',term_hint:'UNKNOWN',
+      engagement_evidence:quote, paid_evidence:null, scope_evidence:quote,
+      intent:'BUYER',lead_type:'CLIENT_PROJECT',requester_type:'COMPANY',engagement_type:'FIXED_PROJECT',
+      budget_signal:{kind:'UNKNOWN',minimum:null,maximum:null,currency:'UNKNOWN',unit:'UNKNOWN'},
+      timeline_signal:null,required_skills:[],seniority:'UNKNOWN',location_or_remote_policy:null,
+      contact_method:{type:'UNKNOWN',value:null},rejection_reason:null,evidence_quotes:[],
+    })}}]}:url.includes('/leads?')?{ok:true,total:1,count:1,offset:0,snapshot_until_id:1,next_after_id:1,has_more:false,leads:[{
       id:1,source:'hackernews',source_id:'12345',category:'freelance_request',name:'Company',title:'React website developer',
       url:'https://news.ycombinator.com/item?id=12345',found_at:new Date().toISOString()}]}:
       {id:12345,type:'job',title:fixture.title,text:`SEEKING FREELANCER: ${fixture.raw_description}`,time:Math.floor(Date.now()/1000)});
@@ -258,6 +268,9 @@ describe("built Apps Script runtime with mocked Google/Telegram services", () =>
     const foundAt=new Date().toISOString();
     const text='SEEKING FREELANCER: We need an independent contractor to build a React checkout. Budget: $3,000 fixed. Deadline next month.';
     const signals={
+      decision:'ACCEPT',decision_reason:'Paid and bounded checkout delivery.',
+      lead_kind:'UNKNOWN',buyer_or_seller:'BUYER',engagement_boundary:'UNKNOWN',term_hint:'UNKNOWN',
+      engagement_evidence:'independent contractor',paid_evidence:'Budget: $3,000 fixed',scope_evidence:'build a React checkout',
       intent:'BUYER',lead_type:'CONTRACT_ROLE',requester_type:'COMPANY',engagement_type:'INDEPENDENT_CONTRACT',
       budget_signal:{kind:'AMOUNT_STATED',minimum:3000,maximum:3000,currency:'USD',unit:'PROJECT'},
       timeline_signal:'Deadline next month',required_skills:['React'],seniority:'UNKNOWN',

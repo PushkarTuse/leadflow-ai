@@ -6,10 +6,10 @@ import { z } from "zod";
  */
 
 export const QUALIFICATION_SCHEMA_VERSION = "freelance.v2";
-export const QUALIFICATION_RULES_VERSION = "rules.v1";
-export const QUALIFICATION_PROMPT_VERSION = "prompt.v1";
+export const QUALIFICATION_RULES_VERSION = "rules.v5";
+export const QUALIFICATION_PROMPT_VERSION = "prompt.v3";
 export const CAPABILITY_LIST_VERSION = "capabilities.v1";
-export const QUALIFICATION_POLICY_VERSION = "policy.v2";
+export const QUALIFICATION_POLICY_VERSION = "policy.v4";
 
 export const qualificationVersions = {
   schema_version: QUALIFICATION_SCHEMA_VERSION,
@@ -59,6 +59,20 @@ export const itemTypes = [
   "unknown",
 ] as const;
 
+export const providerVerifiedEngagementSchema = z.discriminatedUnion("field", [
+  z.object({ field: z.literal("employmentType"), value: z.literal("Contractor") }).strict(),
+  z.object({ field: z.literal("job_type"), value: z.enum(["contract", "freelance"]) }).strict(),
+]);
+
+export function matchProviderEngagement(
+  provider: string,
+  signal?: z.infer<typeof providerVerifiedEngagementSchema> | null,
+) {
+  if (provider === "himalayas" && signal?.field === "employmentType") return signal;
+  if (provider === "jobicy_rss" && signal?.field === "job_type") return signal;
+  return undefined;
+}
+
 export const discoveryContextSchema = z
   .object({
     provider: z.string().min(1).max(60),
@@ -77,6 +91,7 @@ export const discoveryContextSchema = z
     expires_at: z.string().datetime().optional(),
     source_updated_at: z.string().datetime().optional(),
     application_url: httpsUrl.optional(),
+    provider_verified_engagement: providerVerifiedEngagementSchema.nullish(),
     collected_at: z.string().datetime(),
     fetched_at: z.string().datetime(),
     tags: z.array(z.string().min(1).max(60)).max(20).default([]),
@@ -147,6 +162,7 @@ export const budgetKinds = [
   "AMOUNT_STATED",
   "EXPLICIT_PAID",
   "COMMERCIAL_HIRING",
+  "BOARD_PAID_INTENT_INFERRED",
   "UNPAID_OR_EQUITY_ONLY",
   "UNKNOWN",
 ] as const;
@@ -288,8 +304,27 @@ export const extractionEvidenceSchema = z
 
 export type ExtractionEvidence = z.infer<typeof extractionEvidenceSchema>;
 
+export const semanticLeadKinds = ["FREELANCE_PROJECT", "LONG_TERM_CONTRACT_SEAT", "FULL_TIME_JOB", "SELLER_PROMO", "UNKNOWN"] as const;
+export const semanticDirections = ["BUYER", "SELLER", "UNKNOWN"] as const;
+export const semanticBoundaries = ["FIXED_SCOPE_PROJECT", "ONGOING_SEAT", "EMPLOYMENT", "UNKNOWN"] as const;
+export const semanticTerms = ["SHORT", "MEDIUM", "LONG", "UNKNOWN"] as const;
+const semanticQuote = z.string().min(1).max(320).nullable();
+export const discoverySemanticsSchema = z.object({
+  decision: z.enum(["ACCEPT", "REJECT"]),
+  decision_reason: z.string().trim().min(1).max(240),
+  lead_kind: z.enum(semanticLeadKinds),
+  buyer_or_seller: z.enum(semanticDirections),
+  engagement_boundary: z.enum(semanticBoundaries),
+  term_hint: z.enum(semanticTerms),
+  engagement_evidence: semanticQuote,
+  paid_evidence: semanticQuote,
+  scope_evidence: semanticQuote,
+}).strict();
+export type DiscoverySemantics = z.infer<typeof discoverySemanticsSchema>;
+
 export const extractionSchema = z
   .object({
+    ...discoverySemanticsSchema.shape,
     intent: z.enum(extractionIntents),
     lead_type: z.enum(leadTypes),
     requester_type: z.enum(requesterTypes),
@@ -303,7 +338,10 @@ export const extractionSchema = z
     rejection_reason: z.enum(rejectionReasons).nullable(),
     evidence_quotes: z.array(extractionEvidenceSchema).max(16),
   })
-  .strict();
+  .strict()
+  .refine(value => value.decision === "REJECT" ||
+    Boolean(value.engagement_evidence?.trim() && value.scope_evidence?.trim()),
+    "An ACCEPT verdict requires source quotes for the engagement and scope");
 
 export type Extraction = z.infer<typeof extractionSchema>;
 
@@ -330,6 +368,21 @@ export const evidenceQuoteSchema = z
 
 export type EvidenceQuote = z.infer<typeof evidenceQuoteSchema>;
 
+const providerSignalSchema = z.object({
+  provider: z.enum(["himalayas", "jobicy_rss", "remotive"]),
+  engagement: providerVerifiedEngagementSchema.optional(),
+  application: z.object({
+    field: z.enum(["application_url", "contact_link_targets", "original_url"]),
+    value: httpsUrl,
+  }).strict().optional(),
+  used_for: z.array(z.enum(["intent", "engagement", "contact"])).min(1).max(3)
+    .refine(fields => new Set(fields).size === fields.length),
+}).strict().refine(signal =>
+  Boolean(signal.application) === signal.used_for.includes("contact") &&
+  Boolean(signal.engagement) === signal.used_for.some(field => field !== "contact") &&
+  (!signal.engagement || Boolean(matchProviderEngagement(signal.provider, signal.engagement)))
+);
+
 const qualificationObject = z
   .object({
     is_valid_freelance_lead: z.boolean(),
@@ -345,9 +398,11 @@ const qualificationObject = z
     confidence_score: z.number().min(0).max(1),
     rejection_reason: z.enum(rejectionReasons).nullable(),
     evidence_quotes: z.array(evidenceQuoteSchema).max(16),
+    provider_signal: providerSignalSchema.optional(),
     quality_score: z.number().int().min(0).max(100),
     priority: z.enum(priorities),
     eligibility_state: z.enum(eligibilityStates),
+    operator_decision: z.enum(["ACCEPTED", "REJECTED"]).optional(),
   })
   .strict();
 
@@ -361,6 +416,7 @@ const PAID_BUDGET_KINDS = new Set<string>([
   "AMOUNT_STATED",
   "EXPLICIT_PAID",
   "COMMERCIAL_HIRING",
+  "BOARD_PAID_INTENT_INFERRED",
 ]);
 
 const ELIGIBLE_LEAD_TYPES = new Set<string>([
@@ -419,7 +475,25 @@ function refineQualification(
     ctx.addIssue({ code: z.ZodIssueCode.custom, message, path });
 
   const eligible = record.eligibility_state === "ELIGIBLE";
+  if (record.operator_decision) {
+    const accepted = record.operator_decision === "ACCEPTED";
+    if (record.eligibility_state !== (accepted ? "ELIGIBLE" : "REJECTED") ||
+        record.is_valid_freelance_lead !== accepted ||
+        (record.rejection_reason === null) !== accepted)
+      issue(["operator_decision"], "Binary decision, validity, and outcome must agree");
+    for (const quote of record.evidence_quotes) {
+      if (quote.end - quote.start !== quote.quote.length)
+        issue(["evidence_quotes"], "Evidence offsets must span exactly the quote length");
+    }
+    return;
+  }
   const fields = new Set(record.evidence_quotes.map((q) => q.field));
+  const providerIntent = record.provider_signal?.used_for.includes("intent") ?? false;
+  const providerEngagement = record.provider_signal?.used_for.includes("engagement") ?? false;
+  const boardRequester = record.requester_type === "UNKNOWN" && (providerIntent ||
+    (record.provider_signal?.used_for.includes("contact") && fields.has("intent")));
+  if (providerEngagement && record.engagement_type !== "INDEPENDENT_CONTRACT")
+    issue(["provider_signal"], "Publisher engagement evidence only supports an independent contract");
 
   /* --- validity / state / reason / score / priority coupling --- */
   if (record.is_valid_freelance_lead !== eligible)
@@ -499,6 +573,11 @@ function refineQualification(
 
   /* --- contact path --- */
   const contact = record.contact_method;
+  const sourceApplication = record.provider_signal?.application;
+  const hasProviderContact = sourceApplication && contact.type === "APPLICATION_URL" &&
+    contact.value === sourceApplication.value;
+  if (sourceApplication && !hasProviderContact)
+    issue(["provider_signal", "application"], "Publisher application evidence must match the contact path");
   if (contact.type === "UNKNOWN") {
     if (contact.value !== null)
       issue(["contact_method", "value"], "Unknown contact type must have a null value");
@@ -519,7 +598,7 @@ function refineQualification(
         "Contact URL must be a credential-free HTTPS URL",
       );
 
-    if (!fields.has("contact"))
+    if (!fields.has("contact") && !hasProviderContact)
       issue(
         ["evidence_quotes"],
         "A known contact path requires contact evidence",
@@ -544,9 +623,13 @@ function refineQualification(
   }
 
   if (eligible) {
-    for (const required of ["intent", "requester", "engagement", "payment", "scope"] as const)
-      if (!fields.has(required))
+    for (const required of ["intent", "requester", "engagement", "payment", "scope"] as const) {
+      if (required === "payment" && budget.kind === "BOARD_PAID_INTENT_INFERRED") continue;
+      const supportedByProvider = (required === "intent" && providerIntent) ||
+        (required === "requester" && boardRequester) || (required === "engagement" && providerEngagement);
+      if (!fields.has(required) && !supportedByProvider)
         issue(["evidence_quotes"], `Eligible records require ${required} evidence`);
+    }
     if (record.required_skills.length > 0 && !fields.has("skill"))
       issue(["evidence_quotes"], "Stated skills require skill evidence");
   }
@@ -568,7 +651,7 @@ function refineQualification(
   if (eligible) {
     if (!ELIGIBLE_LEAD_TYPES.has(record.lead_type))
       issue(["lead_type"], `Lead type ${record.lead_type} cannot be eligible`);
-    if (!ELIGIBLE_REQUESTERS.has(record.requester_type))
+    if (!ELIGIBLE_REQUESTERS.has(record.requester_type) && !boardRequester)
       issue(["requester_type"], `Requester type ${record.requester_type} cannot be eligible`);
     if (!ELIGIBLE_ENGAGEMENTS.has(record.engagement_type))
       issue(
@@ -621,6 +704,25 @@ export function validateQualificationEvidence(
   record: QualificationRecord,
   context: DiscoveryContext,
 ): void {
+  if (record.budget_signal?.kind === "BOARD_PAID_INTENT_INFERRED" &&
+      (context.item_type !== "listing" || !isFormalJobBoard(context.provider)))
+    throw new Error("Inferred board payment requires a supported listing");
+  const signal = record.provider_signal;
+  if (signal) {
+    if (context.item_type !== "listing" || signal.provider !== context.provider)
+      throw new Error("Publisher evidence does not match discovery context");
+    if (signal.engagement) {
+      const preserved = matchProviderEngagement(context.provider, context.provider_verified_engagement);
+      if (preserved?.field !== signal.engagement.field || preserved.value !== signal.engagement.value)
+        throw new Error("Publisher engagement evidence does not match discovery context");
+    }
+    if (signal.application) {
+      const application = boardApplication(context);
+      if (application?.value !== signal.application.value || application.field !== signal.application.field ||
+          record.contact_method.type !== "APPLICATION_URL" || record.contact_method.value !== signal.application.value)
+        throw new Error("Publisher application evidence does not match discovery context");
+    }
+  }
   const text = canonicalEvidence(context);
   for (const quote of record.evidence_quotes) {
     if (quote.end > text.length)
@@ -686,10 +788,18 @@ export const qualificationAuditSchema = z
     source_hash: z.string().min(8).max(64),
     classified_at: z.string().datetime(),
     method: z.enum(["rules", "gemini", "openai-compatible"]),
+    discovery_provider: z.enum(["gemini", "groq", "cloudflare", "openrouter", "openai"]).optional(),
     reasons: z.array(z.enum(rejectionReasons)).max(20),
     missing_fields: z.array(z.string().min(1).max(60)).max(20),
     breakdown: z.record(z.string().min(1).max(40), z.number().int().min(0).max(100)),
     warnings: z.array(z.string().min(1).max(240)).max(20),
+    provider_signal: providerSignalSchema.optional(),
+    freshness_basis: z.literal("HIMALAYAS_LAST_UPDATE").optional(),
+    // Older records predate the model's explicit decision fields.
+    discovery_semantics: discoverySemanticsSchema.partial({decision:true,decision_reason:true}).optional(),
+    decision_source: z.enum(["MODEL", "NO_MODEL", "SOURCE_GUARD"]).optional(),
+    advisory_state: z.enum(eligibilityStates).optional(),
+    project_boundary: z.enum(["BOUNDED", "ONGOING_SEAT", "UNVERIFIED"]).optional(),
   })
   .strict();
 
@@ -755,6 +865,48 @@ const EMPLOYMENT_PATTERNS = [
   /\bfull[- ]?time\s+employment\s+only\b/i,
 ];
 
+const FORMAL_JOB_BOARD_HOSTS = { himalayas: "himalayas.app", jobicy_rss: "jobicy.com", remotive: "remotive.com" } as const;
+type FormalJobBoard = keyof typeof FORMAL_JOB_BOARD_HOSTS;
+function isFormalJobBoard(provider: string): provider is FormalJobBoard {
+  return Object.prototype.hasOwnProperty.call(FORMAL_JOB_BOARD_HOSTS, provider);
+}
+
+function boardApplication(context: DiscoveryContext) {
+  if (context.item_type !== "listing" || !isFormalJobBoard(context.provider)) return undefined;
+  const host = FORMAL_JOB_BOARD_HOSTS[context.provider];
+  const onBoard = (value: string) => {
+    if (!httpsUrl.safeParse(value).success) return undefined;
+    try {
+      const url = new URL(value);
+      if (url.protocol === "https:" && url.hostname === host && !url.port && !url.username && !url.password)
+        return url;
+    } catch { return undefined; }
+  };
+  const listing = onBoard(context.original_url);
+  if (!listing) return undefined;
+  if (context.application_url && onBoard(context.application_url))
+    return { field: "application_url", value: context.application_url } as const;
+
+  const path = listing.pathname.replace(/\/$/, "");
+  const listingPath = context.provider === "himalayas" ? /^\/companies\/[^/]+\/jobs\/[^/]+$/ :
+    context.provider === "jobicy_rss" ? /^\/jobs\/\d+(?:-[^/]+)?$/ : /^\/remote-jobs\/[^/]+\/[^/]+$/;
+  if (!listingPath.test(path)) return undefined;
+  const target = context.contact_link_targets.find(value => {
+    const targetPath = onBoard(value)?.pathname.replace(/\/$/, "");
+    return targetPath === path || targetPath === path + "/apply";
+  });
+  if (target) return { field: "contact_link_targets", value: target } as const;
+  // Earlier Jobicy snapshots stored the verified listing only as original_url.
+  const jobicyListingId = /^\/jobs\/(\d+)(?:-|$)/.exec(path)?.[1];
+  if (context.provider === "jobicy_rss" && jobicyListingId && context.provider_record_id === "post:" + jobicyListingId)
+    return { field: "original_url", value: context.original_url } as const;
+}
+const JOB_BOARD_BUYER_PATTERNS = [
+  /\b(?:employment|job|engagement|contract)\s*type\s*:\s*(?:contractor|contract|freelance|project[- ]based)\b(?![- ]to[- ]hire\b)/i,
+  /\bthis\s+is\s+a\s+(?:contract|freelance|project[- ]based)\s+(?:position|role|engagement)\b/i,
+  /\b(?:looking\s+for|hiring)\s+[^.\n]{1,60}\bon\s+a\s+contract\s+basis\b/i,
+];
+
 const UNPAID_PATTERNS = [
   /\bunpaid\b(?!.*\bnot\s+unpaid\b)(?!.*\bno\s+unpaid\b)/i,
   /\bvolunteer\b/i,
@@ -807,6 +959,8 @@ const ISOLATED_INDEPENDENT_CLAUSE_PATTERN =
   /\b(?:alternatively|also|independent(?:ly)?|freelance|contractor)\s+.*?\b(?:deliver|build|develop|implement|create)\b/i;
 
 const PAID_AMOUNT_PATTERN = /(?:USD|EUR|GBP|INR|\$|€|£|₹)\s*[\d,]+(?:\.\d+)?|\d+(?:,\d{3})*(?:\.\d+)?\s*(?:USD|EUR|GBP|INR|dollars?|euros?|pounds?|rupees?)/i;
+const BOARD_PAY_RANGE = /(USD|EUR|GBP|INR|\$|€|£|₹)[ \t]*([\d,]+(?:\.\d+)?)[ \t]*(?:[-–—]|to)[ \t]*(?:\1[ \t]*)?([\d,]+(?:\.\d+)?)(?![\d,.]|\s*(?:[kKmM]\b|USD|EUR|GBP|INR|\$|€|£|₹))/i;
+const BOARD_PAY_CUE = /\b(?:compensation[ \t]*:[ \t]*competitive\b|salary[ \t]+range\b|(?:(?:hourly|daily|contract)[ \t]+)?rate[ \t]*:|budget[ \t]+available\b|DOE\b)/i;
 const PAID_EXPLICIT_PATTERN = /\b(?:paid|rates?\s+(?:negotiable|flexible)|budget|compensation|fee)\b/i;
 const COMMERCIAL_HIRING_PATTERN = /\b(?:hiring|hire)\s+(?:a\s+|an\s+)?(?:independent|freelance|paid)\b/i;
 
@@ -868,6 +1022,7 @@ export function prefilterDiscovery(
 /* ---------- Rule-based evidence extraction ----------------------- */
 
 export interface RuleEvidence {
+  discovery_semantics?: DiscoverySemantics;
   intent: "BUYER" | "SELLER" | "EMPLOYMENT" | "PROMOTION" | "MIXED" | "UNKNOWN";
   lead_type: (typeof leadTypes)[number];
   requester_type: (typeof requesterTypes)[number];
@@ -880,6 +1035,7 @@ export interface RuleEvidence {
   contact_method: { type: (typeof contactTypes)[number]; value: string | null };
   rejection_reason: RejectionReason | null;
   evidence_quotes: ExtractionEvidence[];
+  provider_signal?: z.infer<typeof providerSignalSchema>;
   all_reasons: RejectionReason[];
   missing_fields: string[];
 }
@@ -889,11 +1045,15 @@ function matchSpan(text: string, pattern: RegExp): string | null {
   return m ? m[0] : null;
 }
 
-function extractSkills(text: string): string[] {
+function skillPattern(skill: string): RegExp {
+  return new RegExp("\\b" + skill.replace(/[.*+?^$(){}|[\]\\]/g, "\\$&") + "\\b", "i");
+}
+
+function extractSkills(text: string, exact = false): string[] {
   const skills: string[] = [];
   const lowerText = text.toLowerCase();
   for (const cap of SERVICE_CAPABILITIES) {
-    if (lowerText.includes(cap) && !skills.includes(cap)) {
+    if ((exact ? skillPattern(cap).test(text) : lowerText.includes(cap)) && !skills.includes(cap)) {
       skills.push(cap);
     }
   }
@@ -924,6 +1084,10 @@ export function extractRuleEvidence(
   const allReasons: RejectionReason[] = [];
   const evidenceQuotes: ExtractionEvidence[] = [];
   const missingFields: string[] = [];
+  const formalBoard = context?.item_type === "listing" && isFormalJobBoard(context.provider);
+  const verifiedEngagement = formalBoard && matchProviderEngagement(context.provider, context.provider_verified_engagement);
+  // Some boards use "salary range" as a pay label for confirmed contracts.
+  const employmentText = verifiedEngagement ? canonical.replace(/\bsalary[ \t]+range\b/gi, "") : canonical;
 
   function addEvidence(field: EvidenceField, quote: string) {
     if (quote && quote.length <= 320) {
@@ -965,6 +1129,16 @@ export function extractRuleEvidence(
     }
   }
 
+  if (!isBuyer && context && isFormalJobBoard(context.provider) &&
+      !EMPLOYMENT_PATTERNS.some(pattern => pattern.test(employmentText))) {
+    const span = JOB_BOARD_BUYER_PATTERNS.map(pattern => matchSpan(canonical, pattern)).find(Boolean) ||
+      matchSpan(canonical, /(?:^|\n)[ \t]*scope\s+of\s+work\b/i)?.trim();
+    if (span) {
+      isBuyer = true;
+      addEvidence("intent", span);
+    }
+  }
+
   const clearIndependentBuyerLanguage =
     isBuyer &&
     (EXPLICIT_INDEPENDENT_HIRE_PATTERN.test(canonical) ||
@@ -1000,7 +1174,7 @@ export function extractRuleEvidence(
   const hasIndependentClause = INDEPENDENT_ENGAGEMENT_PATTERNS.some(p => p.test(canonical));
 
   for (const pattern of EMPLOYMENT_PATTERNS) {
-    const span = matchSpan(canonical, pattern);
+    const span = matchSpan(employmentText, pattern);
     if (span) {
       // If there's also an independent/freelance clause, this is MIXED, not pure employment
       if (!hasIndependentClause) {
@@ -1015,7 +1189,7 @@ export function extractRuleEvidence(
   // EXCEPT when there is no body text at all (Spec Section 9 Row 8: “Clad | Software Engineer | NYC.” (no original body)
   // is UNKNOWN direction, holding as REVIEW_INCOMPLETE with INSUFFICIENT_CONTEXT, not invented employment).
   const hasBody = context ? Boolean(context.decoded_text?.trim()) : Boolean(canonical.trim());
-  const hasExplicitEmployment = EMPLOYMENT_PATTERNS.some(p => p.test(canonical));
+  const hasExplicitEmployment = EMPLOYMENT_PATTERNS.some(p => p.test(employmentText));
   const classicHiringRole =
     jobTitleMatch && hasBody && COMPANY_HIRING_LANGUAGE_PATTERN.test(canonical);
   const hiringThread = Boolean(context && /\bwho is hiring\b/i.test(context.thread_title));
@@ -1113,6 +1287,22 @@ export function extractRuleEvidence(
     intent = "UNKNOWN";
   }
 
+  let providerSignal: RuleEvidence["provider_signal"];
+  const provider = context?.provider;
+  if ((provider === "himalayas" || provider === "jobicy_rss") && context?.item_type === "listing" &&
+      context.complete && !context.truncated && hasBody && !seekingFreelanceHeader && !isSeller &&
+      !isEmployment && !hasExplicitEmployment && !isUnpaid && !isAggregator && !isPromotion && !isInternship &&
+      !PROMOTION_PATTERNS.some(pattern => pattern.test(canonical))) {
+    const engagement = matchProviderEngagement(provider, context.provider_verified_engagement);
+    if (engagement) {
+      providerSignal = { provider, engagement, used_for: [] };
+      if (intent === "UNKNOWN") {
+        intent = "BUYER";
+        providerSignal.used_for.push("intent");
+      }
+    }
+  }
+
   // ---- Apply rejection precedence ----
 
   // SELLER_SELF_PROMOTION
@@ -1181,9 +1371,11 @@ export function extractRuleEvidence(
       const span = matchSpan(canonical, /\b(?:our\s+company|our\s+team|we|our)\b/i);
       if (span) addEvidence("requester", span);
     } else {
-      requesterType = "INDIVIDUAL_CLIENT";
       const span = matchSpan(canonical, /\b(?:I|my|client|hiring|seeking|need)\b/i);
-      if (span) addEvidence("requester", span);
+      if (span || (!formalBoard && !providerSignal?.used_for.includes("intent"))) {
+        requesterType = "INDIVIDUAL_CLIENT";
+        if (span) addEvidence("requester", span);
+      }
     }
   }
 
@@ -1241,6 +1433,11 @@ export function extractRuleEvidence(
     }
   }
 
+  if (intent === "BUYER" && engagementType === "UNKNOWN" && providerSignal) {
+    engagementType = "INDEPENDENT_CONTRACT";
+    providerSignal.used_for.push("engagement");
+  }
+
   // ---- Lead type ----
   let leadType: RuleEvidence["lead_type"] = "UNKNOWN";
   if (intent === "SELLER") {
@@ -1274,7 +1471,8 @@ export function extractRuleEvidence(
   };
 
   // Parse numeric amounts
-  const amountMatch = canonical.match(PAID_AMOUNT_PATTERN);
+  const range = formalBoard ? canonical.match(BOARD_PAY_RANGE) : null;
+  const amountMatch = range ?? canonical.match(PAID_AMOUNT_PATTERN);
   if (amountMatch && intent === "BUYER") {
     // Extract currency
     let currency: BudgetSignal["currency"] = "UNKNOWN";
@@ -1296,10 +1494,11 @@ export function extractRuleEvidence(
         else if (/\/\s*(?:week)\b/i.test(canonical)) unit = "WEEK";
         else if (/\/\s*(?:month|mo)\b/i.test(canonical)) unit = "MONTH";
 
+        const otherAmount = range ? Number(range[3].replace(/,/g, "")) : amount;
         budgetSignal = {
           kind: "AMOUNT_STATED",
-          minimum: amount,
-          maximum: amount,
+          minimum: Math.min(amount, otherAmount),
+          maximum: Math.max(amount, otherAmount),
           currency,
           unit,
         };
@@ -1309,8 +1508,9 @@ export function extractRuleEvidence(
   }
 
   if (budgetSignal.kind === "UNKNOWN" && intent === "BUYER") {
+    const boardPayCue = formalBoard ? matchSpan(canonical, BOARD_PAY_CUE) : null;
     // Check explicit paid wording
-    const paidSpan = matchSpan(canonical, PAID_EXPLICIT_PATTERN);
+    const paidSpan = matchSpan(boardPayCue ? canonical.replace(new RegExp(BOARD_PAY_CUE.source, "gi"), " ") : canonical, PAID_EXPLICIT_PATTERN);
     if (paidSpan) {
       budgetSignal = { kind: "EXPLICIT_PAID", minimum: null, maximum: null, currency: "UNKNOWN", unit: "UNKNOWN" };
       addEvidence("payment", paidSpan);
@@ -1320,6 +1520,9 @@ export function extractRuleEvidence(
       if (hiringSpan) {
         budgetSignal = { kind: "COMMERCIAL_HIRING", minimum: null, maximum: null, currency: "UNKNOWN", unit: "UNKNOWN" };
         addEvidence("payment", hiringSpan);
+      } else if (boardPayCue && ELIGIBLE_ENGAGEMENTS.has(engagementType)) {
+        budgetSignal.kind = "BOARD_PAID_INTENT_INFERRED";
+        addEvidence("payment", boardPayCue);
       }
     }
   }
@@ -1341,9 +1544,9 @@ export function extractRuleEvidence(
   }
 
   // ---- Skills ----
-  const skills = extractSkills(canonical);
+  const skills = extractSkills(canonical, formalBoard);
   for (const skill of skills) {
-    const m = canonical.match(new RegExp(`\\b${skill.replace(".", "\\.")}\\b`, "i"));
+    const m = canonical.match(skillPattern(skill));
     if (m) {
       addEvidence("skill", m[0]);
     }
@@ -1387,6 +1590,26 @@ export function extractRuleEvidence(
     }
   }
 
+  if (contactMethod.type === "UNKNOWN" && context && isFormalJobBoard(context.provider)) {
+    const application = boardApplication(context);
+    if (application) {
+      contactMethod = { type: "APPLICATION_URL", value: application.value };
+      providerSignal = {
+        provider: context.provider,
+        ...(providerSignal?.used_for.length ? { engagement: providerSignal.engagement } : {}),
+        application,
+        used_for: [...(providerSignal?.used_for ?? []), "contact"],
+      };
+    }
+  }
+
+  if (formalBoard && intent === "BUYER" &&
+      budgetSignal.kind === "UNKNOWN" && ELIGIBLE_ENGAGEMENTS.has(engagementType) &&
+      contactMethod.type !== "UNKNOWN" && context.complete && !context.truncated) {
+    budgetSignal.kind = "BOARD_PAID_INTENT_INFERRED";
+  }
+  if (budgetSignal.kind === "BOARD_PAID_INTENT_INFERRED") missingFields.push("payment_signal");
+
   // ---- Apply mandatory gate checks and collect missing fields ----
   const hasNoBody = context ? !context.decoded_text?.trim() : !canonical.trim();
   if (hasNoBody) {
@@ -1416,7 +1639,7 @@ export function extractRuleEvidence(
   }
 
   // Gate 4: Defined scope or clear work area
-  if (intent === "BUYER" && skills.length === 0) {
+  if (!formalBoard && intent === "BUYER" && skills.length === 0) {
     // Check if there's some scope described even without matching skills
     const hasScope = /\b(?:build|deliver|develop|implement|create|design|migrate|optimize|integrate)\b/i.test(canonical);
     if (!hasScope) {
@@ -1454,13 +1677,23 @@ export function extractRuleEvidence(
       if (workArea) addEvidence("scope", workArea.slice(0, 320));
       else if (skills.length > 0) {
         for (const skill of skills) {
-          const m = canonical.match(new RegExp(`\\b${skill.replace(".", "\\.")}\\b`, "i"));
+          const m = canonical.match(skillPattern(skill));
           if (m) {
             addEvidence("scope", m[0]);
             break;
           }
         }
       }
+    }
+    if (formalBoard && !evidenceQuotes.some(quote => quote.field === "scope")) {
+      const sectionMatch = context.decoded_text.match(
+        /(?:^|\n)[ \t]*(?:Responsibilities|What you['’]ll do|Key duties)(?:[ \t]*:[ \t]*|[ \t]*(?=\n))\n?[ \t]*(?:[-•][ \t]*)?([^\n]{12,240})/i);
+      const section = sectionMatch && sectionMatch[1].trim().split(/\s+/).length >= 3
+        ? sectionMatch[0].trim() : "";
+      const title = context.original_title.trim();
+      const role = /\b(?:engineer|developer|architect|designer|analyst|specialist|consultant|manager|coordinator|administrator|support|devops|analytics|development|automation|writer|editor|producer|researcher|recruiter|accountant)\b/i;
+      const scope = section || (role.test(title) ? title : "");
+      if (scope) addEvidence("scope", scope);
     }
   }
 
@@ -1477,6 +1710,7 @@ export function extractRuleEvidence(
     contact_method: contactMethod,
     rejection_reason: primaryReason,
     evidence_quotes: evidenceQuotes,
+    ...(providerSignal?.used_for.length ? { provider_signal: providerSignal } : {}),
     all_reasons: allReasons,
     missing_fields: missingFields,
   };
@@ -1487,6 +1721,36 @@ export function extractRuleEvidence(
 export interface FreelanceQualificationResult {
   record: QualificationRecord;
   audit: QualificationAudit;
+}
+
+const BOARD_SEAT = /\b(?:long[- ]term contract(?:or| position| role)?|ongoing (?:contract(?:or)?|engagement|role|work)|indefinite (?:contract|engagement)|staff augmentation|founding engineer|members? of (?:the )?technical staff|contractor roster|talent pool|join (?:our|the) (?:engineering )?team|language (?:qa|quality assurance|rater|evaluator)|(?:search|ads|internet|ai) (?:quality )?rater|\d+[ \t]+hours?[ \t]+(?:per|a|each|\/)[ \t]*(?:week|month))\b/i;
+const BOARD_EMPLOYMENT = /\b(?:full[- ]time|permanent (?:position|role|employment)|employee benefits|salary and benefits|on (?:the|our) payroll|401\s*\(?k\)?|visa sponsorship)\b/i;
+const BOARD_OUTCOME = /\b(?:ship|build|deliver|redesign|migrate|implement|integrate|launch|develop|create|replace|audit|hand over|complete|translate|test|evaluate|label|annotate|design|write|upgrade|fix)\s+(?:(?:the|a|an|our|your|one|[\d,]+)\s+)?(?:[\w.-]+\s+){0,5}(?:system|app|site|website|store|checkout|integration|migration|redesign|prototype|dashboard|report|dataset|batch|pages?|screens?|campaign|workflow|audit|module|portal|script|test suite)\b/i;
+const BOARD_BOUNDARY = /\b(?:one[- ]off|one[- ]time|fixed[- ](?:scope|price)|fixed deliverables?|project[- ]based|project scope|acceptance criteria|deliverables?|handoff|hand[ -]over|delivery deadline|deadline (?:is |within |by )|due by)\b/i;
+const UNBOUNDED_SEAT = /\b(?:staff augmentation|indefinite (?:contract|engagement)|contractor roster|ongoing (?:role|position|staffing)|founding engineer|members? of (?:the )?technical staff)\b/i;
+
+export function requiresProjectBoundary(context: DiscoveryContext): boolean {
+  return context.item_type === "listing" || isFormalJobBoard(context.provider);
+}
+
+function groundedDiscoverySemantics(
+  semantic: DiscoverySemantics | undefined,
+  canonical: string,
+): DiscoverySemantics | undefined {
+  if (!semantic) return undefined;
+  const quotes = [semantic.engagement_evidence, semantic.scope_evidence, semantic.paid_evidence];
+  return quotes.every(quote => quote === null || canonical.includes(quote)) ? semantic : undefined;
+}
+
+function semanticProjectBoundary(semantic: DiscoverySemantics | undefined, body: string): boolean {
+  const boundary = semantic?.engagement_evidence;
+  const scope = semantic?.scope_evidence;
+  return Boolean(semantic?.lead_kind === "FREELANCE_PROJECT" && semantic.buyer_or_seller === "BUYER" &&
+    semantic.engagement_boundary === "FIXED_SCOPE_PROJECT" && boundary && scope &&
+    body.includes(boundary) && body.includes(scope) &&
+    boundary.trim().split(/\s+/).length >= 4 && scope.trim().split(/\s+/).length >= 4 &&
+    (BOARD_BOUNDARY.test(boundary) ||
+      /\b(?:until|once|after|at the end of)\b[^.!?\n]{0,100}\b(?:complete[ds]?|ship(?:ped|s)?|deliver(?:ed|s)?|accept(?:ed|s)?|goes live|sign[- ]off)\b/i.test(boundary)));
 }
 
 /**
@@ -1508,9 +1772,30 @@ export function scoreFreelanceQualification(
   // Locate evidence quotes and produce final evidence with offsets
   const locatedQuotes: EvidenceQuote[] = [];
   const occurrenceMap = new Map<string, number>();
+  const providerSignal = evidence.provider_signal;
+  const formalBoard = isFormalJobBoard(context.provider);
+  const needsProjectBoundary = requiresProjectBoundary(context);
+  const semantics = groundedDiscoverySemantics(evidence.discovery_semantics, canonical);
+  const body = context.decoded_text;
+  const ruleEmployment = needsProjectBoundary && !/\b(?:not|no)\s+(?:an?\s+)?full[- ]time\b/i.test(canonical)
+    ? matchSpan(canonical, BOARD_EMPLOYMENT) : null;
+  const groundedBoundary = context.complete && !context.truncated &&
+    ((BOARD_OUTCOME.test(body) && BOARD_BOUNDARY.test(body)) || semanticProjectBoundary(semantics, body));
+  const modelSeat = semantics?.lead_kind === "LONG_TERM_CONTRACT_SEAT" &&
+    semantics.engagement_boundary === "ONGOING_SEAT" && Boolean(semantics.engagement_evidence);
+  const ongoingSeat = modelSeat ||
+    (needsProjectBoundary && (UNBOUNDED_SEAT.test(canonical) || (!groundedBoundary && BOARD_SEAT.test(canonical))));
+  const projectBoundary = ongoingSeat ? "ONGOING_SEAT" : groundedBoundary ? "BOUNDED" : "UNVERIFIED";
+  const updatedAt = Date.parse(context.source_updated_at ?? "");
+  const updateAge = Date.parse(now) - updatedAt;
+  const freshHimalayasUpdate = !context.published_at && context.provider === "himalayas" &&
+    context.item_type === "listing" && updateAge >= 0 &&
+    updateAge <= policy.max_age_days * 86_400_000;
+  const hasFreshnessEvidence = Boolean(context.published_at) || freshHimalayasUpdate;
 
   for (const eq of evidence.evidence_quotes) {
-    const occurrenceKey = eq.quote;
+    // A board listing's single skill mention can substantiate both skill and scope.
+    const occurrenceKey = formalBoard ? `${eq.field}\0${eq.quote}` : eq.quote;
     const occ = occurrenceMap.get(occurrenceKey) ?? 0;
     try {
       const loc = locateEvidence(canonical, eq.quote, occ);
@@ -1529,6 +1814,24 @@ export function scoreFreelanceQualification(
   // Collect all reasons including prefilter
   let allReasons = [...evidence.all_reasons];
   let primaryReason = evidence.rejection_reason;
+  const modelFullTime = semantics?.lead_kind === "FULL_TIME_JOB" && semantics.engagement_boundary === "EMPLOYMENT"
+    ? semantics.engagement_evidence : null;
+  const modelSeller = semantics?.lead_kind === "SELLER_PROMO" && semantics.buyer_or_seller === "SELLER"
+    ? semantics.engagement_evidence : null;
+  // A quoted semantic exclusion may narrow acceptance, even if publisher metadata implied buyer intent.
+  for (const [reason, quote] of [
+    ["FULL_TIME_ONLY", modelFullTime || ruleEmployment],
+    ["SELLER_SELF_PROMOTION", modelSeller],
+  ] as const) {
+    if (!quote) continue;
+    if (reason === "FULL_TIME_ONLY" && allReasons.includes("EMPLOYMENT_CONTRACT_ONLY")) continue;
+    allReasons.push(reason);
+    if (!locatedQuotes.some(item => item.field === "exclusion" && item.quote === quote)) {
+      locatedQuotes.unshift({ field: "exclusion", quote, ...locateEvidence(canonical, quote) });
+    }
+  }
+  if (ongoingSeat || (needsProjectBoundary && evidence.intent === "BUYER" && !groundedBoundary))
+    allReasons.push("ENGAGEMENT_UNCLEAR");
 
   if (!prefilter.pass && prefilter.reason) {
     // Prefilter reasons take precedence
@@ -1569,11 +1872,29 @@ export function scoreFreelanceQualification(
     }
   }
 
+  const boardRequester = evidence.requester_type === "UNKNOWN" &&
+    (providerSignal?.used_for.includes("intent") ||
+     (providerSignal?.used_for.includes("contact") && locatedQuotes.some(quote => quote.field === "intent")));
+
   // Determine eligibility
+  // Inferred board pay earns no points and needs no textual payment span.
+  if (formalBoard && evidence.intent === "BUYER" && primaryReason === null) {
+    if ((evidence.budget_signal.kind !== "BOARD_PAID_INTENT_INFERRED" &&
+         !locatedQuotes.some(quote => quote.field === "payment")) ||
+        (evidence.budget_signal.kind === "AMOUNT_STATED" &&
+         (evidence.budget_signal.maximum ?? evidence.budget_signal.minimum ?? 0) <= 0))
+      primaryReason = "PAYMENT_UNCLEAR";
+    else if (!locatedQuotes.some(quote => quote.field === "scope"))
+      primaryReason = "SCOPE_MISSING";
+    else if (evidence.requester_type === "UNKNOWN" && !boardRequester)
+      primaryReason = "INSUFFICIENT_CONTEXT";
+    if (primaryReason) allReasons.push(primaryReason);
+  }
+
   const isEligible = primaryReason === null &&
     evidence.intent === "BUYER" &&
     ELIGIBLE_LEAD_TYPES.has(evidence.lead_type) &&
-    ELIGIBLE_REQUESTERS.has(evidence.requester_type) &&
+    (ELIGIBLE_REQUESTERS.has(evidence.requester_type) || boardRequester) &&
     ELIGIBLE_ENGAGEMENTS.has(evidence.engagement_type) &&
     PAID_BUDGET_KINDS.has(evidence.budget_signal.kind);
 
@@ -1602,7 +1923,8 @@ export function scoreFreelanceQualification(
     // Scope: 15/10/5/0
     const hasDeliverable = /\b(?:deliver|build|implement|create|integrate|migrate|optimize)\b.*?\b(?:with|including|and|plus)\s+\w+/i.test(canonical);
     const hasWorkArea = /\b(?:checkout|api|website|performance|architecture|migration|platform|integration)\b/i.test(canonical);
-    const hasDefinedRole = evidence.required_skills.length > 0;
+    const hasDefinedRole = evidence.required_skills.length > 0 ||
+      (formalBoard && locatedQuotes.some(quote => quote.field === "scope"));
     if (hasDeliverable) {
       breakdown.scope = 15;
     } else if (hasWorkArea) {
@@ -1630,7 +1952,7 @@ export function scoreFreelanceQualification(
     breakdown.contact_path = evidence.contact_method.type !== "UNKNOWN" ? 10 : 0;
 
     // Freshness: 5/0
-    breakdown.freshness = context.published_at ? 5 : 0;
+    breakdown.freshness = hasFreshnessEvidence ? 5 : 0;
 
     score = Object.values(breakdown).reduce((a, b) => a + b, 0);
 
@@ -1639,8 +1961,8 @@ export function scoreFreelanceQualification(
       score = 84;
     }
 
-    // Missing publication date → cap at 64
-    if (!context.published_at && score > 64) {
+    // Missing publication or verified recent board update → cap at 64
+    if (!hasFreshnessEvidence && score > 64) {
       score = 64;
     }
 
@@ -1732,7 +2054,8 @@ export function scoreFreelanceQualification(
     contact_method: contactMethodFinal,
     confidence_score: confidence,
     rejection_reason: eligibilityState === "ELIGIBLE" ? null : primaryReason,
-    evidence_quotes: locatedQuotes,
+    evidence_quotes: locatedQuotes.slice(0, 16),
+    ...(providerSignal ? { provider_signal: providerSignal } : {}),
     quality_score: score,
     priority,
     eligibility_state: eligibilityState,
@@ -1748,10 +2071,17 @@ export function scoreFreelanceQualification(
     classified_at: now,
     method: "rules",
     reasons: allReasons.filter((r, i, arr) => arr.indexOf(r) === i) as QualificationAudit["reasons"],
-    missing_fields: evidence.missing_fields,
+    missing_fields: needsProjectBoundary && projectBoundary !== "BOUNDED"
+      ? [...new Set([...evidence.missing_fields, "project_boundary"])] : evidence.missing_fields,
     breakdown,
     warnings: [],
+    ...(providerSignal ? { provider_signal: providerSignal } : {}),
+    ...(freshHimalayasUpdate ? { freshness_basis: "HIMALAYAS_LAST_UPDATE" as const } : {}),
+    ...(semantics ? { discovery_semantics: semantics } : {}),
+    ...(needsProjectBoundary || ongoingSeat ? { project_boundary: projectBoundary } : {}),
   };
 
+  if (providerSignal || record.budget_signal.kind === "BOARD_PAID_INTENT_INFERRED")
+    validateQualificationEvidence(record, context);
   return { record, audit };
 }

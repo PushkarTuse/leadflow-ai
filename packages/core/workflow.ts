@@ -29,6 +29,7 @@ import {
   scoreFreelanceQualification,
   canonicalEvidence,
   defaultQualificationPolicy,
+  discoverySemanticsSchema,
   type RuleEvidence,
 } from "./qualification";
 
@@ -43,16 +44,12 @@ export function isDiscoveryCandidate(
 }
 
 export function canRouteDiscoveryLead(
-  lead: Pick<Lead, "source" | "discovery_context" | "qualification">,
+  lead: Pick<Lead, "source" | "discovery_context" | "qualification" | "qualification_audit">,
 ): boolean {
   if (!isDiscoveryCandidate(lead)) return true;
-  const qualification = lead.qualification;
-  return Boolean(
-    qualification?.is_valid_freelance_lead &&
-      qualification.eligibility_state === "ELIGIBLE" &&
-      (qualification.priority === "MEDIUM" || qualification.priority === "HIGH") &&
-      qualification.confidence_score >= 0.85,
-  );
+  return lead.qualification?.operator_decision === "ACCEPTED" &&
+    lead.qualification_audit?.decision_source === "MODEL" &&
+    lead.qualification_audit.discovery_semantics?.decision === "ACCEPT";
 }
 
 function mergeDiscoverySignals(
@@ -60,9 +57,8 @@ function mergeDiscoverySignals(
   extracted: DiscoverySignals,
   canonical: string,
 ): { evidence: RuleEvidence; used: boolean } {
-  const lowerCanonical = canonical.toLowerCase();
   const quotes = extracted.evidence_quotes.filter((item) =>
-    lowerCanonical.includes(item.quote.toLowerCase()),
+    canonical.includes(item.quote),
   );
   const hasQuote = (field: string) => quotes.some((item) => item.field === field);
   const quoteFor = (field: string) =>
@@ -77,6 +73,23 @@ function mergeDiscoverySignals(
     missing_fields: [...rules.missing_fields],
   };
   let used = false;
+  const {
+    decision, decision_reason,
+    lead_kind, buyer_or_seller, engagement_boundary, term_hint,
+    engagement_evidence, paid_evidence, scope_evidence,
+  } = extracted;
+  const semantics = discoverySemanticsSchema.safeParse({
+    decision, decision_reason,
+    lead_kind, buyer_or_seller, engagement_boundary, term_hint,
+    engagement_evidence, paid_evidence, scope_evidence,
+  });
+  if (semantics.success && (decision === "REJECT" || Boolean(engagement_evidence?.trim() && scope_evidence?.trim())) &&
+      [engagement_evidence, paid_evidence, scope_evidence].every(quote => quote === null || canonical.includes(quote))) {
+    next.discovery_semantics = semantics.data;
+    used = true;
+    if (paid_evidence) quotes.push({ field: "payment", quote: paid_evidence });
+    if (scope_evidence) quotes.push({ field: "scope", quote: scope_evidence });
+  }
 
   if (next.intent === "UNKNOWN" && hasQuote("intent")) {
     const intentQuote = quoteFor("intent");
@@ -247,6 +260,7 @@ export class Engine {
       discoverySignals?: DiscoverySignals;
       warning?: string;
       method?: "gemini" | "openai-compatible";
+      discoveryProvider?: NonNullable<Lead["qualification_audit"]>["discovery_provider"];
     },
   ) {}
   log(
@@ -307,27 +321,8 @@ export class Engine {
     this.store.save(lead);
     this.log(lead, "", "INGESTED");
 
-    if (lead.qualification) {
-      const q = lead.qualification;
-      if (q.eligibility_state === "QUARANTINED") {
-        lead = this.move(lead, "ARCHIVED");
-      } else if (q.eligibility_state === "REJECTED") {
-        lead = this.move(lead, "REJECTED", "system");
-      } else if (q.eligibility_state === "REVIEW_INCOMPLETE") {
-        // Held as incomplete: remains NEW, never qualified, never pending approval
-      } else if (q.eligibility_state === "ELIGIBLE" && q.is_valid_freelance_lead) {
-        if (canRouteDiscoveryLead(lead)) {
-          lead = this.move(lead, "QUALIFIED");
-          lead.approval_status = "PENDING";
-          lead = this.move(lead, "PENDING_APPROVAL");
-        } else {
-          lead = this.move(lead, "QUALIFIED");
-          lead.approval_status = "NONE";
-        }
-      }
-    } else if (isDiscoveryCandidate(lead)) {
-      lead.qualification_status = "NEEDS_REQUALIFICATION";
-      this.store.save(lead);
+    if (isDiscoveryCandidate(lead)) {
+      lead = this.routeNewDiscovery(lead);
     } else {
       if (assessment.quarantined) lead = this.move(lead, "ARCHIVED");
       else if (
@@ -341,6 +336,12 @@ export class Engine {
       }
     }
     return { lead, duplicate: false };
+  }
+
+  private routeNewDiscovery(lead: Lead, actor = "system"): Lead {
+    if (!canRouteDiscoveryLead(lead)) return this.move(lead, "REJECTED", actor);
+    const qualified = this.move(lead, "QUALIFIED", actor);
+    return this.move({ ...qualified, approval_status: "PENDING" }, "PENDING_APPROVAL", actor);
   }
 
   private classify(
@@ -396,8 +397,8 @@ export class Engine {
     let ruleEvidence = extractRuleEvidence(canonical, context);
 
     let extractorWarning = "";
-    let usedDiscoveryExtraction = false;
     let extractionMethod: "gemini" | "openai-compatible" = "gemini";
+    let discoveryProvider: NonNullable<Lead["qualification_audit"]>["discovery_provider"];
     if (prefilterResult.pass && this.extractor && !injectionPattern.test(canonical)) {
       try {
         const extResult = this.extractor(input);
@@ -408,12 +409,12 @@ export class Engine {
             canonical,
           );
           ruleEvidence = merged.evidence;
-          usedDiscoveryExtraction = merged.used;
           extractionMethod = extResult.method ?? "gemini";
+          discoveryProvider = extResult.discoveryProvider;
         }
         if (extResult?.warning) extractorWarning = extResult.warning;
       } catch {
-        extractorWarning = "Classifier unavailable; deterministic fallback used";
+        extractorWarning = "Classifier unavailable; no AI verdict";
       }
     }
 
@@ -423,11 +424,32 @@ export class Engine {
       now,
       policy,
     );
-    if (usedDiscoveryExtraction) audit.method = extractionMethod;
+    const modelVerdict = audit.discovery_semantics?.decision;
+    const guarded = !prefilterResult.pass || injectionPattern.test(canonical);
+    const accepted = !guarded && modelVerdict === "ACCEPT";
+    audit.advisory_state = record.eligibility_state;
+    audit.decision_source = guarded ? "SOURCE_GUARD" : modelVerdict ? "MODEL" : "NO_MODEL";
+    if (modelVerdict && !guarded) {
+      audit.method = extractionMethod;
+      if (discoveryProvider) audit.discovery_provider = discoveryProvider;
+    }
+    record.operator_decision = accepted ? "ACCEPTED" : "REJECTED";
+    record.eligibility_state = accepted ? "ELIGIBLE" : "REJECTED";
+    record.is_valid_freelance_lead = accepted;
+    if (accepted) {
+      record.rejection_reason = null;
+      if (record.priority === "REJECTED") record.priority = "LOW";
+    } else {
+      record.rejection_reason ??= "INSUFFICIENT_CONTEXT";
+      record.priority = "REJECTED";
+      record.quality_score = 0;
+    }
     if (extractorWarning) {
       audit.warnings.push(extractorWarning.slice(0, 240));
     } else if (!prefilterResult.pass && prefilterResult.reason) {
       audit.warnings.push(`Prefilter: ${prefilterResult.reason}`);
+    } else if (!guarded && !modelVerdict) {
+      audit.warnings.push("No validated AI verdict; rejected");
     }
 
     let legacyPriority: "HIGH" | "REVIEW" | "LOW" = "LOW";
@@ -454,7 +476,7 @@ export class Engine {
           .filter(Boolean)
           .join(" • ") || input.title,
       priority: legacyPriority,
-      quarantined: record.eligibility_state === "QUARANTINED",
+      quarantined: audit.advisory_state === "QUARANTINED",
       method: audit.method,
       extractionWarning: audit.warnings.join("; "),
       qualification: record,
@@ -512,62 +534,29 @@ export class Engine {
     const requests = this.store
       .requests()
       .filter((request) => request.lead_id === id);
-    const hasOwnerDecision = requests.some(
+    const hasOwnerDecision = Boolean(old.draft_id) || old.approval_status === "REJECTED" ||
+      this.store.activities().some(event => event.lead_id === id && event.actor === "owner") || requests.some(
       (request) => request.state === "CONSUMED" || Boolean(request.decision),
     );
     if (!hasOwnerDecision) {
-      for (const request of requests) {
-        if (["PREPARED", "SENDING", "SENT"].includes(request.state)) {
-          request.state = "FAILED";
-          this.store.request(request);
-        }
-      }
-
       const route = canRouteDiscoveryLead(lead);
-      if (lead.status === "NEW") {
-        if (qualification.eligibility_state === "QUARANTINED") {
-          lead = this.move(lead, "ARCHIVED");
-        } else if (qualification.eligibility_state === "REJECTED") {
-          lead = this.move(lead, "REJECTED");
-        } else if (qualification.eligibility_state === "ELIGIBLE") {
-          lead = this.move(lead, "QUALIFIED");
-          if (route) {
-            lead = this.move(
-              { ...lead, approval_status: "PENDING" },
-              "PENDING_APPROVAL",
-            );
+      if (!route) {
+        for (const request of requests) {
+          if (["PREPARED", "SENDING", "SENT"].includes(request.state)) {
+            request.state = "FAILED";
+            this.store.request(request);
           }
         }
-      } else if (
-        lead.status === "QUALIFIED" &&
-        !route
-      ) {
-        lead = this.move(
-          lead,
-          qualification.eligibility_state === "REJECTED"
-            ? "REJECTED"
-            : "ARCHIVED",
-        );
-      } else if (
-        lead.status === "QUALIFIED" &&
-        route &&
-        lead.approval_status === "NONE"
-      ) {
-        lead = this.move(
-          { ...lead, approval_status: "PENDING" },
-          "PENDING_APPROVAL",
-        );
-      } else if (
-        lead.status === "PENDING_APPROVAL" &&
-        !route &&
-        lead.approval_status === "PENDING"
-      ) {
-        lead = this.move(
-          lead,
-          qualification.eligibility_state === "REJECTED"
-            ? "REJECTED"
-            : "ARCHIVED",
-        );
+        if (["NEW", "QUALIFIED", "PENDING_APPROVAL"].includes(lead.status))
+          lead = this.move({ ...lead, approval_status: "NONE" }, "REJECTED");
+      } else if (lead.status === "REJECTED") {
+        // Only a system rejection with no owner history can be reopened by a new AI verdict.
+        this.log({ ...lead, status: "NEW" }, lead.status, "REOPENED_BY_CLASSIFIER", "system");
+        lead = this.routeNewDiscovery({ ...lead, status: "NEW", approval_status: "NONE" });
+      } else if (lead.status === "NEW") {
+        lead = this.routeNewDiscovery(lead);
+      } else if (lead.status === "QUALIFIED" && lead.approval_status === "NONE") {
+        lead = this.move({ ...lead, approval_status: "PENDING" }, "PENDING_APPROVAL");
       }
     }
     return lead;
@@ -611,23 +600,8 @@ export class Engine {
     this.store.save(lead);
     this.log(lead, old.status, "REPROCESSED", "owner");
 
-    if (lead.qualification) {
-      const q = lead.qualification;
-      if (q.eligibility_state === "QUARANTINED") {
-        lead = this.move(lead, "ARCHIVED", "owner");
-      } else if (q.eligibility_state === "REJECTED") {
-        lead = this.move(lead, "REJECTED", "owner");
-      } else if (q.eligibility_state === "REVIEW_INCOMPLETE") {
-        // remains in NEW
-      } else if (q.eligibility_state === "ELIGIBLE" && q.is_valid_freelance_lead) {
-        if (canRouteDiscoveryLead(lead)) {
-          lead = this.move(lead, "QUALIFIED", "owner");
-          lead = this.move({ ...lead, approval_status: "PENDING" }, "PENDING_APPROVAL", "owner");
-        } else {
-          lead = this.move(lead, "QUALIFIED", "owner");
-          lead.approval_status = "NONE";
-        }
-      }
+    if (discovery) {
+      lead = this.routeNewDiscovery(lead, "owner");
     } else {
       if (lead.quarantined) lead = this.move(lead, "ARCHIVED", "owner");
       else if (
@@ -674,26 +648,7 @@ export class Engine {
       throw new Error("Lead is not pending approval");
     if (!/^[a-zA-Z0-9_-]{12,32}$/.test(nonce)) throw new Error("Invalid nonce");
 
-    if (isDiscoveryCandidate(lead)) {
-      if (!lead.qualification) {
-        throw new Error("Only qualified discovery leads can be prepared for approval - legacy records need requalification");
-      }
-
-      if (
-        !lead.qualification.is_valid_freelance_lead ||
-        lead.qualification.eligibility_state !== "ELIGIBLE"
-      ) {
-        throw new Error(`Cannot prepare ineligible discovery lead for approval: ${lead.qualification.rejection_reason}`);
-      }
-
-      if (lead.qualification.priority !== "HIGH" && lead.qualification.priority !== "MEDIUM") {
-        throw new Error(`Cannot prepare low-priority discovery lead for approval: ${lead.qualification.priority}`);
-      }
-
-      if (lead.qualification.confidence_score < 0.85) {
-        throw new Error(`Cannot prepare discovery lead with low confidence for approval: ${lead.qualification.confidence_score}`);
-      }
-    }
+    if (!canRouteDiscoveryLead(lead)) throw new Error("Discovery lead requires an ACCEPT verdict");
     const request: ApprovalRequest = {
       request_id: "ar_" + hash(lead.lead_id + nonce),
       lead_id: lead.lead_id,
@@ -738,6 +693,7 @@ export class Engine {
     const lead = this.store.get(request.lead_id);
     if (!lead || lead.status !== "PENDING_APPROVAL")
       throw new Error("Lead is no longer pending");
+    if (!canRouteDiscoveryLead(lead)) throw new Error("Discovery lead requires an ACCEPT verdict");
     // Save the decision before applying it. A crash can be reconciled without accepting a replay.
     request.state = "CONSUMED";
     request.decision = match[1] as ApprovalRequest["decision"];
@@ -796,6 +752,10 @@ export class Engine {
             lead.qualification_status = "NEEDS_REQUALIFICATION";
             this.store.save(lead);
           }
+          if (lead.status === "NEW") {
+            this.routeNewDiscovery(lead);
+            continue;
+          }
           const requests = this.store.requests().filter((r) => r.lead_id === lead.lead_id);
           const hasOwnerDecision = requests.some(
             (request) => request.state === "CONSUMED" || Boolean(request.decision),
@@ -812,23 +772,11 @@ export class Engine {
                 this.store.request(request);
               }
             }
-            this.move(lead, "ARCHIVED", "system");
+            this.move({ ...lead, approval_status: "NONE" }, "REJECTED", "system");
           }
         } else {
-          const q = lead.qualification;
           if (lead.status === "NEW") {
-            if (q.eligibility_state === "QUARANTINED") {
-              this.move(lead, "ARCHIVED");
-            } else if (q.eligibility_state === "REJECTED") {
-              this.move(lead, "REJECTED", "system");
-            } else if (q.eligibility_state === "ELIGIBLE" && q.is_valid_freelance_lead) {
-              if (canRouteDiscoveryLead(lead)) {
-                lead = this.move(lead, "QUALIFIED");
-                this.move({ ...lead, approval_status: "PENDING" }, "PENDING_APPROVAL");
-              } else {
-                this.move(lead, "QUALIFIED");
-              }
-            }
+            this.routeNewDiscovery(lead);
           } else if (lead.status === "QUALIFIED" && canRouteDiscoveryLead(lead)) {
             this.move({ ...lead, approval_status: "PENDING" }, "PENDING_APPROVAL");
           } else if (lead.status === "PENDING_APPROVAL") {
@@ -845,7 +793,7 @@ export class Engine {
                       this.store.request(request);
                     }
                   }
-                  this.move(lead, q.eligibility_state === "REJECTED" ? "REJECTED" : "ARCHIVED", "system");
+                  this.move({ ...lead, approval_status: "NONE" }, "REJECTED", "system");
                 }
               }
             }
@@ -907,23 +855,8 @@ export function proposal(lead: Lead, now: string): Draft {
 }
 export function notification(lead: Lead, request: ApprovalRequest) {
   if (isDiscoveryCandidate(lead)) {
-    if (!lead.qualification) {
-      throw new Error("Cannot notify legacy record without qualification - needs requalification");
-    }
-
-    if (
-      !lead.qualification.is_valid_freelance_lead ||
-      lead.qualification.eligibility_state !== "ELIGIBLE"
-    ) {
-      throw new Error(`Cannot notify ineligible discovery lead: ${lead.qualification.rejection_reason}`);
-    }
-
-    if (lead.qualification.priority !== "HIGH" && lead.qualification.priority !== "MEDIUM") {
-      throw new Error(`Cannot notify low-priority discovery lead: ${lead.qualification.priority}`);
-    }
-
-    if (!canRouteDiscoveryLead(lead)) {
-      throw new Error(`Cannot notify discovery lead with low confidence: ${lead.qualification.confidence_score}`);
+    if (!lead.qualification || !canRouteDiscoveryLead(lead)) {
+      throw new Error("Discovery lead requires an ACCEPT verdict");
     }
 
     return {
@@ -967,28 +900,12 @@ export function commandReply(
       : leads.filter((l) => fallback.includes(l.status)).length;
   if (cmd === "/stats") {
     const discovery = leads.filter(isDiscoveryCandidate);
-    const eligibleDiscovery = discovery.filter(
-      (l) =>
-        l.qualification?.eligibility_state === "ELIGIBLE" &&
-        l.qualification.is_valid_freelance_lead,
-    );
-    const rejectedDiscovery = discovery.filter(
-      (l) => l.qualification?.eligibility_state === "REJECTED",
-    );
-    const incompleteDiscovery = discovery.filter(
-      (l) => l.qualification?.eligibility_state === "REVIEW_INCOMPLETE",
-    );
-    const quarantinedDiscovery = discovery.filter(
-      (l) => l.qualification?.eligibility_state === "QUARANTINED",
-    );
-    const legacyDiscovery = discovery.filter(
-      (l) => l.qualification_status === "NEEDS_REQUALIFICATION" || !l.qualification,
-    );
+    const acceptedDiscovery = discovery.filter(canRouteDiscoveryLead).length;
 
     return (
       `Actual CRM counts\nTotal: ${leads.length}\n` +
       (discovery.length > 0
-        ? `Discovery candidates: ${discovery.length} (Eligible: ${eligibleDiscovery.length}, Rejected: ${rejectedDiscovery.length}, Incomplete: ${incompleteDiscovery.length}, Quarantined: ${quarantinedDiscovery.length}${legacyDiscovery.length ? `, Needs requalification: ${legacyDiscovery.length}` : ""})\n`
+        ? `Discovery candidates: ${discovery.length} (Accepted: ${acceptedDiscovery}, Rejected: ${discovery.length - acceptedDiscovery})\n`
         : "") +
       `Qualified ever: ${reached("QUALIFIED", ["QUALIFIED", "PENDING_APPROVAL", "APPROVED_FOR_DRAFT", "DRAFT_READY", "CONTACTED_MANUALLY", "REPLIED", "DISCOVERY", "QUOTED", "WON", "MAINTENANCE"])}\n` +
       `Approved ever: ${reached("APPROVED_FOR_DRAFT", ["APPROVED_FOR_DRAFT", "DRAFT_READY", "CONTACTED_MANUALLY", "REPLIED", "DISCOVERY", "QUOTED", "WON", "MAINTENANCE"])}\n` +
