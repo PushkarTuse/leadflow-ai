@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import { stateDirectory } from "../../scripts/external-local-config.mjs";
+import { makeBusinessDraft, readBusinessScan, runBusinessScan } from "../../scripts/local-business";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const envFile = path.join(repoRoot, ".env.external");
@@ -106,6 +107,7 @@ async function readLatestState() {
  */
 function localPipeline(): Plugin {
   let running = false;
+  let businessScanning = false;
   return {
     name: "leadflow-local-pipeline",
     apply: "serve",
@@ -136,6 +138,29 @@ function localPipeline(): Plugin {
 
         void (async () => {
           try {
+            if (pathname === "/api/local/pipeline/business" && req.method === "GET") {
+              const metros = new URL(req.url ?? "", "http://localhost").searchParams.get("metros") === "1";
+              return json(200, { scan: await readBusinessScan(metros), scanning: businessScanning });
+            }
+            if (pathname === "/api/local/pipeline/business/scan" && req.method === "POST") {
+              if (businessScanning) return json(409, { error: "A business scan is already running" });
+              businessScanning = true;
+              try {
+                const data = JSON.parse(await readBody(req));
+                if (typeof data.location !== "string") return json(400, { error: "Enter a city or country" });
+                return json(200, { scan: await runBusinessScan(data.location) });
+              } catch (error) {
+                return json(400, { error: (error as Error).message.slice(0, 170) });
+              } finally { businessScanning = false; }
+            }
+            if (pathname === "/api/local/pipeline/business/draft" && req.method === "POST") {
+              try {
+                const data = JSON.parse(await readBody(req));
+                return json(200, await makeBusinessDraft(data.id, data.source, data.sourceId, data.country, data.useAi === true));
+              } catch (error) {
+                return json(400, { error: (error as Error).message.slice(0, 170) });
+              }
+            }
             if (
               pathname === "/api/local/pipeline/status" &&
               req.method === "GET"

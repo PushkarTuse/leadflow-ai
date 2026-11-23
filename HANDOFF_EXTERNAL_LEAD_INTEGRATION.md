@@ -150,3 +150,13 @@ The live retry finalized all seven previously unresolved rows as AI rejections, 
 `scripts/reset-local-pipeline.ps1` now has a Leads stage and an AI stage. The Leads stage archives the local Worker database and applies migrations. The AI stage verifies the fresh database, archives the dashboard ledger and profiles, polls all five feeds and drains the candidates before starting Vite. Use the commands in `docs/EXTERNAL_LEAD_API_SETUP.md`.
 
 The 24 November reset verified D1 was empty before the poll. It imported and finalized 57 candidates, with one acceptance and 56 rejections. AI decided 55 rows and rules decided two. Compared with the archived 58-row snapshot, 20 source IDs were new to this dataset. The backup folders created for this run end in `leads-20261124-004621-446` and `ai-20261124-004640-877`.
+
+### Separate business inventory and wider freelance polling
+
+The 57-row freelance sample accepted one WordPress project. The 56 rejections included 18 full-time labels, five ongoing seats, 31 other model rejections and two rules verdicts. Before widening, collection requested 20 rows per feed and took only the first Himalayas search page. The new `--limit=100` option and producer pagination broaden the search, and the producer ranks concrete project language. The first wide live poll saw zero Hacker News buyers while the other feeds deferred under their stored cooldowns. This remains distinct from a verified 400–500 candidate run.
+
+The local business panel and CLI use GeoNames for city or country resolution, OSM for live points of interest, and Overture Places for an independent sample. The seven-city run found Mumbai 65, Pune 63, Bengaluru 130, Hyderabad 63, Kolkata 64, Delhi 129 and Chennai 64, for 578 total inventory rows with 182 listed emails. OSM contributed 130 rows in Bengaluru and Delhi and returned 5xx elsewhere. Overture contributed 448. No verified Foursquare Open Source imports were present. London returned 65 in a browser-driven scan.
+
+The Mumbai draft test selected an angle using Cloudflare and downloaded a valid unsent EML with the animated logo embedded. The panel uses a static logo for reduced motion. See `docs/EXTERNAL_LEAD_API_SETUP.md` for terminal and Gmail steps.
+
+A browser scan for United Kingdom returned London 65, Birmingham 64 and Glasgow 65. The wider freelance drain found zero new rows after the deferred fetch and preserved the 57 existing decisions.

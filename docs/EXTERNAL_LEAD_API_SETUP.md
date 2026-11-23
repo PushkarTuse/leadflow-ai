@@ -16,7 +16,22 @@ The dashboard and the local ledger's `aiHealth` show each configured provider's 
 
 To seek AI verdicts for saved rules decisions, run `npm run external:run -- --retry-discovery-ai`. The command also finalizes older rows without a verdict. Use `--requalify-all` only for a deliberate replay. Both commands suppress notifications and require stored source context. The auto chain keeps the local Gemini ledger across providers.
 
-For a fresh local collection, keep `npm run dev -- --port 8787` running in `leadflow-leads`. From `leadflow-ai`, run `npm run external:collect` followed by `npm run external:run -- --drain`. Collection requests up to 20 candidates per configured feed. Drain imports up to 50 pages from the saved cursor and checkpoints each page. The dashboard button processes one page from the producer's database. Collector counts measure feed screening, and the dashboard results show AI outcomes.
+For a fresh local collection, keep `npm run dev -- --port 8787` running in `leadflow-leads`. From `leadflow-ai`, run `npm run external:collect` followed by `npm run external:run -- --drain`. The wider command `npm run external:collect -- --limit=100` asks for up to 100 candidates per enabled feed. The updated producer paginates Himalayas search within six pages and ranks plausible project briefs ahead of ordinary contract seats. Publisher feed size and cooldowns still determine actual yield. Drain imports up to 100 pages from the saved cursor and checkpoints each page. The dashboard button processes one page from the producer's database. Collector counts measure feed screening, and the dashboard results show AI outcomes.
+
+### Local business research and branded drafts
+
+Run `npm run dev -- --port 8787` in the updated `leadflow-leads` working copy and `npm run dev -- --port 5174` in `leadflow-ai`. The local dashboard has separate freelance and business sections. For a new Windows setup, install the open-data reader in an ignored virtual environment:
+
+```powershell
+python -m venv .venv\local-business
+.\.venv\local-business\Scripts\python.exe -m pip install overturemaps==2.1.1
+```
+
+Use **Run 7 Indian metros**, **Find businesses**, or `npm run business:scan -- india-metros`. For one city, use `npm run business:scan -- "London, UK"`. City scans sample within roughly 8–10 km of a GeoNames center. Country searches sample up to three major cities. OSM and Overture runs report separately. Foursquare Open Source is read from verified imported rows. Its current catalog needs separate access. Google Places and Nearby remain excluded from the outreach inventory. The Foursquare Places and HERE live API adapters are disabled stubs.
+
+Each scan shows actual inventory, source outcomes, and listed-email counts. Use **Draft for …** to choose an angle with the available AI providers, then review, copy, or download the email. Models choose from permitted angles using the industry, city and site presence. Email text and factual claims come from the stored business record and controlled templates. Set `LOCAL_BUSINESS_SENDER` in `.env.external` to change the signature name. Drafts are stored in ignored `outputs/local-business` as unsent EML files with the logo embedded and an empty recipient field.
+
+Gmail web accepts a manual draft via **Copy draft**. Paste the subject and body into Compose, then use **Insert photo → Upload** with `apps/web/public/email/leadflow-signature.gif` for motion or the adjacent PNG for a static signature. To make the logo a reusable Gmail signature, use **Settings → See all settings → General → Signature → Insert image**, then save. The GIF starts with a fully readable frame for clients that display a still image.
 
 ### Reset both local stores on Windows
 

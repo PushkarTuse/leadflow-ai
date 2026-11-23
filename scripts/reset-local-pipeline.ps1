@@ -113,6 +113,9 @@ if (Test-Path -LiteralPath $data -PathType Container) {
 }
 Move-LocalState $aiRoot 'data\external-profiles' 'consumer-profiles'
 Move-LocalState $aiRoot 'outputs\external' 'consumer-outputs'
+Move-LocalState $aiRoot 'data\local-business\latest.json' 'local-business-latest.json'
+Move-LocalState $aiRoot 'data\local-business\metros.json' 'local-business-metros.json'
+Move-LocalState $aiRoot 'outputs\local-business' 'local-business-drafts'
 
 $env:EXTERNAL_LOCAL_PROFILE = ''
 $env:LEADFLOW_LOCAL_PROFILE = ''

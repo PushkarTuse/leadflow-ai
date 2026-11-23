@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { LocalBusinessPanel } from "./LocalBusinessPanel";
 import { discoveryAiBanner, providerHealthLine, type DiscoveryAiHealth } from "../../../packages/core/discovery-ai-health";
 
 export type QualificationState = "ACCEPTED" | "REJECTED";
@@ -295,10 +296,13 @@ export function PipelineDashboard() {
           only while the Vite development server is running and never reach
           production.
         </p>
+        <nav aria-label="Pipeline sections"><a href="#freelance">Freelance leads</a>{" · "}<a href="#businesses">Local businesses</a></nav>
       </div>
 
-      <section className="note-panel">
-        <h2>External ingestion</h2>
+      <LocalBusinessPanel />
+
+      <section id="freelance" className="note-panel">
+        <h2>Freelance ingestion</h2>
         {!configured && !loading && (
           <p role="alert">
             <strong>.env.external is missing.</strong> Copy{" "}

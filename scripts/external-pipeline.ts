@@ -184,13 +184,15 @@ async function main(){
   if(!token&&!replayStored)throw new Error('Local API token missing');
   if(collectSources){
     if(preview||requalificationRun||drain)throw new Error('Run source collection as a separate command');
+    const collectLimit=Number(process.argv.find(arg=>arg.startsWith('--limit='))?.slice(8)??20);
+    if(!Number.isInteger(collectLimit)||collectLimit<1||collectLimit>100)throw new Error('Collection limit must be 1–100 per feed');
     for(const source of allowedSources){
       try{
-        const response=await fetch(`${upstream}/collect/${source}?limit=20`,{
+        const response=await fetch(`${upstream}/collect/${source}?limit=${collectLimit}`,{
           method:'POST',headers:{Authorization:`Bearer ${token}`},redirect:'error',signal:AbortSignal.timeout(90000),
         });
-        const {state,fetched,inserted,duplicates}=await response.json();
-        console.log(JSON.stringify({source,http:response.status,state,fetched,inserted,duplicates}));
+        const {state,fetched,inserted,duplicates,raw,filtered,accepted}=await response.json();
+        console.log(JSON.stringify({source,http:response.status,state,raw,filtered,passedCollector:accepted,fetched,inserted,duplicates}));
         if(!response.ok)process.exitCode=1;
       }catch{
         console.error(`Collection failed for ${source}. Check the local API and source status.`);
@@ -321,7 +323,7 @@ async function main(){
     }
     if(!replayStored){
       try {
-        for(let page=0;page<(drain?50:1);page++){
+        for(let page=0;page<(drain?100:1);page++){
           httpCount=0;
           const pulled=pullExternalLeads(http,{origin,token:transportToken,offset:0,cursor,limit,allowedSources},lead=>{
             const ingested=engine.ingest(lead);
