@@ -11,7 +11,7 @@ import { stateDirectory } from "../../scripts/external-local-config.mjs";
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const envFile = path.join(repoRoot, ".env.external");
 const stateNames = ["external-pipeline.json", "external-gemini.json", "external-openai.json"];
-const profile = process.env.EXTERNAL_LOCAL_PROFILE || "";
+const profile = process.env.LEADFLOW_LOCAL_PROFILE || "";
 const emptyState = {
   offset: 0,
   store: { rows: [], events: [], draftRows: [], requestRows: [] },
