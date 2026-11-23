@@ -5,6 +5,7 @@ import {Engine,canRouteDiscoveryLead,isDiscoveryCandidate,notification} from '..
 import {MemoryStore} from '../packages/core/memory-store';
 import {configSchema} from '../packages/core/model';
 import {FREELANCE_BUYER_SOURCES} from '../packages/core/qualification';
+import {discoveryAiBanner,providerHealthLine,type DiscoveryAiHealth} from '../packages/core/discovery-ai-health';
 import {classifyGemini,openAICompletionEndpoint,type Http} from '../apps/automation/adapters';
 import {pullExternalLeads,type ExternalCursor} from '../apps/automation/external-leads';
 import {loopbackOrigin,stateDirectory} from './external-local-config.mjs';
@@ -50,12 +51,11 @@ function smtpHint(stage:string,code:number):string{
 }
 
 /** Structured owner digest. Contains no credentials and no lead contact details. */
-function executiveSummary(store:MemoryStore,run:{imported:number;duplicates:number;invalid:number},emailTest:EmailTestState){
+function executiveSummary(store:MemoryStore,run:{imported:number;duplicates:number;invalid:number},emailTest:EmailTestState,aiHealth:DiscoveryAiHealth){
   const allRecords=store.leads();
   const discovery=allRecords.filter(isDiscoveryCandidate);
   const eligible=discovery.filter(canRouteDiscoveryLead);
-  const rejected=discovery.filter(lead=>lead.qualification_audit?.discovery_semantics?.decision==="REJECT" &&
-    lead.qualification_audit.decision_source==="MODEL");
+  const rejected=discovery.filter(lead=>!canRouteDiscoveryLead(lead));
   const blocked=discovery.filter(lead=>lead.qualification_audit?.decision_source==="SOURCE_GUARD").length;
   const inbound=allRecords.filter(l=>!isDiscoveryCandidate(l));
   const reasonCounts=new Map<string,number>();
@@ -78,8 +78,10 @@ function executiveSummary(store:MemoryStore,run:{imported:number;duplicates:numb
     `Raw candidates: ${discovery.length}`,
     `Accepted candidates: ${eligible.length}`,
     `Rejected candidates: ${rejected.length}`,
-    `Awaiting classification: ${discovery.length-eligible.length-rejected.length-blocked}`,
     `Blocked by source check: ${blocked}`,
+    `Finalized this run: AI ${aiHealth.finalizedBy.ai}, rules ${aiHealth.finalizedBy.rules}, source check ${aiHealth.finalizedBy.sourceGuard}`,
+    discoveryAiBanner(aiHealth) || '',
+    ...aiHealth.providers.map(providerHealthLine),
     reasonCounts.size?`Primary reasons: ${[...reasonCounts].map(([reason,count])=>`${reason} (${count})`).join(', ')}`:'',
     inbound.length?`  • Consented inbound enquiries: ${inbound.length}`:'',
     '',
@@ -230,7 +232,6 @@ async function main(){
   const aiSetupWarning=aiRequested&&!aiEnabled?'Approved classifier settings unavailable; no AI verdict':'';
   const discoveryAiLimit=Number(get('EXTERNAL_DISCOVERY_AI_MAX_REQUESTS','100'));
   if(!Number.isInteger(discoveryAiLimit)||discoveryAiLimit<0||discoveryAiLimit>500)throw new Error('EXTERNAL_DISCOVERY_AI_MAX_REQUESTS must be 0–500');
-  if(retryDiscoveryAi&&(!aiEnabled||discoveryAiLimit===0))throw new Error('AI retry needs an approved classifier and a positive request budget');
   if(aiEnabled&&aiProvider==='openai'){
     openAICompletionEndpoint(aiBaseUrl);
     // The private subprocess binds requests to this exact configured endpoint.
@@ -241,18 +242,18 @@ async function main(){
   const limit=Number(get('EXTERNAL_LEADS_BATCH_SIZE','5'));if(!Number.isInteger(limit)||limit<1||limit>5)throw new Error('Batch must be 1–5');
   const directory=stateDirectory(get('EXTERNAL_LOCAL_PROFILE'));
   const output=get('EXTERNAL_LOCAL_PROFILE')?`outputs/external/${get('EXTERNAL_LOCAL_PROFILE')}`:'outputs/external';
-  const file=`${directory}/${preview?'external-preview.json':aiEnabled?`external-${aiProvider}.json`:'external-pipeline.json'}`;
+  const file=`${directory}/${preview?'external-preview.json':aiRequested?`external-${aiProvider}.json`:'external-pipeline.json'}`;
   await mkdir(directory,{recursive:true});await mkdir(output,{recursive:true});
   const lock=await open(file+'.lock','wx');
   try{
     const store=new MemoryStore();let cursor:ExternalCursor={after:0};let emailTest:EmailTestState={...emptyEmailTest};
     let checkpointKey=JSON.stringify([upstream,allowedSources,1]);
     let sourceHealth:unknown=null;
+    let previousAiHealth:DiscoveryAiHealth|undefined;
     let cooldowns:Parameters<typeof discoveryAiChain>[3]={};
-    try{const old=JSON.parse(await readFile(file,'utf8'));Object.assign(store,old.store);if(replayStored&&old.checkpointKey)checkpointKey=old.checkpointKey;if(old.checkpointKey===checkpointKey&&old.cursor)cursor=old.cursor;if(old.emailTest)emailTest=old.emailTest as EmailTestState;sourceHealth=old.sourceHealth??null;cooldowns=old.cooldowns??{};}
+    try{const old=JSON.parse(await readFile(file,'utf8'));Object.assign(store,old.store);if(replayStored&&old.checkpointKey)checkpointKey=old.checkpointKey;if(old.checkpointKey===checkpointKey&&old.cursor)cursor=old.cursor;if(old.emailTest)emailTest=old.emailTest as EmailTestState;sourceHealth=old.sourceHealth??null;cooldowns=old.cooldowns??{};previousAiHealth=old.aiHealth;}
     catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('Unreadable local state; restore before retrying');}
     if(requalifyMissing&&!replayStored)cursor={after:0};
-    const save=async()=>{await writeFile(file+'.tmp',JSON.stringify({offset:0,checkpointKey,cursor,store,emailTest,sourceHealth,cooldowns},null,2));await rename(file+'.tmp',file);};
     let httpCount=0;
     function requestJson(url:string,request?:Parameters<Http['json']>[1]){
       const result=spawnSync(process.execPath,['scripts/external-http.mjs'],{input:JSON.stringify({url,request}),encoding:'utf8',timeout:27000,maxBuffer:2000000});
@@ -260,7 +261,7 @@ async function main(){
         // external-http.mjs writes only a safe, credential-free detail to stderr
         // (HTTP status or network error code). Bound and flatten it before use.
         const detail=(result.stderr||'').replace(/[\r\n]+/g,' ').trim().slice(0,200);
-        const safeDetail=/^(?:HTTP \d{3}(?: retry-after=\d{1,5})?|[A-Z0-9_]{1,50}|request failed|host blocked|response too large|invalid JSON response)$/.test(detail)?detail:'timeout or transport failure';
+        const safeDetail=/^(?:HTTP \d{3}(?: retry-after=\d{1,5})?(?: (?:credits|quota) exhausted)?|(?:credits|quota) exhausted|[A-Z0-9_]{1,50}|request failed|host blocked|response too large|invalid JSON response)$/.test(detail)?detail:'timeout or transport failure';
         if(url.startsWith(upstream+'/'))throw new Error(`Upstream ${upstream} returned ${safeDetail}. Check Wrangler's listening port and local API token.`);
         throw new Error(`Provider request failed (${safeDetail})`);
       }
@@ -278,6 +279,19 @@ async function main(){
     }};
     const config=configSchema.parse({ownerUserId:get('TELEGRAM_OWNER_USER_ID','local-owner'),ownerChatId:get('TELEGRAM_OWNER_CHAT_ID','local-owner')});
     const chain=discoveryAiChain(providers,{json:requestJson},discoveryAiLimit,cooldowns);
+    const finalizedBy={ai:0,rules:0,sourceGuard:0};
+    const recordFinalization=(lead:ReturnType<typeof store.leads>[number])=>{
+      const source=lead.qualification_audit?.decision_source;
+      if(source==='MODEL')finalizedBy.ai++;
+      else if(source==='RULES_FALLBACK')finalizedBy.rules++;
+      else if(source==='SOURCE_GUARD')finalizedBy.sourceGuard++;
+    };
+    const save=async()=>{
+      const health=chain.health(finalizedBy);
+      const aiHealth=Object.values(finalizedBy).some(Boolean)||health.allUnavailable ? health : previousAiHealth??health;
+      await writeFile(file+'.tmp',JSON.stringify({offset:0,checkpointKey,cursor,store,emailTest,sourceHealth,cooldowns,aiHealth},null,2));
+      await rename(file+'.tmp',file);
+    };
     const engine=new Engine(store,config,undefined,aiRequested?input=>{
       if (input.discovery_context) {
         return chain.classify(input.discovery_context);
@@ -288,28 +302,34 @@ async function main(){
     }:undefined);
     let requalified=0,requalificationSkipped=0;
     let result={imported:0,duplicates:0,invalid:0,nextOffset:0,fetched:0,sourceState:''};
-    if(replayStored){
+    if(replayStored||!preview){
       for(const lead of store.leads().filter(isDiscoveryCandidate)){
         if(!lead.discovery_context){requalificationSkipped++;continue;}
+        const decisionSource=lead.qualification_audit?.decision_source;
+        if(!replayStored&&decisionSource!=='NO_MODEL'&&lead.qualification?.operator_decision)continue;
+        if(!requalifyAll&&!allowedSources.includes(lead.discovery_context.provider))continue;
         if(retryDiscoveryAi){
-          if(!chain.available()||chain.exhausted())break;
-          const decisionSource=lead.qualification_audit?.decision_source;
-          if(!allowedSources.includes(lead.discovery_context.provider)||decisionSource==='MODEL'||decisionSource==='SOURCE_GUARD')continue;
+          if(decisionSource==='MODEL'||decisionSource==='SOURCE_GUARD')continue;
+          if(decisionSource==='RULES_FALLBACK'&&(!chain.available()||chain.exhausted()))continue;
         }
-        engine.requalifyDiscovery(lead.lead_id,lead,true);
+        const qualified=engine.requalifyDiscovery(lead.lead_id,lead,true);
+        if(qualified===lead)continue;
+        recordFinalization(qualified);
         requalified++;
-        if(retryDiscoveryAi)await save();
+        await save();
       }
-    }else{
+    }
+    if(!replayStored){
       try {
         for(let page=0;page<(drain?50:1);page++){
           httpCount=0;
           const pulled=pullExternalLeads(http,{origin,token:transportToken,offset:0,cursor,limit,allowedSources},lead=>{
             const ingested=engine.ingest(lead);
+            if(!ingested.duplicate)recordFinalization(ingested.lead);
             if(requalifyMissing&&ingested.duplicate&&lead.discovery_context){
               const stored=store.get(ingested.lead.lead_id);
               if(stored?.source==='hn'&&(!stored.qualification||stored.qualification_status==='NEEDS_REQUALIFICATION')){
-                engine.requalifyMissingDiscovery(stored.lead_id,lead);
+                recordFinalization(engine.requalifyMissingDiscovery(stored.lead_id,lead));
                 requalified++;
               }
             }
@@ -366,7 +386,7 @@ async function main(){
     let summaryStatus='DISABLED';
     if(telegram){
       try{
-        const raw=network.json(`https://api.telegram.org/bot${get('TELEGRAM_BOT_TOKEN')}/sendMessage`,{method:'post',retrySafe:false,body:{chat_id:config.ownerChatId,text:executiveSummary(store,result,emailTest),link_preview_options:{is_disabled:true}}}) as {ok?:boolean;result?:{chat:{id:number;type:string}}};
+        const raw=network.json(`https://api.telegram.org/bot${get('TELEGRAM_BOT_TOKEN')}/sendMessage`,{method:'post',retrySafe:false,body:{chat_id:config.ownerChatId,text:executiveSummary(store,result,emailTest,chain.health(finalizedBy)),link_preview_options:{is_disabled:true}}}) as {ok?:boolean;result?:{chat:{id:number;type:string}}};
         if(!raw.ok||raw.result?.chat.type!=='private'||String(raw.result.chat.id)!==config.ownerChatId)throw new Error('Wrong recipient');
         summaryStatus='SENT';
       }catch{summaryStatus='FAILED';}
@@ -374,13 +394,13 @@ async function main(){
     await save();await writeFile(`${output}/review-preview.json`,JSON.stringify(alerts,null,2));
     const discoveryRows=store.leads().filter(isDiscoveryCandidate);
     const accepted=discoveryRows.filter(canRouteDiscoveryLead).length;
-    const rejected=discoveryRows.filter(lead=>lead.qualification_audit?.decision_source==='MODEL'&&
-      lead.qualification_audit.discovery_semantics?.decision==='REJECT').length;
+    const rejected=discoveryRows.length-accepted;
     const blocked=discoveryRows.filter(lead=>lead.qualification_audit?.decision_source==='SOURCE_GUARD').length;
     const {requests,attempted,succeeded,failed}=chain.coverage;
+    const aiHealth=chain.health(finalizedBy);
     console.log(JSON.stringify({mode:preview?'DRY RUN — real reads, local rules, preview only':requalificationRun?'LOCAL REQUALIFICATION — NOTIFICATIONS SUPPRESSED':`LOCAL ONE-SHOT — ${qualificationMode.toUpperCase()}`,...result,requalified,requalification_skipped_missing_context:requalificationSkipped,
       total:store.leads().length,pending:store.leads().filter(l=>l.status==='PENDING_APPROVAL').length,
-      accepted,rejected,awaiting_classification:discoveryRows.length-accepted-rejected-blocked,
+      accepted,rejected,aiHealth,ai_health_banner:discoveryAiBanner(aiHealth),ai_provider_status:aiHealth.providers.map(providerHealthLine),
       blocked_by_source:blocked,ai_attempted:attempted,ai_succeeded:succeeded,ai_failed:failed,
       ai_skipped:Math.max(0,result.imported+requalified-succeeded-failed),
       ai_failure_reasons:chain.failures,ai_provider:providerSetting,gemini_attempted:Boolean(chain.callsByProvider.gemini),

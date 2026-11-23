@@ -6,6 +6,14 @@ for await (const chunk of process.stdin) input+=chunk;
 // the HTTP status, a network error code, or a fixed reason. Never the URL,
 // headers, body, response text or token.
 let detail='request failed';
+function creditOrQuotaStatus(error) {
+  const values = [error?.code, error?.status, error?.type, error?.message].filter(value => typeof value === 'string');
+  const description = values.join(' ').toLowerCase().replace(/[_-]/g, ' ');
+  if (/\b(?:insufficient credits|out of credits|credits exhausted|credit balance|billing hard limit)\b/.test(description))
+    return 'credits exhausted';
+  if (/\b(?:insufficient quota|resource exhausted|quota exceeded|quota exhausted)\b/.test(description))
+    return 'quota exhausted';
+}
 try {
   const {url,request={}}=JSON.parse(input);
   let aiEndpoint='';
@@ -36,6 +44,7 @@ try {
   const response=await fetch(url,{method:request.method||'get',headers:{'Content-Type':'application/json',...request.headers},
     ...(request.body===undefined?{}:{body:JSON.stringify(request.body)}),redirect:'error',
     signal:AbortSignal.timeout(chainEndpoint&&url.startsWith('https://api.cloudflare.com/')?22000:15000)});
+  const aiRequest=chainEndpoint || url===aiEndpoint || url.startsWith('https://generativelanguage.googleapis.com/');
   if(!response.ok){
     detail='HTTP '+response.status;
     const retryAfter=response.headers.get('retry-after');
@@ -43,12 +52,21 @@ try {
       const seconds=/^\d{1,8}$/.test(retryAfter)?Number(retryAfter):Math.ceil((Date.parse(retryAfter)-Date.now())/1000);
       if(Number.isFinite(seconds)&&seconds>0)detail+=` retry-after=${Math.min(seconds,86400)}`;
     }
+    if(aiRequest&&response.status>=400&&response.status<500){
+      const payload=await response.json().catch(()=>null);
+      const classified=creditOrQuotaStatus(payload?.error ?? payload?.errors?.[0]);
+      if(classified)detail+=' '+classified;
+    }
     throw new Error('HTTP '+response.status);
   }
   const text=await response.text();
   if(text.length>1000000){detail='response too large';throw new Error('Response too large');}
-  try{process.stdout.write(JSON.stringify(JSON.parse(text)));}
+  let parsed;
+  try{parsed=JSON.parse(text);}
   catch{detail='invalid JSON response';throw new Error('Invalid JSON response');}
+  const classified=aiRequest&&creditOrQuotaStatus(parsed?.error ?? parsed?.errors?.[0]);
+  if(classified){detail=classified;throw new Error('AI provider credit or quota failure');}
+  process.stdout.write(JSON.stringify(parsed));
 } catch (error) {
   if(detail==='request failed'){
     const cause=error&&typeof error==='object'?error.cause:undefined;

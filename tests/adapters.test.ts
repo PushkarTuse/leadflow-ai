@@ -118,9 +118,50 @@ describe("local discovery AI failover", () => {
 
   it("reports no AI verdict when the available providers fail", () => {
     const chain = discoveryAiChain(backups, { json() { throw new Error("HTTP 503"); } }, 10, {});
-    expect(chain.classify(context)).toEqual({ warning: expect.stringMatching(/^No AI verdict:/) });
-    expect(chain.coverage).toEqual({ requests: 3, attempted: 1, succeeded: 0, failed: 1 });
+    expect(chain.classify(context)).toEqual({ warning: expect.stringMatching(/^Rules fallback\. No AI verdict:/) });
+    expect(chain.coverage).toEqual({ requests: 6, attempted: 1, succeeded: 0, failed: 1 });
     expect(chain.available()).toBe(false);
+    expect(chain.health({ ai: 0, rules: 1, sourceGuard: 0 })).toMatchObject({
+      allUnavailable: true, allQuotaExhausted: false,
+      providers: backups.map(({ id }) => ({ id, status: "unavailable", failures: { unavailable: 2 } })),
+    });
+  });
+
+  it("reports all quota or credit failures and carries their cooldowns into a later run", () => {
+    const providers = [{ id: "gemini" as const, options }, ...backups];
+    const cooldowns = {};
+    const transport: Http = { json(url) { throw new Error(url.includes("groq") ? "HTTP 402" : "HTTP 429 retry-after=120"); } };
+    const chain = discoveryAiChain(providers, transport, 10, cooldowns, () => 1_000);
+    chain.classify({ ...context, source_hash: context.source_hash + "-quota" });
+    const counts = { ai: 0, rules: 1, sourceGuard: 0 };
+    expect(chain.health(counts)).toMatchObject({
+      allQuotaExhausted: true, allUnavailable: true, finalizedBy: counts,
+      providers: providers.map(p => ({ id: p.id, status: p.id === "groq" ? "credits" : "quota", requests: 1 })),
+    });
+    const next = discoveryAiChain(providers, transport, 10, cooldowns, () => 2_000);
+    expect(next.classify(context).warning).toContain("Rules fallback");
+    expect(next.coverage.requests).toBe(0);
+    expect(next.health(counts).allQuotaExhausted).toBe(true);
+  });
+
+  it("retries invalid JSON and unsupported quotes after trying the other providers", () => {
+    const calls: string[] = [];
+    const chain = discoveryAiChain(backups, { json(url) {
+      const host = new URL(url).hostname;
+      calls.push(host);
+      if (host === "openrouter.ai") throw new Error("ETIMEDOUT");
+      const content = calls.length === 1 ? "not JSON" : JSON.stringify(calls.length === 2
+        ? { ...compactRejection, scope_evidence: "invented quote" } : compactRejection);
+      return { choices: [{ message: { content } }] };
+    } }, 10, {});
+    expect(chain.classify({ ...context, source_hash: context.source_hash + "-retry" }))
+      .toMatchObject({ discoveryProvider: "groq", discoverySignals: { decision: "REJECT" } });
+    expect(calls).toEqual(["api.groq.com", "api.cloudflare.com", "openrouter.ai", "api.groq.com"]);
+    expect(chain.health({ ai: 1, rules: 0, sourceGuard: 0 }).providers).toMatchObject([
+      { id: "groq", status: "ok", failures: { schema: 1 } },
+      { id: "cloudflare", status: "quote", failures: { quote: 1 } },
+      { id: "openrouter", status: "timeout", failures: { timeout: 1 } },
+    ]);
   });
 
   it("ground compact verdict quotes in the original listing without dropping long input", () => {

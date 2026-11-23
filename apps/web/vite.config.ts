@@ -84,7 +84,7 @@ async function readLatestState() {
     .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
     .sort((a, b) => b.modified - a.modified)[0];
   if (!latest) return { ...emptyState, stateFile: null, directory };
-  const { offset, store, emailTest, sourceHealth } = JSON.parse(await readFile(latest.file, "utf8"));
+  const { offset, store, emailTest, sourceHealth, aiHealth } = JSON.parse(await readFile(latest.file, "utf8"));
   const visibleRows = store.rows.filter((row: {discovery_context?: {expires_at?: string}}) => {
     const expires = row.discovery_context?.expires_at;
     return !expires || Date.parse(expires) > Date.now();
@@ -94,6 +94,7 @@ async function readLatestState() {
     store: { rows: visibleRows, requestRows: store.requestRows },
     emailTest,
     sourceHealth,
+    aiHealth,
     directory,
     stateFile: path.basename(latest.file),
   };
@@ -225,7 +226,8 @@ function localPipeline(): Plugin {
               child.stdout?.on("data", collect);
               child.stderr?.on("data", collect);
 
-              const timer = setTimeout(() => child.kill(), 180000);
+              // Five rows can each try four providers twice, with a 27-second transport deadline.
+              const timer = setTimeout(() => child.kill(), 5 * 4 * 2 * 27000 + 60000);
               child.on("close", (code) => {
                 clearTimeout(timer);
                 if (code === 0) {

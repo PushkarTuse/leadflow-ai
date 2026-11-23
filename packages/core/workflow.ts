@@ -47,9 +47,11 @@ export function canRouteDiscoveryLead(
   lead: Pick<Lead, "source" | "discovery_context" | "qualification" | "qualification_audit">,
 ): boolean {
   if (!isDiscoveryCandidate(lead)) return true;
-  return lead.qualification?.operator_decision === "ACCEPTED" &&
-    lead.qualification_audit?.decision_source === "MODEL" &&
-    lead.qualification_audit.discovery_semantics?.decision === "ACCEPT";
+  if (lead.qualification?.operator_decision !== "ACCEPTED") return false;
+  const audit = lead.qualification_audit;
+  return (audit?.decision_source === "MODEL" && audit.discovery_semantics?.decision === "ACCEPT") ||
+    (audit?.decision_source === "RULES_FALLBACK" && lead.qualification.is_valid_freelance_lead &&
+      lead.qualification.eligibility_state === "ELIGIBLE");
 }
 
 function mergeDiscoverySignals(
@@ -339,7 +341,6 @@ export class Engine {
   }
 
   private routeNewDiscovery(lead: Lead, actor = "system"): Lead {
-    if (lead.qualification_audit?.decision_source === "NO_MODEL") return lead;
     if (!canRouteDiscoveryLead(lead)) return this.move(lead, "REJECTED", actor);
     const qualified = this.move(lead, "QUALIFIED", actor);
     return this.move({ ...qualified, approval_status: "PENDING" }, "PENDING_APPROVAL", actor);
@@ -427,16 +428,15 @@ export class Engine {
     );
     const modelVerdict = audit.discovery_semantics?.decision;
     const guarded = !prefilterResult.pass || injectionPattern.test(canonical);
-    const accepted = !guarded && modelVerdict === "ACCEPT";
+    const accepted = !guarded && (modelVerdict ? modelVerdict === "ACCEPT" : record.eligibility_state === "ELIGIBLE");
     audit.advisory_state = record.eligibility_state;
-    audit.decision_source = guarded ? "SOURCE_GUARD" : modelVerdict ? "MODEL" : "NO_MODEL";
+    audit.decision_source = guarded ? "SOURCE_GUARD" : modelVerdict ? "MODEL" : "RULES_FALLBACK";
     if (modelVerdict && !guarded) {
       audit.method = extractionMethod;
       if (discoveryProvider) audit.discovery_provider = discoveryProvider;
     }
-    const awaitingVerdict = audit.decision_source === "NO_MODEL";
-    record.operator_decision = awaitingVerdict ? undefined : accepted ? "ACCEPTED" : "REJECTED";
-    record.eligibility_state = awaitingVerdict ? "REVIEW_INCOMPLETE" : accepted ? "ELIGIBLE" : "REJECTED";
+    record.operator_decision = accepted ? "ACCEPTED" : "REJECTED";
+    record.eligibility_state = accepted ? "ELIGIBLE" : "REJECTED";
     record.is_valid_freelance_lead = accepted;
     if (accepted) {
       record.rejection_reason = null;
@@ -451,7 +451,7 @@ export class Engine {
     } else if (!prefilterResult.pass && prefilterResult.reason) {
       audit.warnings.push(`Prefilter: ${prefilterResult.reason}`);
     } else if (!guarded && !modelVerdict) {
-      audit.warnings.push("No validated AI verdict; awaiting classification");
+      audit.warnings.push("No validated AI verdict. Qualification rules finalized this decision.");
     }
 
     let legacyPriority: "HIGH" | "REVIEW" | "LOW" = "LOW";
@@ -509,8 +509,7 @@ export class Engine {
     const assessment = this.classifyDiscovery(input);
     if (!assessment.qualification || !assessment.qualification_audit)
       throw new Error("Discovery qualification did not produce an audit record");
-    const awaitingVerdict = assessment.qualification_audit.decision_source === "NO_MODEL";
-    if (awaitingVerdict && old.qualification_audit?.decision_source === "MODEL" &&
+    if (assessment.qualification_audit.decision_source === "RULES_FALLBACK" && old.qualification_audit?.decision_source === "MODEL" &&
         old.discovery_context?.source_hash === input.discovery_context.source_hash) return old;
 
     const now = this.clock.now();
@@ -552,16 +551,10 @@ export class Engine {
             this.store.request(request);
           }
         }
-        if (awaitingVerdict && (lead.status === "QUALIFIED" || lead.status === "PENDING_APPROVAL" ||
-            (lead.status === "REJECTED" && old.qualification_audit?.decision_source === "NO_MODEL"))) {
-          const previous = lead.status;
-          lead = { ...lead, status: "NEW", approval_status: "NONE" };
-          this.store.save(lead);
-          this.log(lead, previous, "AWAITING_CLASSIFICATION", "system");
-        } else if (!awaitingVerdict && ["NEW", "QUALIFIED", "PENDING_APPROVAL"].includes(lead.status))
+        if (["NEW", "QUALIFIED", "PENDING_APPROVAL"].includes(lead.status))
           lead = this.move({ ...lead, approval_status: "NONE" }, "REJECTED");
       } else if (lead.status === "REJECTED") {
-        // Only a system rejection with no owner history can be reopened by a new AI verdict.
+        // Only a system rejection with no owner history can be reopened by a new verdict.
         this.log({ ...lead, status: "NEW" }, lead.status, "REOPENED_BY_CLASSIFIER", "system");
         lead = this.routeNewDiscovery({ ...lead, status: "NEW", approval_status: "NONE" });
       } else if (lead.status === "NEW") {
@@ -912,15 +905,14 @@ export function commandReply(
   if (cmd === "/stats") {
     const discovery = leads.filter(isDiscoveryCandidate);
     const acceptedDiscovery = discovery.filter(canRouteDiscoveryLead).length;
-    const rejectedDiscovery = discovery.filter(lead => lead.qualification_audit?.decision_source === "MODEL" &&
-      lead.qualification_audit.discovery_semantics?.decision === "REJECT").length;
+    const rejectedDiscovery = discovery.length - acceptedDiscovery;
     const guardedDiscovery = discovery.filter(lead => lead.qualification_audit?.decision_source === "SOURCE_GUARD").length;
-    const awaitingDiscovery = discovery.length - acceptedDiscovery - rejectedDiscovery - guardedDiscovery;
+    const rulesDiscovery = discovery.filter(lead => lead.qualification_audit?.decision_source === "RULES_FALLBACK").length;
 
     return (
       `Actual CRM counts\nTotal: ${leads.length}\n` +
       (discovery.length > 0
-        ? `Discovery candidates: ${discovery.length} (Accepted: ${acceptedDiscovery}, Rejected: ${rejectedDiscovery}, Awaiting classification: ${awaitingDiscovery}, Blocked by source check: ${guardedDiscovery})\n`
+        ? `Discovery candidates: ${discovery.length} (Accepted: ${acceptedDiscovery}, Rejected: ${rejectedDiscovery}, Rules fallback: ${rulesDiscovery}, Blocked by source check: ${guardedDiscovery})\n`
         : "") +
       `Qualified ever: ${reached("QUALIFIED", ["QUALIFIED", "PENDING_APPROVAL", "APPROVED_FOR_DRAFT", "DRAFT_READY", "CONTACTED_MANUALLY", "REPLIED", "DISCOVERY", "QUOTED", "WON", "MAINTENANCE"])}\n` +
       `Approved ever: ${reached("APPROVED_FOR_DRAFT", ["APPROVED_FOR_DRAFT", "DRAFT_READY", "CONTACTED_MANUALLY", "REPLIED", "DISCOVERY", "QUOTED", "WON", "MAINTENANCE"])}\n` +

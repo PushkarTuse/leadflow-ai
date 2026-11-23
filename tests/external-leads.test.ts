@@ -59,8 +59,8 @@ describe('external discovery pull',()=>{
     const input=externalToLead(candidate('jobicy_rss',jobicyUrl,signal));
     const engine=new Engine(new MemoryStore(),defaults,{now:()=>time});
     const lead=engine.ingest(input).lead;
-    expect(lead.qualification?.operator_decision).toBeUndefined();
-    expect(lead.qualification_audit?.decision_source).toBe('NO_MODEL');
+    expect(lead.qualification?.operator_decision).toBe('ACCEPTED');
+    expect(lead.qualification_audit?.decision_source).toBe('RULES_FALLBACK');
     expect(lead.qualification_audit?.provider_signal?.engagement).toEqual(signal);
     expect(lead.contact_permission_state).toBe('UNKNOWN');
     expect(externalToLead(candidate('jobicy_rss',jobicyUrl)).discovery_context?.provider_verified_engagement).toBeUndefined();

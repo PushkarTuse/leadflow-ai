@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { discoveryAiBanner, providerHealthLine, type DiscoveryAiHealth } from "../../../packages/core/discovery-ai-health";
 
-export type QualificationState = "ACCEPTED" | "REJECTED" | "AWAITING_CLASSIFICATION" | "SOURCE_GUARD";
+export type QualificationState = "ACCEPTED" | "REJECTED";
 
 export interface LeadRow {
   lead_id: string;
@@ -34,7 +35,7 @@ export interface LeadRow {
   qualification_audit?: {
     method: string;
     discovery_provider?: "gemini" | "groq" | "cloudflare" | "openrouter" | "openai";
-    decision_source?: "MODEL" | "NO_MODEL" | "SOURCE_GUARD";
+    decision_source?: "MODEL" | "RULES_FALLBACK" | "NO_MODEL" | "SOURCE_GUARD";
     project_boundary?: "BOUNDED" | "ONGOING_SEAT" | "UNVERIFIED";
     discovery_semantics?: { lead_kind: string; decision?: "ACCEPT" | "REJECT"; decision_reason?: string };
   };
@@ -44,11 +45,11 @@ export interface LeadRow {
 
 export function qualificationState(row: LeadRow): QualificationState {
   const audit = row.qualification_audit;
-  if (audit?.decision_source === "SOURCE_GUARD") return "SOURCE_GUARD";
-  if (audit?.decision_source !== "MODEL") return "AWAITING_CLASSIFICATION";
-  if (audit.discovery_semantics?.decision === "REJECT") return "REJECTED";
-  return row.qualification?.operator_decision === "ACCEPTED" &&
-    audit.discovery_semantics?.decision === "ACCEPT" ? "ACCEPTED" : "AWAITING_CLASSIFICATION";
+  if (row.qualification?.operator_decision !== "ACCEPTED") return "REJECTED";
+  if (audit?.decision_source === "MODEL" && audit.discovery_semantics?.decision === "ACCEPT") return "ACCEPTED";
+  if (audit?.decision_source === "RULES_FALLBACK" && row.qualification.is_valid_freelance_lead &&
+      row.qualification.eligibility_state === "ELIGIBLE") return "ACCEPTED";
+  return "REJECTED";
 }
 
 export function displayPriority(state: QualificationState, priority?: string) {
@@ -68,14 +69,14 @@ function paymentLabel(budget?: NonNullable<LeadRow["qualification"]>["budget_sig
 }
 
 export function qualificationCounts(rows: LeadRow[]) {
-  const counts = { ACCEPTED: 0, REJECTED: 0, AWAITING_CLASSIFICATION: 0, SOURCE_GUARD: 0 };
+  const counts = { ACCEPTED: 0, REJECTED: 0 };
   for (const row of rows) counts[qualificationState(row)]++;
-  return { raw: rows.length, accepted: counts.ACCEPTED, rejected: counts.REJECTED,
-    awaitingClassification: counts.AWAITING_CLASSIFICATION, sourceGuard: counts.SOURCE_GUARD };
+  return { raw: rows.length, accepted: counts.ACCEPTED, rejected: counts.REJECTED };
 }
 
 export function qualificationMethod(row: LeadRow) {
   if (row.qualification_audit?.decision_source === "NO_MODEL") return "No AI verdict";
+  if (row.qualification_audit?.decision_source === "RULES_FALLBACK") return "Rules fallback";
   if (row.qualification_audit?.decision_source === "SOURCE_GUARD") return "Source guard";
   if (row.qualification_audit?.discovery_provider) return row.qualification_audit.discovery_provider;
   const method = row.qualification_audit?.method;
@@ -104,6 +105,7 @@ interface StatusPayload {
   emailTest: EmailTest | null;
   stateFile?: string | null;
   directory?: string;
+  aiHealth?: DiscoveryAiHealth;
   sourceHealth?: {
     origin: string;
     state: "OK" | "NO_NEW_BUYERS" | "NO_BUYER_CANDIDATES" | "UPSTREAM_ERROR";
@@ -132,6 +134,22 @@ const stages = [
   "Telegram Owner Digest",
   "Gmail Safe Owner-Test",
 ];
+
+export function PipelineAiHealth({ health }: { health: DiscoveryAiHealth }) {
+  const banner = discoveryAiBanner(health);
+  return (
+    <section className="note-panel" aria-label="AI provider status">
+      <h2>AI provider status</h2>
+      {banner && <p role="alert"><strong>{banner}</strong></p>}
+      <p>Latest classification run · {health.finalizedBy.ai} by AI, {health.finalizedBy.rules} by rules, {health.finalizedBy.sourceGuard} by source check</p>
+      {health.providers.length ? (
+        <ul>{health.providers.map(provider => (
+          <li key={provider.id}>{providerHealthLine(provider)}</li>
+        ))}</ul>
+      ) : <p>No AI providers were enabled and configured.</p>}
+    </section>
+  );
+}
 const attribution: Record<string,string> = {
   hackernews:"Hacker News", wordpress_jobs_rss:"WordPress Jobs", freelancer_rss:"Freelancer",
   himalayas:"Himalayas", jobicy_rss:"Jobicy", remotive:"Remotive",
@@ -324,6 +342,8 @@ export function PipelineDashboard() {
         )}
       </section>
 
+      {status?.aiHealth && <PipelineAiHealth health={status.aiHealth} />}
+
       <section className="note-panel" aria-label="Source health">
         <h2>Source health</h2>
         <p><strong>{healthLabel}</strong></p>
@@ -394,9 +414,7 @@ export function PipelineDashboard() {
           {[
             ["Raw candidates", counts.raw],
             ["Accepted", counts.accepted],
-            ["Rejected by AI", counts.rejected],
-            ["Awaiting classification", counts.awaitingClassification],
-            ["Blocked by source check", counts.sourceGuard],
+            ["Rejected", counts.rejected],
           ].map(([label, count]) => (
             <span
               key={label}
@@ -502,18 +520,13 @@ export function PipelineDashboard() {
                         ? <a href={sourceLink} target="_blank" rel="noreferrer">{sourceLabel}</a>
                         : sourceLabel}</td>
                       <td style={cell}>
-                        <strong>{{
-                          ACCEPTED: "Accepted",
-                          REJECTED: "Rejected by AI",
-                          AWAITING_CLASSIFICATION: "Awaiting classification",
-                          SOURCE_GUARD: "Blocked by source check",
-                        }[state]}</strong>
+                        <strong>{state === "ACCEPTED" ? "Accepted" : "Rejected"}</strong>
                       </td>
                       <td style={cell}>
                         {displayPriority(state, qualification?.priority)}
                       </td>
                       <td style={cell}>
-                        {qualification && state !== "AWAITING_CLASSIFICATION"
+                        {qualification
                           ? `${qualification.quality_score}/100 · ${Math.round(qualification.confidence_score * 100)}%`
                           : "—"}
                       </td>

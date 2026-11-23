@@ -797,7 +797,7 @@ export const qualificationAuditSchema = z
     freshness_basis: z.literal("HIMALAYAS_LAST_UPDATE").optional(),
     // Older records predate the model's explicit decision fields.
     discovery_semantics: discoverySemanticsSchema.partial({decision:true,decision_reason:true}).optional(),
-    decision_source: z.enum(["MODEL", "NO_MODEL", "SOURCE_GUARD"]).optional(),
+    decision_source: z.enum(["MODEL", "RULES_FALLBACK", "NO_MODEL", "SOURCE_GUARD"]).optional(),
     advisory_state: z.enum(eligibilityStates).optional(),
     project_boundary: z.enum(["BOUNDED", "ONGOING_SEAT", "UNVERIFIED"]).optional(),
   })
