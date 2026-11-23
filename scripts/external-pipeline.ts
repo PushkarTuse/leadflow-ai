@@ -4,6 +4,7 @@ import {randomBytes} from 'node:crypto';
 import {Engine,canRouteDiscoveryLead,isDiscoveryCandidate,notification} from '../packages/core/workflow';
 import {MemoryStore} from '../packages/core/memory-store';
 import {configSchema} from '../packages/core/model';
+import {FREELANCE_BUYER_SOURCES} from '../packages/core/qualification';
 import {classifyGemini,openAICompletionEndpoint,type Http} from '../apps/automation/adapters';
 import {pullExternalLeads,type ExternalCursor} from '../apps/automation/external-leads';
 import {loopbackOrigin,stateDirectory} from './external-local-config.mjs';
@@ -53,7 +54,9 @@ function executiveSummary(store:MemoryStore,run:{imported:number;duplicates:numb
   const allRecords=store.leads();
   const discovery=allRecords.filter(isDiscoveryCandidate);
   const eligible=discovery.filter(canRouteDiscoveryLead);
-  const rejected=discovery.filter(lead=>!canRouteDiscoveryLead(lead));
+  const rejected=discovery.filter(lead=>lead.qualification_audit?.discovery_semantics?.decision==="REJECT" &&
+    lead.qualification_audit.decision_source==="MODEL");
+  const blocked=discovery.filter(lead=>lead.qualification_audit?.decision_source==="SOURCE_GUARD").length;
   const inbound=allRecords.filter(l=>!isDiscoveryCandidate(l));
   const reasonCounts=new Map<string,number>();
   for(const candidate of rejected){
@@ -75,6 +78,8 @@ function executiveSummary(store:MemoryStore,run:{imported:number;duplicates:numb
     `Raw candidates: ${discovery.length}`,
     `Accepted candidates: ${eligible.length}`,
     `Rejected candidates: ${rejected.length}`,
+    `Awaiting classification: ${discovery.length-eligible.length-rejected.length-blocked}`,
+    `Blocked by source check: ${blocked}`,
     reasonCounts.size?`Primary reasons: ${[...reasonCounts].map(([reason,count])=>`${reason} (${count})`).join(', ')}`:'',
     inbound.length?`  • Consented inbound enquiries: ${inbound.length}`:'',
     '',
@@ -152,6 +157,8 @@ async function main(){
   }}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
   const get=(key:string,fallback='')=>process.env[key]??fallback;
   const on=(key:string)=>get(key)==='true';
+  const collectSources=process.argv.includes('--collect');
+  const drain=process.argv.includes('--drain');
   const requalifyMissing=process.argv.includes('--requalify-missing')||
     ['1','true'].includes(get('REQUALIFY_MISSING').toLowerCase());
   const requalifyAll=process.argv.includes('--requalify-all')||
@@ -167,9 +174,30 @@ async function main(){
   // Intentionally local-only. Hosted APIs use the existing Apps Script connector.
   const upstream=loopbackOrigin(get('EXTERNAL_LEADS_API_ORIGIN','http://127.0.0.1:8787'));
   process.env.EXTERNAL_LEADS_API_ORIGIN=upstream;
+  const allowedSources=[...new Set(get('EXTERNAL_LEADS_SOURCES','hackernews').split(',').map(s=>s.trim()))].sort();
+  const buyerSources=new Set<string>(FREELANCE_BUYER_SOURCES);
+  if(allowedSources.some(source=>!buyerSources.has(source)))throw new Error('Invalid external source allowlist');
   let token=get('EXTERNAL_LEADS_API_TOKEN');
   if(!token&&!replayStored){const vars=await readFile('../leadflow-leads/.dev.vars','utf8');token=vars.split(/\r?\n/).find(l=>l.startsWith('API_TOKEN='))?.slice(10).trim()||'';}
   if(!token&&!replayStored)throw new Error('Local API token missing');
+  if(collectSources){
+    if(preview||requalificationRun||drain)throw new Error('Run source collection as a separate command');
+    for(const source of allowedSources){
+      try{
+        const response=await fetch(`${upstream}/collect/${source}?limit=20`,{
+          method:'POST',headers:{Authorization:`Bearer ${token}`},redirect:'error',signal:AbortSignal.timeout(90000),
+        });
+        const {state,fetched,inserted,duplicates}=await response.json();
+        console.log(JSON.stringify({source,http:response.status,state,fetched,inserted,duplicates}));
+        if(!response.ok)process.exitCode=1;
+      }catch{
+        console.error(`Collection failed for ${source}. Check the local API and source status.`);
+        process.exitCode=1;
+      }
+    }
+    return;
+  }
+  if(drain&&replayStored)throw new Error('Use --drain for new candidates or --retry-discovery-ai for saved candidates');
   const providerSetting=get('DISCOVERY_AI_PROVIDER',get('AI_PROVIDER','gemini'));
   if(!['auto','gemini','openai','openrouter'].includes(providerSetting))throw new Error('DISCOVERY_AI_PROVIDER must be auto, gemini, openai or openrouter');
   const automatic=providerSetting==='auto';
@@ -218,7 +246,6 @@ async function main(){
   const lock=await open(file+'.lock','wx');
   try{
     const store=new MemoryStore();let cursor:ExternalCursor={after:0};let emailTest:EmailTestState={...emptyEmailTest};
-    const allowedSources=[...new Set(get('EXTERNAL_LEADS_SOURCES','hackernews').split(',').map(s=>s.trim()))].sort();
     let checkpointKey=JSON.stringify([upstream,allowedSources,1]);
     let sourceHealth:unknown=null;
     let cooldowns:Parameters<typeof discoveryAiChain>[3]={};
@@ -228,7 +255,7 @@ async function main(){
     const save=async()=>{await writeFile(file+'.tmp',JSON.stringify({offset:0,checkpointKey,cursor,store,emailTest,sourceHealth,cooldowns},null,2));await rename(file+'.tmp',file);};
     let httpCount=0;
     function requestJson(url:string,request?:Parameters<Http['json']>[1]){
-      const result=spawnSync(process.execPath,['scripts/external-http.mjs'],{input:JSON.stringify({url,request}),encoding:'utf8',timeout:20000,maxBuffer:2000000});
+      const result=spawnSync(process.execPath,['scripts/external-http.mjs'],{input:JSON.stringify({url,request}),encoding:'utf8',timeout:27000,maxBuffer:2000000});
       if(result.status!==0){
         // external-http.mjs writes only a safe, credential-free detail to stderr
         // (HTTP status or network error code). Bound and flatten it before use.
@@ -260,7 +287,7 @@ async function main(){
       return {warning:'OpenAI-compatible extraction is limited to discovery; local rules used'};
     }:undefined);
     let requalified=0,requalificationSkipped=0;
-    let result:{imported:number;duplicates:number;invalid:number;nextOffset:number;fetched?:number;sourceState?:string};
+    let result={imported:0,duplicates:0,invalid:0,nextOffset:0,fetched:0,sourceState:''};
     if(replayStored){
       for(const lead of store.leads().filter(isDiscoveryCandidate)){
         if(!lead.discovery_context){requalificationSkipped++;continue;}
@@ -271,26 +298,36 @@ async function main(){
         }
         engine.requalifyDiscovery(lead.lead_id,lead,true);
         requalified++;
+        if(retryDiscoveryAi)await save();
       }
-      result={imported:0,duplicates:0,invalid:0,nextOffset:0};
     }else{
       try {
-      const pulled=pullExternalLeads(http,{origin,token:transportToken,offset:0,cursor,limit,allowedSources},lead=>{
-        const ingested=engine.ingest(lead);
-        if(requalifyMissing&&ingested.duplicate&&lead.discovery_context){
-          const stored=store.get(ingested.lead.lead_id);
-          if(stored?.source==='hn'&&(!stored.qualification||stored.qualification_status==='NEEDS_REQUALIFICATION')){
-            engine.requalifyMissingDiscovery(stored.lead_id,lead);
-            requalified++;
-          }
+        for(let page=0;page<(drain?50:1);page++){
+          httpCount=0;
+          const pulled=pullExternalLeads(http,{origin,token:transportToken,offset:0,cursor,limit,allowedSources},lead=>{
+            const ingested=engine.ingest(lead);
+            if(requalifyMissing&&ingested.duplicate&&lead.discovery_context){
+              const stored=store.get(ingested.lead.lead_id);
+              if(stored?.source==='hn'&&(!stored.qualification||stored.qualification_status==='NEEDS_REQUALIFICATION')){
+                engine.requalifyMissingDiscovery(stored.lead_id,lead);
+                requalified++;
+              }
+            }
+            return ingested;
+          });
+          result.imported+=pulled.imported;
+          result.duplicates+=pulled.duplicates;
+          result.invalid+=pulled.invalid;
+          result.fetched+=pulled.fetched;
+          result.nextOffset=pulled.nextOffset;
+          result.sourceState=result.fetched?'OK':pulled.sourceState;
+          cursor=pulled.nextCursor ?? cursor;
+          if(!drain||cursor.until===undefined)break;
+          await save();
         }
-        return ingested;
-      });
-      result=pulled;
-      cursor=pulled.nextCursor ?? cursor;
-      let diagnostics: unknown=null;
-      try { diagnostics=network.json(upstream+'/diagnostics',{headers:{Authorization:`Bearer ${token}`}}); } catch { /* Optional for older Workers. */ }
-      sourceHealth={origin:upstream,state:pulled.sourceState,at:new Date().toISOString(),fetched:pulled.fetched,diagnostics};
+        let diagnostics: unknown=null;
+        try { diagnostics=network.json(upstream+'/diagnostics',{headers:{Authorization:`Bearer ${token}`}}); } catch { /* Optional for older Workers. */ }
+        sourceHealth={origin:upstream,state:result.sourceState,at:new Date().toISOString(),fetched:result.fetched,diagnostics};
       } catch(error) {
         sourceHealth={origin:upstream,state:'UPSTREAM_ERROR',at:new Date().toISOString(),error:error instanceof Error&&error.message.startsWith('Upstream ')?error.message:'Lead intake failed. Check the Worker version, response and provider health.'};
         await save();
@@ -337,10 +374,14 @@ async function main(){
     await save();await writeFile(`${output}/review-preview.json`,JSON.stringify(alerts,null,2));
     const discoveryRows=store.leads().filter(isDiscoveryCandidate);
     const accepted=discoveryRows.filter(canRouteDiscoveryLead).length;
+    const rejected=discoveryRows.filter(lead=>lead.qualification_audit?.decision_source==='MODEL'&&
+      lead.qualification_audit.discovery_semantics?.decision==='REJECT').length;
+    const blocked=discoveryRows.filter(lead=>lead.qualification_audit?.decision_source==='SOURCE_GUARD').length;
     const {requests,attempted,succeeded,failed}=chain.coverage;
     console.log(JSON.stringify({mode:preview?'DRY RUN — real reads, local rules, preview only':requalificationRun?'LOCAL REQUALIFICATION — NOTIFICATIONS SUPPRESSED':`LOCAL ONE-SHOT — ${qualificationMode.toUpperCase()}`,...result,requalified,requalification_skipped_missing_context:requalificationSkipped,
       total:store.leads().length,pending:store.leads().filter(l=>l.status==='PENDING_APPROVAL').length,
-      accepted,rejected:discoveryRows.length-accepted,ai_attempted:attempted,ai_succeeded:succeeded,ai_failed:failed,
+      accepted,rejected,awaiting_classification:discoveryRows.length-accepted-rejected-blocked,
+      blocked_by_source:blocked,ai_attempted:attempted,ai_succeeded:succeeded,ai_failed:failed,
       ai_skipped:Math.max(0,result.imported+requalified-succeeded-failed),
       ai_failure_reasons:chain.failures,ai_provider:providerSetting,gemini_attempted:Boolean(chain.callsByProvider.gemini),
       discovery_ai_requests:requests,ai_requests_by_provider:chain.callsByProvider,ai_verdicts_by_provider:chain.verdictsByProvider,

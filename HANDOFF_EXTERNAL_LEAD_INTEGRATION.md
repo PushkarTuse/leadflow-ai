@@ -132,3 +132,9 @@ Ran `npm run external:run -- --retry-discovery-ai` once against the 16 saved no-
 ## Dashboard default profile — 23 November 2026
 
 The operator's standard Vite start inherited an old `EXTERNAL_LOCAL_PROFILE=wp-project-check-20261123` and displayed only the two WordPress records in that isolated ledger. Changed `apps/web/vite.config.ts` to use a separate, explicit `LEADFLOW_LOCAL_PROFILE` for dashboard profile selection. With that variable unset, the dashboard reads the shared `data/` ledger, where all 58 source records appear. Verified `GET http://127.0.0.1:5174/api/local/pipeline/status` shows 58 rows: WordPress Jobs 2, Jobicy 20, Himalayas 20, Remotive 16. Hacker News returned zero eligible candidates at collection. Typecheck passed. Restart Vite after pulling this change.
+
+## Verdict coverage and source refresh — 24 November 2026
+
+The reported 57 rejections comprised 50 validated AI rejections and seven rows without a verdict. The 51 completed decisions came from Gemini 36, Groq 9, Cloudflare 5 and OpenRouter 1. The 50 rejections were labeled 37 ongoing contractor roles, 11 full-time jobs and two seller promotions. The accepted listing was a scoped WordPress project. The provider errors included Gemini 503, Groq 429, Cloudflare timeouts, ungrounded quotes and malformed model output. Source health reflected an earlier collection, and the later import found zero new rows.
+
+Added a compact verdict schema for backups, exact source quote recovery for typography and whitespace differences, and support for the full normalized description length. The dashboard and CLI now show missed verdicts as awaiting classification. Retry keeps completed model decisions and checkpoints saved results. Use `npm run external:collect` and `npm run external:run -- --drain` for a fresh feed poll and import.

@@ -222,9 +222,9 @@ describe("Stage E qualification routing and persistence", () => {
   ] as const)("classifies HN hiring-thread role/profile: $title", ({ title, text, reason }) => {
     const lead = new Engine(new MemoryStore()).ingest(discoveryInput(text, title)).lead;
 
-    expect(lead.qualification?.eligibility_state).toBe("REJECTED");
+    expect(lead.qualification?.eligibility_state).toBe("REVIEW_INCOMPLETE");
     expect(lead.qualification?.rejection_reason).toBe(reason);
-    expect(lead.status).toBe("REJECTED");
+    expect(lead.status).toBe("NEW");
   });
 
   it("uses the first HN body line as title evidence when original_title is absent", () => {
@@ -235,7 +235,7 @@ describe("Stage E qualification routing and persistence", () => {
     input.discovery_context!.original_title = "";
     const lead = new Engine(new MemoryStore()).ingest(input).lead;
 
-    expect(lead.qualification?.eligibility_state).toBe("REJECTED");
+    expect(lead.qualification?.eligibility_state).toBe("REVIEW_INCOMPLETE");
     expect(lead.qualification?.rejection_reason).toBe("FULL_TIME_ONLY");
   });
 
@@ -249,8 +249,8 @@ describe("Stage E qualification routing and persistence", () => {
       ),
     ).lead;
 
-    expect(lead.status).toBe("REJECTED");
-    expect(lead.qualification?.eligibility_state).toBe("REJECTED");
+    expect(lead.status).toBe("NEW");
+    expect(lead.qualification?.eligibility_state).toBe("REVIEW_INCOMPLETE");
     expect(lead.qualification?.rejection_reason).toBe("FULL_TIME_ONLY");
     expect(lead.qualification?.quality_score).toBe(0);
     expect(lead.qualification_audit?.reasons).toContain("FULL_TIME_ONLY");
@@ -290,12 +290,12 @@ describe("Stage E qualification routing and persistence", () => {
       ).lead;
 
       expect(lead.qualification?.rejection_reason).toBe(testCase.reason);
-      expect(lead.status).toBe("REJECTED");
+      expect(lead.status).toBe("NEW");
       expect(store.requests()).toHaveLength(0);
     }
   });
 
-  it("rejects discoveries without an AI verdict and never creates a review queue", () => {
+  it("defers discoveries without an AI verdict without creating an approval", () => {
     const store = new MemoryStore();
     const engine = new Engine(store, undefined, undefined, () => ({warning:"Gemini quota (HTTP 429)"}));
     const low = engine.ingest(
@@ -304,10 +304,10 @@ describe("Stage E qualification routing and persistence", () => {
         "Independent React contractor",
       ),
     ).lead;
-    expect(low.qualification?.operator_decision).toBe("REJECTED");
+    expect(low.qualification?.operator_decision).toBeUndefined();
     expect(low.qualification_audit?.decision_source).toBe("NO_MODEL");
     expect(low.extractionWarning).toContain("429");
-    expect(low.status).toBe("REJECTED");
+    expect(low.status).toBe("NEW");
     expect(() => engine.prepareApproval(low, "testnonce12345678")).toThrow();
     expect(() => notification(low, approvalRequest(low.lead_id))).toThrow(
       /ACCEPT verdict/,
@@ -319,8 +319,8 @@ describe("Stage E qualification routing and persistence", () => {
         "Need React help.",
       ),
     ).lead;
-    expect(incomplete.qualification?.eligibility_state).toBe("REJECTED");
-    expect(incomplete.status).toBe("REJECTED");
+    expect(incomplete.qualification?.eligibility_state).toBe("REVIEW_INCOMPLETE");
+    expect(incomplete.status).toBe("NEW");
     expect(() => engine.prepareApproval(incomplete, "testnonce12345678")).toThrow();
     expect(
       () => notification(incomplete, approvalRequest(incomplete.lead_id)),
@@ -392,7 +392,7 @@ describe("Stage E qualification routing and persistence", () => {
     const input = discoveryInput("USD 2,000 will be released when the replacement site is delivered and handed over.", "Website makeover");
     const fallback = new Engine(store, undefined, undefined, () => ({warning:"Gemini quota"}));
     const rejected = fallback.ingest(input).lead;
-    expect(rejected.qualification?.operator_decision).toBe("REJECTED");
+    expect(rejected.qualification?.operator_decision).toBeUndefined();
     const engine = new Engine(store, undefined, undefined, () => ({
       discoverySignals: { ...projectVerdict(input.raw_description), lead_kind:"UNKNOWN" },
     }));
@@ -494,12 +494,12 @@ describe("Stage E qualification routing and persistence", () => {
       refreshed,
     );
 
-    expect(requalified.qualification?.eligibility_state).toBe("REJECTED");
+    expect(requalified.qualification?.eligibility_state).toBe("REVIEW_INCOMPLETE");
     expect(requalified.qualification?.rejection_reason).toBe("FULL_TIME_ONLY");
     expect(requalified.qualification_audit?.source_hash).toBe(
       refreshed.discovery_context?.source_hash,
     );
-    expect(requalified.status).toBe("REJECTED");
+    expect(requalified.status).toBe("NEW");
     expect(store.requests()[0].state).toBe("FAILED");
     expect(store.requests()).toHaveLength(1);
   });

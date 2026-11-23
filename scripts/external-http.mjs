@@ -34,7 +34,8 @@ try {
     && !chainEndpoint
     && !(aiEndpoint&&url===aiEndpoint)){detail='host blocked';throw new Error('Host blocked');}
   const response=await fetch(url,{method:request.method||'get',headers:{'Content-Type':'application/json',...request.headers},
-    ...(request.body===undefined?{}:{body:JSON.stringify(request.body)}),redirect:'error',signal:AbortSignal.timeout(15000)});
+    ...(request.body===undefined?{}:{body:JSON.stringify(request.body)}),redirect:'error',
+    signal:AbortSignal.timeout(chainEndpoint&&url.startsWith('https://api.cloudflare.com/')?22000:15000)});
   if(!response.ok){
     detail='HTTP '+response.status;
     const retryAfter=response.headers.get('retry-after');

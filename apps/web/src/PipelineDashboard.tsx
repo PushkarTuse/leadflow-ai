@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 
-export type QualificationState = "ACCEPTED" | "REJECTED";
+export type QualificationState = "ACCEPTED" | "REJECTED" | "AWAITING_CLASSIFICATION" | "SOURCE_GUARD";
 
 export interface LeadRow {
   lead_id: string;
@@ -20,7 +20,7 @@ export interface LeadRow {
   qualification?: {
     is_valid_freelance_lead: boolean;
     eligibility_state: string;
-    operator_decision?: QualificationState;
+    operator_decision?: "ACCEPTED" | "REJECTED";
     priority: string;
     quality_score: number;
     confidence_score: number;
@@ -43,9 +43,12 @@ export interface LeadRow {
 }
 
 export function qualificationState(row: LeadRow): QualificationState {
+  const audit = row.qualification_audit;
+  if (audit?.decision_source === "SOURCE_GUARD") return "SOURCE_GUARD";
+  if (audit?.decision_source !== "MODEL") return "AWAITING_CLASSIFICATION";
+  if (audit.discovery_semantics?.decision === "REJECT") return "REJECTED";
   return row.qualification?.operator_decision === "ACCEPTED" &&
-    row.qualification_audit?.decision_source === "MODEL" &&
-    row.qualification_audit.discovery_semantics?.decision === "ACCEPT" ? "ACCEPTED" : "REJECTED";
+    audit.discovery_semantics?.decision === "ACCEPT" ? "ACCEPTED" : "AWAITING_CLASSIFICATION";
 }
 
 export function displayPriority(state: QualificationState, priority?: string) {
@@ -65,8 +68,10 @@ function paymentLabel(budget?: NonNullable<LeadRow["qualification"]>["budget_sig
 }
 
 export function qualificationCounts(rows: LeadRow[]) {
-  const accepted = rows.filter(row => qualificationState(row) === "ACCEPTED").length;
-  return { raw: rows.length, accepted, rejected: rows.length - accepted };
+  const counts = { ACCEPTED: 0, REJECTED: 0, AWAITING_CLASSIFICATION: 0, SOURCE_GUARD: 0 };
+  for (const row of rows) counts[qualificationState(row)]++;
+  return { raw: rows.length, accepted: counts.ACCEPTED, rejected: counts.REJECTED,
+    awaitingClassification: counts.AWAITING_CLASSIFICATION, sourceGuard: counts.SOURCE_GUARD };
 }
 
 export function qualificationMethod(row: LeadRow) {
@@ -331,7 +336,7 @@ export function PipelineDashboard() {
               {health.diagnostics.latest_runs.map((source) => (
                 <li key={source.source}>
                   <strong>{attribution[source.source] || source.source}</strong> · {source.state || (source.failed ? "PROVIDER_UNAVAILABLE" : "OK")}
-                  {source.raw_count != null && <> · {source.raw_count} raw, {source.filtered_count ?? 0} filtered, {source.accepted_count ?? 0} accepted</>}
+                  {source.raw_count != null && <> · {source.raw_count} raw, {source.filtered_count ?? 0} filtered, {source.accepted_count ?? 0} passed collector checks</>}
                   {source.last_success_at && <> · Last successful poll <time dateTime={source.last_success_at}>{new Date(source.last_success_at).toLocaleString()}</time></>}
                 </li>
               ))}
@@ -389,7 +394,9 @@ export function PipelineDashboard() {
           {[
             ["Raw candidates", counts.raw],
             ["Accepted", counts.accepted],
-            ["Rejected", counts.rejected],
+            ["Rejected by AI", counts.rejected],
+            ["Awaiting classification", counts.awaitingClassification],
+            ["Blocked by source check", counts.sourceGuard],
           ].map(([label, count]) => (
             <span
               key={label}
@@ -440,7 +447,7 @@ export function PipelineDashboard() {
                     "Source",
                     "Decision",
                     "Advisory priority",
-                    "Quality score / confidence",
+                    "Advisory score / confidence",
                     "Classification method",
                     "Qualification reason",
                     "Payment",
@@ -495,13 +502,18 @@ export function PipelineDashboard() {
                         ? <a href={sourceLink} target="_blank" rel="noreferrer">{sourceLabel}</a>
                         : sourceLabel}</td>
                       <td style={cell}>
-                        <strong>{state === "ACCEPTED" ? "Accepted" : "Rejected"}</strong>
+                        <strong>{{
+                          ACCEPTED: "Accepted",
+                          REJECTED: "Rejected by AI",
+                          AWAITING_CLASSIFICATION: "Awaiting classification",
+                          SOURCE_GUARD: "Blocked by source check",
+                        }[state]}</strong>
                       </td>
                       <td style={cell}>
                         {displayPriority(state, qualification?.priority)}
                       </td>
                       <td style={cell}>
-                        {qualification
+                        {qualification && state !== "AWAITING_CLASSIFICATION"
                           ? `${qualification.quality_score}/100 · ${Math.round(qualification.confidence_score * 100)}%`
                           : "—"}
                       </td>

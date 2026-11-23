@@ -35,7 +35,7 @@ function row(
 }
 
 describe("qualification dashboard view", () => {
-  it("shows only the binary outcome and ignores old priority or review states", () => {
+  it("counts provider verdicts separately from rows awaiting classification", () => {
     const accepted = row("accepted", "ELIGIBLE", "LOW", true);
     accepted.qualification!.operator_decision = "ACCEPTED";
     accepted.qualification_audit = {method:"gemini", decision_source:"MODEL",
@@ -45,7 +45,11 @@ describe("qualification dashboard view", () => {
     expect(qualificationCounts([
       accepted, row("old-high", "ELIGIBLE", "HIGH", true), row("legacy"),
       row("incomplete", "REVIEW_INCOMPLETE"), row("quarantined", "QUARANTINED"),
-    ])).toEqual({raw:5, accepted:1, rejected:4});
+    ])).toEqual({raw:5, accepted:1, rejected:0, awaitingClassification:4, sourceGuard:0});
+    const legacyNoModel = row("no-model", "REJECTED");
+    legacyNoModel.qualification!.operator_decision = "REJECTED";
+    legacyNoModel.qualification_audit = { method: "rules", decision_source: "NO_MODEL" };
+    expect(qualificationState(legacyNoModel)).toBe("AWAITING_CLASSIFICATION");
     accepted.qualification_audit.discovery_semantics!.decision = "REJECT";
     expect(qualificationState(accepted)).toBe("REJECTED");
   });

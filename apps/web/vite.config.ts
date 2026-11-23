@@ -212,10 +212,9 @@ function localPipeline(): Plugin {
                 json(code, body);
               };
 
-              const child = spawn("npm run external:run", {
+              const child = spawn(process.execPath, ["--import", "tsx", "scripts/external-pipeline.ts"], {
                 cwd: repoRoot,
-                env: process.env,
-                shell: true,
+                env: { ...process.env, EXTERNAL_LOCAL_PROFILE: profile },
               });
 
               let output = "";

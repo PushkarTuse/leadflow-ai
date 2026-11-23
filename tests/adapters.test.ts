@@ -79,6 +79,12 @@ const options = {
 };
 
 describe("local discovery AI failover", () => {
+  const compactRejection = {
+    decision: signals.decision, decision_reason: signals.decision_reason,
+    lead_kind: signals.lead_kind, buyer_or_seller: signals.buyer_or_seller,
+    engagement_boundary: signals.engagement_boundary, term_hint: signals.term_hint,
+    engagement_evidence: null, paid_evidence: null, scope_evidence: signals.scope_evidence,
+  };
   const backups = freeDiscoveryBackups(key => ({
     GROQ_API_KEY: "test-groq-key",
     CLOUDFLARE_AI_API_TOKEN: "test-cloudflare-key",
@@ -95,7 +101,7 @@ describe("local discovery AI failover", () => {
         calls.push(new URL(url).hostname);
         if (url.includes("googleapis")) throw new Error("HTTP 429 retry-after=120");
         if (url.includes("groq")) return { choices: [{ message: { content: "invalid JSON" } }] };
-        if (url.includes("cloudflare")) return { choices: [{ message: { content: JSON.stringify(signals) } }] };
+        if (url.includes("cloudflare")) return { choices: [{ message: { content: JSON.stringify(compactRejection) } }] };
         throw new Error("unneeded fallback");
       },
     };
@@ -115,6 +121,21 @@ describe("local discovery AI failover", () => {
     expect(chain.classify(context)).toEqual({ warning: expect.stringMatching(/^No AI verdict:/) });
     expect(chain.coverage).toEqual({ requests: 3, attempted: 1, succeeded: 0, failed: 1 });
     expect(chain.available()).toBe(false);
+  });
+
+  it("ground compact verdict quotes in the original listing without dropping long input", () => {
+    const decoded_text = "We're hiring an independent contractor to build a React checkout.\n" + "Background. ".repeat(920);
+    const provider = backups[1];
+    const chain = discoveryAiChain([provider], { json(_url, request) {
+      expect(JSON.stringify(request?.body)).toContain("Background.");
+      return { choices: [{ message: { content: JSON.stringify({
+        ...compactRejection, decision: "ACCEPT",
+        engagement_evidence: "We’re hiring an independent contractor",
+      }) } }] };
+    } }, 1, {});
+    expect(chain.classify({ ...context, decoded_text })).toMatchObject({
+      discoverySignals: { decision: "ACCEPT", engagement_evidence: "We're hiring an independent contractor" },
+    });
   });
 });
 

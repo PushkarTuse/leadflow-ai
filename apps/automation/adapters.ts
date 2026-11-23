@@ -8,6 +8,8 @@ import {
   validateExtraction,
   discoveryExtractionJsonSchema,
   discoveryExtractionPrompt,
+  discoveryVerdictJsonSchema,
+  discoveryVerdictPrompt,
   validateDiscoveryExtraction,
   type DiscoverySignals,
 } from "../../packages/core/scoring";
@@ -136,8 +138,8 @@ function cacheDiscoveryExtraction(key: string, signals: DiscoverySignals) {
 
 /**
  * Stage D: Bounded Gemini extraction for freelance discovery classification.
- * One extraction request per candidate; ≤2500 input tokens, ≤800 output tokens.
- * Temperature 0. No auto-retry on invalid JSON — fall back deterministically.
+ * One bounded extraction request per candidate, with up to 800 output tokens.
+ * The caller can try another provider when the response fails validation.
  * Cache by content + version hashes. Freshness recalculated even on cache hits.
  */
 export function classifyGeminiDiscovery(
@@ -196,8 +198,7 @@ export function classifyGeminiDiscovery(
   const body = context.decoded_text || "";
   const canonical = `${title}\n\n${body}`;
 
-  // ≤2500 input tokens ≈ ~10,000 characters
-  if (canonical.length > 10000) {
+  if (canonical.length > 12500) {
     return { warning: "Input too long for discovery extraction; rules used" };
   }
 
@@ -240,7 +241,7 @@ export function classifyGeminiDiscovery(
     const text = result.candidates[0].content.parts
       .map((p) => p.text || "")
       .join("");
-    // No auto-retry: validate or fall back
+    // Validate before returning a verdict to the caller.
     const signals = validateDiscoveryExtraction(text, context);
     cacheDiscoveryExtraction(cacheKey, signals);
     return { signals };
@@ -308,6 +309,7 @@ export function classifyOpenAICompatibleDiscovery(
     model: string;
     baseUrl?: string;
     reasoningEffort?: "low";
+    compactVerdict?: boolean;
   },
 ): { signals?: DiscoverySignals; warning?: string; method?: "openai-compatible" } {
   if (!options.enabled) return { warning: "AI disabled; local rules used" };
@@ -322,7 +324,7 @@ export function classifyOpenAICompatibleDiscovery(
   const title = context.original_title || "";
   const body = context.decoded_text || "";
   const canonical = `${title}\n\n${body}`;
-  if (canonical.length > 10000) return { warning: "Input too long for discovery extraction; rules used" };
+  if (canonical.length > 12500) return { warning: "Input too long for discovery extraction; rules used" };
 
   let endpoint: string;
   try {
@@ -346,6 +348,7 @@ export function classifyOpenAICompatibleDiscovery(
     "openai-compatible",
     endpoint,
     options.model,
+    options.compactVerdict ? "compact-verdict" : "full-extraction",
     qualificationVersions.schema_version,
     qualificationVersions.rules_version,
     qualificationVersions.prompt_version,
@@ -368,7 +371,7 @@ export function classifyOpenAICompatibleDiscovery(
         messages: [
           {
             role: "system",
-            content: `${discoveryExtractionPrompt}\nReturn JSON matching this schema exactly:\n${JSON.stringify(discoveryExtractionJsonSchema)}`,
+            content: `${options.compactVerdict ? discoveryVerdictPrompt : discoveryExtractionPrompt}\nReturn JSON matching this schema exactly:\n${JSON.stringify(options.compactVerdict ? discoveryVerdictJsonSchema : discoveryExtractionJsonSchema)}`,
           },
           {
             role: "user",
@@ -385,7 +388,7 @@ export function classifyOpenAICompatibleDiscovery(
     }));
     const text = result.choices[0].message.content;
     if (text.length > 12000) throw new Error("Oversized classification");
-    const signals = validateDiscoveryExtraction(text, context);
+    const signals = validateDiscoveryExtraction(text, context, options.compactVerdict);
     cacheDiscoveryExtraction(cacheKey, signals);
     return { signals, method: "openai-compatible" };
   } catch (error) {
@@ -405,6 +408,7 @@ export function classifyDiscoveryAI(
     model: string;
     baseUrl?: string;
     reasoningEffort?: "low";
+    compactVerdict?: boolean;
   },
 ): { signals?: DiscoverySignals; warning?: string; method?: "gemini" | "openai-compatible" } {
   const provider = options.provider || "gemini";

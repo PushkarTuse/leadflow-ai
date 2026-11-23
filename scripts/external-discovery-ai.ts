@@ -16,7 +16,8 @@ export function freeDiscoveryBackups(get: (name: string) => string): DiscoveryPr
   ] as const;
   return settings.flatMap(({ id, ...options }) => options.apiKey && urls[id] ? [{
     id,
-    options: { ...options, baseUrl: urls[id], provider: 'openai', enabled: true, freeTierConfirmed: true, dataUseApproved: true },
+    options: { ...options, baseUrl: urls[id], provider: 'openai', enabled: true, freeTierConfirmed: true, dataUseApproved: true,
+      compactVerdict: true },
   }] : []);
 }
 
