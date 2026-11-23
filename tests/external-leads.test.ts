@@ -48,6 +48,18 @@ describe('external discovery pull',()=>{
     expect(lead.raw_description).toContain('React website');expect(lead).not.toHaveProperty('score');
     expect(lead).not.toHaveProperty('status');expect(lead).not.toHaveProperty('consent_at');
   });
+  it('preserves an Ask HN buyer story while keeping seller and legacy comment checks',()=>{
+    const url='https://news.ycombinator.com/item?id=12345';
+    const text='We need a freelance developer to build a clinic booking website. Budget USD 900. Reply here.';
+    const evidence={version:1,original_title:'Ask HN: Need a clinic booking site',original_url:url,
+      raw_text:text,decoded_text:text,published_at:time,observed_at:time,link_targets:[],
+      content_hash:'a'.repeat(64),complete:true,truncated:false,hn_item_type:'story'};
+    const lead=externalToLead({...row,url,listing_evidence:evidence});
+    expect(lead).toMatchObject({contact_permission_state:'UNKNOWN',discovery_context:{item_type:'story',decoded_text:text}});
+    expect(()=>externalToLead({...row,url,listing_evidence:{...evidence,hn_item_type:undefined}})).toThrow('HN buyer evidence mismatch');
+    expect(()=>externalToLead({...row,url,listing_evidence:{...evidence,decoded_text:'Seeking work. I need a developer referral.'}}))
+      .toThrow('HN buyer evidence mismatch');
+  });
   it('carries only source-matched structured engagement through normal ingestion',()=>{
     const body='Project scope: implement a React checkout integration. Compensation: USD 100 per hour.';
     const candidate=(source:string,url:string,engagement?:unknown)=>({...row,source,url,source_id:'post:555',

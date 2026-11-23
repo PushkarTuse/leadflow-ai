@@ -27,6 +27,7 @@ const listingEvidenceSchema=z.object({
   source_updated_at:z.string().datetime().optional(),
   application_url:z.string().url().max(2000).optional(),
   provider_verified_engagement:providerVerifiedEngagementSchema.nullish(),
+  hn_item_type:z.literal('story').optional(),
 }).strict();
 const rowSchema = z.object({
   source:z.enum(externalSources), source_id:z.string().min(1).max(500),
@@ -159,8 +160,18 @@ export function externalToLead(raw:unknown, hnItem?:unknown, hnThread?:unknown):
     if (row.source==='himalayas' && (!evidence.expires_at || !evidence.application_url ||
       !/^https:\/\/himalayas\.app\//.test(evidence.application_url) || !evidence.link_targets.includes(evidence.application_url)))
       throw new Error('Himalayas expiry or application link missing');
-    if(hn && (row.url!==`https://news.ycombinator.com/item?id=${row.source_id}` || !/^seeking freelancer\b/i.test(evidence.decoded_text.trim())))
-      throw new Error('HN buyer evidence mismatch');
+    if(hn){
+      const body=evidence.decoded_text.trim();
+      const buyer = evidence.hn_item_type === 'story'
+        ? /^Ask HN:\s*/i.test(evidence.original_title) &&
+          /\b(?:we|i|our team)\s+(?:(?:are|am)\s+)?(?:need|want to hire|looking for|seeking)\b/i.test(`${evidence.original_title}\n${body}`) &&
+          !/^(?:seeking work|seeking freelance\b|for hire|available for work|looking for (?:work|clients))\b/i.test(body)
+        : /^seeking freelancer\b/i.test(body);
+      if(!/^[1-9]\d{0,14}$/.test(row.source_id) || row.url!==`https://news.ycombinator.com/item?id=${row.source_id}` || !buyer)
+        throw new Error('HN buyer evidence mismatch');
+    } else if(evidence.hn_item_type) {
+      throw new Error('HN item type on a non-HN listing');
+    }
     title=evidence.original_title.slice(0,200);
     description=evidence.decoded_text;
     posted_at=evidence.published_at||undefined;
@@ -168,7 +179,7 @@ export function externalToLead(raw:unknown, hnItem?:unknown, hnThread?:unknown):
       provider:row.source,
       provider_record_id:String(row.source_id).slice(0,160),
       original_url:evidence.original_url,
-      item_type:hn?'comment':'listing',
+      item_type:hn?(evidence.hn_item_type ?? 'comment'):'listing',
       author_handle:'',
       parent_id:'',
       thread_id:'',

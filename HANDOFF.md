@@ -2,6 +2,12 @@
 
 This is the entry point for any AI (or human) picking up this repository. Read this file first, then open the latest capsule.
 
+## Business qualification and wider freelance search — 24 November 2026
+
+Open http://127.0.0.1:5174/pipeline#businesses for the screened business queue or http://127.0.0.1:5174/pipeline#freelance to refresh freelance feeds and qualify the next batch. The saved seven-metro scan held 578 listings. Rules excluded 52, AI held three, and 523 remained visible as prospects, including 173 with listed email. Gemini and Groq screened 84 priority records. A Chromium test confirmed known chains are hidden by default, the local API refuses to draft for an excluded Domino’s branch, and branded drafts download as unsent EML files.
+
+The wide local freelance poll searched recent standalone Ask HN posts as well as monthly comments. The latest browser poll scanned 33 entries and found no buyers. Himalayas, Jobicy, Remotive, and WordPress Jobs were deferred under their stored cooldowns. The shadow drain left the ledger at one accepted and 56 rejected. See `HANDOFF_EXTERNAL_LEAD_INTEGRATION.md` and `docs/EXTERNAL_LEAD_API_SETUP.md` for producer working-copy changes and exact commands.
+
 ## Local discovery reset and AI failover — 23 November 2026
 
 The local dashboard is at http://127.0.0.1:5174/pipeline and the producer API is at http://127.0.0.1:8787. The previous D1 state, qualification ledger, and generated output were moved to the sibling backup folder `leadflow-local-backups/runtime-20261123-050126-577`. The fresh local D1 was migrated with `npm run db:local` before source collection.

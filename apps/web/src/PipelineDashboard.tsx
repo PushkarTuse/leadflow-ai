@@ -206,6 +206,7 @@ export function PipelineDashboard() {
     "idle" | "running" | "completed" | "error"
   >("idle");
   const [runMessage, setRunMessage] = useState("");
+  const [collected, setCollected] = useState<{source: string; state: string; raw?: number; fetched?: number; inserted?: number}[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -246,12 +247,14 @@ export function PipelineDashboard() {
     }
   }
 
-  async function run() {
+  async function run(action: "collect" | "run") {
     setRunState("running");
-    setRunMessage("Running the external pipeline…");
+    const refreshing = action === "collect";
+    if (refreshing) setCollected([]);
+    setRunMessage(refreshing ? "Polling freelance sources…" : "Qualifying the next batch…");
     try {
-      const res = await fetch("/api/local/pipeline/run", { method: "POST", headers: { "X-LeadFlow-Local": "1" } });
-      const data = (await res.json()) as { status: string; error?: string };
+      const res = await fetch(`/api/local/pipeline/${action}`, { method: "POST", headers: { "X-LeadFlow-Local": "1" } });
+      const data = (await res.json()) as { status: string; error?: string; sources?: typeof collected };
       if (!res.ok || data.status !== "completed") {
         setRunState("error");
         setRunMessage(
@@ -259,7 +262,8 @@ export function PipelineDashboard() {
         );
       } else {
         setRunState("completed");
-        setRunMessage("Pipeline run completed.");
+        setRunMessage(refreshing ? "Feed poll completed. See per-source results below." : "Qualification batch completed.");
+        if (refreshing) setCollected(data.sources ?? []);
       }
     } catch {
       setRunState("error");
@@ -323,20 +327,32 @@ export function PipelineDashboard() {
           </button>
           <button
             className="button"
-            onClick={() => void run()}
+            onClick={() => void run("collect")}
             disabled={!enabled || runState === "running"}
           >
-            {runState === "running" ? "Running…" : "Run Full Pipeline Now"}
+            Refresh freelance feeds
+          </button>
+          <button
+            className="button secondary"
+            onClick={() => void run("run")}
+            disabled={!enabled || runState === "running"}
+          >
+            Qualify next batch
           </button>
           <button
             className="button secondary"
             onClick={() => void load()}
             disabled={loading || runState === "running"}
           >
-            Refresh
+            Reload results
           </button>
         </div>
         {runMessage && <p role="status">{runMessage}</p>}
+        {collected.length > 0 && <ul aria-label="Latest feed poll">
+          {collected.map(source => <li key={source.source}>
+            <strong>{attribution[source.source] || source.source}</strong> · {source.state} · {source.raw ?? 0} raw · {source.fetched ?? 0} fetched · {source.inserted ?? 0} new
+          </li>)}
+        </ul>}
         {emailTest && (
           <p role="status">
             <strong>Owner email test:</strong> {emailTest.status}

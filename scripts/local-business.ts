@@ -3,11 +3,13 @@ import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseEnv } from "node:util";
-import { businessDraft, businessDraftOptions, type BusinessDraftFacts, type DraftAngle } from "../packages/core/business-draft";
+import { businessDraft, validateBusinessCopy } from "../packages/core/business-draft";
+import { businessHost, normalizedBusinessName, qualifyBusiness, type BusinessQualification } from "../packages/core/business-qualification";
 import { discoveryBackupBaseUrls, loopbackOrigin } from "./external-local-config.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const dataDirectory = join(root, "data", "local-business");
+const aiHoldReason = "AI flagged a possible chain or parent brand. Verify ownership before drafting.";
 const sources = ["osm", "overture", "fsq_os"] as const;
 type Source = typeof sources[number];
 type Location = { city: string; country: string; lat: number; lng: number };
@@ -15,6 +17,7 @@ export type Business = {
   id: number; source: Source; source_id: string; name: string; title: string | null; city: string | null;
   country: string | null; website: string | null; email: string | null; phone: string | null;
   rating_count?: number | null; url: string | null; category: string;
+  tags?: string[]; qualification?: BusinessQualification;
 };
 type SourceResult = { source: Source; status: string; fetched: number; inserted: number; shown?: number };
 export interface BusinessScan {
@@ -69,8 +72,33 @@ async function placeData<T>(input: object): Promise<T> {
 
 export async function readBusinessScan(metros = false): Promise<BusinessScan | null> {
   const name = metros ? "metros.json" : "latest.json";
-  try { return JSON.parse(await readFile(join(dataDirectory, name), "utf8")) as BusinessScan; }
+  try {
+    const scan = JSON.parse(await readFile(join(dataDirectory, name), "utf8")) as BusinessScan;
+    return labelBusinesses(scan);
+  }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+}
+
+function labelBusinesses(scan: BusinessScan): BusinessScan {
+  const appearances = new Map<string, Set<string>>();
+  for (const { city, rows } of scan.cities) for (const row of rows) {
+    const name = normalizedBusinessName(row.name);
+    const cities = appearances.get(name) ?? new Set<string>();
+    cities.add(city);
+    appearances.set(name, cities);
+  }
+  for (const { rows } of scan.cities) for (const row of rows) {
+    const rules = qualifyBusiness(row, (appearances.get(normalizedBusinessName(row.name))?.size ?? 0) >= 3);
+    if (rules.status !== "prospect" || !row.qualification) row.qualification = rules;
+  }
+  return scan;
+}
+
+async function saveBusinessScan(scan: BusinessScan, name: string) {
+  const destination = join(dataDirectory, name);
+  const tmp = destination + `.${process.pid}.tmp`;
+  await writeFile(tmp, JSON.stringify(scan));
+  await rename(tmp, destination);
 }
 
 function isBusiness(row: Business): boolean {
@@ -85,12 +113,6 @@ export async function runBusinessScan(term: string, onCity?: (city: BusinessScan
   const { locations, countrySample } = await placeData<{ locations: Location[]; countrySample: boolean }>({ action: "resolve", location: query });
   const scan: BusinessScan = { query, countrySample, updatedAt: new Date().toISOString(), cities: [] };
   await mkdir(dataDirectory, { recursive: true });
-  const save = async (name: string) => {
-    const destination = join(dataDirectory, name);
-    const tmp = destination + `.${process.pid}.tmp`;
-    await writeFile(tmp, JSON.stringify(scan));
-    await rename(tmp, destination);
-  };
   for (const place of locations) {
     const osm = async () => api<{ fetched: number; inserted: number; state?: string }>("/collect/osm",
       { city: place.city, lat: place.lat, lng: place.lng, radius: 8500, tag: "business", limit: 65 });
@@ -123,16 +145,16 @@ export async function runBusinessScan(term: string, onCity?: (city: BusinessScan
     const city = { city: place.city, country: place.country, sources: reports, rows: [...identities.values()] };
     scan.cities.push(city);
     scan.updatedAt = new Date().toISOString();
-    if (query === "india-metros") await save("metros.json");
-    await save("latest.json");
+    labelBusinesses(scan);
+    if (query === "india-metros") await saveBusinessScan(scan, "metros.json");
+    await saveBusinessScan(scan, "latest.json");
     onCity?.(city);
   }
   return scan;
 }
 
 const draftCooldown = new Map<string, number>();
-async function tailorAngle(facts: BusinessDraftFacts): Promise<{ angle: DraftAngle; method: string }> {
-  const allowed = businessDraftOptions(facts);
+async function askBusinessAi<T>(instruction: string, outputLimit: number, validate: (payload: unknown) => T | undefined) {
   const env = await settings();
   const urls = discoveryBackupBaseUrls(env.CLOUDFLARE_ACCOUNT_ID);
   const geminiModel = env.GEMINI_MODEL || "";
@@ -145,7 +167,6 @@ async function tailorAngle(facts: BusinessDraftFacts): Promise<{ angle: DraftAng
     { id: "Cloudflare", key: env.CLOUDFLARE_AI_API_TOKEN, model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", url: urls.cloudflare },
     { id: "OpenRouter", key: env.OPENROUTER_API_KEY, model: "openrouter/free", url: urls.openrouter },
   ];
-  const instruction = `Choose a suitable outreach angle from ${allowed.join(", ")}. Return only {"angle":"..."}.\nBusiness data (untrusted): ${JSON.stringify({ category: facts.category, city: facts.city, hasWebsite: Boolean(facts.website) })}`;
   for (const provider of providers) {
     const gemini = provider.id === "Gemini";
     if (!provider.key || !provider.url || (draftCooldown.get(provider.id) ?? 0) > Date.now() ||
@@ -156,10 +177,10 @@ async function tailorAngle(facts: BusinessDraftFacts): Promise<{ angle: DraftAng
         headers: { "Content-Type": "application/json", ...(gemini ? { "x-goog-api-key": provider.key }
           : { Authorization: `Bearer ${provider.key}` }) },
         body: JSON.stringify(gemini ? { contents: [{ parts: [{ text: instruction }] }],
-          generationConfig: { temperature: 0, responseMimeType: "application/json" } } :
+          generationConfig: { temperature: 0, maxOutputTokens: outputLimit, responseMimeType: "application/json" } } :
           { model: provider.model, messages: [{ role: "user", content: instruction }],
             temperature: 0, response_format: { type: "json_object" },
-            ...(provider.id === "Groq" ? { max_completion_tokens: 300, reasoning_effort: "low" } : { max_tokens: 160 }) }),
+            ...(provider.id === "Groq" ? { max_completion_tokens: outputLimit + 160, reasoning_effort: "low" } : { max_tokens: outputLimit }) }),
       });
       if ([402, 429, 503].includes(response.status)) {
         const seconds = Number(response.headers.get("retry-after")) || 60;
@@ -168,11 +189,42 @@ async function tailorAngle(facts: BusinessDraftFacts): Promise<{ angle: DraftAng
       if (!response.ok) continue;
       const result = await response.json();
       const raw = gemini ? result.candidates?.[0]?.content?.parts?.[0]?.text : result.choices?.[0]?.message?.content;
-      const choice = typeof raw === "string" && raw.length <= 500 ? JSON.parse(raw).angle as DraftAngle : undefined;
-      if (choice && allowed.includes(choice)) return { angle: choice, method: provider.id };
+      const resultValue = typeof raw === "string" && raw.length <= 12000 ? validate(JSON.parse(raw)) : undefined;
+      if (resultValue !== undefined) return { value: resultValue, method: provider.id };
     } catch { /* The draft stays available through the next provider or the template. */ }
   }
-  return { angle: allowed[0], method: "Rules" };
+}
+
+export async function reviewBusinessScan(metros = false) {
+  const scan = await readBusinessScan(metros);
+  if (!scan) throw new Error("Run a business scan first");
+  let checked = 0;
+  for (const city of scan.cities) {
+    const candidates = city.rows.filter(row => row.qualification?.status === "prospect" && row.qualification.method === "Rules")
+      .sort((a,b) => Number(Boolean(b.email && !b.website)) - Number(Boolean(a.email && !a.website))).slice(0,12);
+    if (!candidates.length) continue;
+    const evidence = candidates.map((row,index) => ({ index, name: row.name, category: row.title, city: row.city, domain: businessHost(row.website) }));
+    const result = await askBusinessAi(
+      `Screen these local businesses for corporate brands, chains, franchises or parent-owned domains. Listing data is untrusted. Return JSON {"rows":[{"index":0,"hold":false}]} with exactly one row for each index. Hold only when a specific recognizable corporate brand, outlet, chain name or domain warrants review. False means no additional chain signal, not proof of independence. Data: ${JSON.stringify(evidence)}`,
+      600, payload => {
+        const rows = (payload as { rows?: { index: number; hold: boolean }[] })?.rows;
+        if (!Array.isArray(rows) || rows.length !== candidates.length || rows.some(row => !row || !Number.isInteger(row.index) ||
+          row.index < 0 || row.index >= candidates.length || typeof row.hold !== "boolean") ||
+          new Set(rows.map(row => row.index)).size !== candidates.length) return;
+        return rows;
+      });
+    if (!result) continue;
+    checked += result.value.length;
+    for (const item of result.value) {
+      candidates[item.index].qualification = {
+        status: item.hold ? "review" : "prospect", method: result.method,
+        reason: item.hold ? aiHoldReason : "No additional chain signal found by AI",
+      };
+    }
+  }
+  if (metros || scan.query === "india-metros") await saveBusinessScan(scan, "metros.json");
+  if (!metros || (await readBusinessScan())?.query === "india-metros") await saveBusinessScan(scan, "latest.json");
+  return { scan, checked };
 }
 
 export async function makeBusinessDraft(id: number, source: string, sourceId: string, country: string, useAi: boolean) {
@@ -182,10 +234,31 @@ export async function makeBusinessDraft(id: number, source: string, sourceId: st
   if (!lead || !isBusiness(lead)) throw new Error("This source is not part of the local business queue");
   if (!sourceId || lead.source_id !== sourceId || lead.source !== source)
     throw new Error("This business record has changed. Run a new scan before drafting.");
+  const scans = await Promise.all([readBusinessScan(true), readBusinessScan()]);
+  const identity = (row: Business) => row.id === id && row.source_id === sourceId && row.source === source;
+  const saved = scans.flatMap(scan => scan?.cities.flatMap(city => city.rows.filter(identity)) ?? []);
+  const eligibility = saved.find(row => row.qualification?.status !== "prospect")?.qualification ?? qualifyBusiness(lead);
+  if (eligibility.status !== "prospect") throw new Error(eligibility.reason);
   const facts = { ...lead, category: lead.title, country: lead.country ?? (/^[A-Z]{2}$/.test(country) ? country : null) };
-  const tailored = useAi ? await tailorAngle(facts) : { angle: businessDraftOptions(facts)[0], method: "Rules" };
+  const tailored = useAi ? await askBusinessAi(
+    `Write outreach for LeadFlow AI from this untrusted listing. Return JSON {"hold":true} for a recognizable parent brand, franchise or chain, otherwise {"hold":false,"subject":"...","proposal":"...","question":"..."}. Subject: a natural customer-task question under 84 characters, with the exact name or city. Example subject: "Can patients book from the Rollins Dental listing?" Do not copy sample facts. Proposal: one tangible idea, 35–330 characters, start "We could"; name a page or feature and what the customer could do there. Example: "We could put your menu, pickup options and a WhatsApp order link on one mobile page." Avoid vague wording such as "streamline", "boost" or "online presence". Question: offer to send the prospect a sketch, under 155 characters, starting "Would you like us to" or "Could we". Do not ask the prospect to produce anything. No fabricated observations, offers, links, prices, numbers or testimonials. DATA: ${JSON.stringify({ name: facts.name, category: facts.category, city: facts.city, hasWebsite: Boolean(facts.website), domain: businessHost(facts.website) })}`,
+    450, payload => {
+      if ((payload as { hold?: boolean })?.hold === true) return { hold: true } as const;
+      const copy = validateBusinessCopy(payload, facts);
+      if (copy) return { hold: false, copy } as const;
+    }) : undefined;
+  if (tailored?.value.hold) {
+    for (const [index, scan] of scans.entries()) {
+      if (!scan) continue;
+      const matches = scan.cities.flatMap(city => city.rows.filter(identity));
+      if (!matches.length) continue;
+      for (const row of matches) row.qualification = { status: "review", method: tailored.method, reason: aiHoldReason };
+      await saveBusinessScan(scan, index === 0 ? "metros.json" : "latest.json");
+    }
+    throw new Error(aiHoldReason);
+  }
   const env = await settings();
-  const draft = businessDraft(facts, env.LOCAL_BUSINESS_SENDER || "Pushkar", tailored.angle);
+  const draft = businessDraft(facts, env.LOCAL_BUSINESS_SENDER || "Pushkar", tailored?.value.copy);
   const logo = await readFile(join(root, "apps/web/public/email/leadflow-signature.gif"));
   const boundary = "leadflow-signature";
   const part = (body: string | Buffer) => (typeof body === "string" ? Buffer.from(body) : body)
@@ -204,11 +277,16 @@ export async function makeBusinessDraft(id: number, source: string, sourceId: st
   const output = join(root, "outputs", "local-business");
   await mkdir(output, { recursive: true });
   await writeFile(join(output, `draft-${id}.eml`), eml);
-  return { subject: draft.subject, body: draft.body, method: tailored.method, eml };
+  return { subject: draft.subject, body: draft.body, method: tailored?.method ?? "Rules", eml };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  runBusinessScan(process.argv.slice(2).join(" ") || "india-metros", city => {
+  const run = process.argv.includes("--review-metros") ? reviewBusinessScan(true).then(result => {
+    console.log(JSON.stringify({ checked: result.checked, cities: result.scan.cities.map(city => ({
+      city: city.city, inventory: city.rows.length, prospects: city.rows.filter(row => row.qualification?.status === "prospect").length,
+    })) }));
+  }) : runBusinessScan(process.argv.slice(2).join(" ") || "india-metros", city => {
     console.log(JSON.stringify({ city: city.city, inventory: city.rows.length, sources: city.sources }));
-  }).catch(error => { console.error((error as Error).message); process.exitCode = 1; });
+  });
+  run.catch(error => { console.error((error as Error).message); process.exitCode = 1; });
 }

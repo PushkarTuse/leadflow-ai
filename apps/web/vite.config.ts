@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import { stateDirectory } from "../../scripts/external-local-config.mjs";
-import { makeBusinessDraft, readBusinessScan, runBusinessScan } from "../../scripts/local-business";
+import { makeBusinessDraft, readBusinessScan, reviewBusinessScan, runBusinessScan } from "../../scripts/local-business";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const envFile = path.join(repoRoot, ".env.external");
@@ -154,12 +154,24 @@ function localPipeline(): Plugin {
               } finally { businessScanning = false; }
             }
             if (pathname === "/api/local/pipeline/business/draft" && req.method === "POST") {
+              if (businessScanning) return json(409, { error: "A business operation is already running" });
+              businessScanning = true;
               try {
                 const data = JSON.parse(await readBody(req));
                 return json(200, await makeBusinessDraft(data.id, data.source, data.sourceId, data.country, data.useAi === true));
               } catch (error) {
                 return json(400, { error: (error as Error).message.slice(0, 170) });
-              }
+              } finally { businessScanning = false; }
+            }
+            if (pathname === "/api/local/pipeline/business/review" && req.method === "POST") {
+              if (businessScanning) return json(409, { error: "A business scan or review is already running" });
+              businessScanning = true;
+              try {
+                const data = JSON.parse(await readBody(req));
+                return json(200, await reviewBusinessScan(data.metros === true));
+              } catch (error) {
+                return json(400, { error: (error as Error).message.slice(0, 170) });
+              } finally { businessScanning = false; }
             }
             if (
               pathname === "/api/local/pipeline/status" &&
@@ -212,10 +224,8 @@ function localPipeline(): Plugin {
               return json(405, { error: "Method not allowed" });
             }
 
-            if (
-              pathname === "/api/local/pipeline/run" &&
-              req.method === "POST"
-            ) {
+            if ((pathname === "/api/local/pipeline/run" || pathname === "/api/local/pipeline/collect") &&
+              req.method === "POST") {
               if ((await readEnabled()) !== true) {
                 return json(409, {
                   status: "error",
@@ -238,17 +248,23 @@ function localPipeline(): Plugin {
                 json(code, body);
               };
 
-              const child = spawn(process.execPath, ["--import", "tsx", "scripts/external-pipeline.ts"], {
+              const collecting = pathname.endsWith("/collect");
+              const args = collecting ? ["--collect", "--limit=100"] : [];
+              const child = spawn(process.execPath, ["--import", "tsx", "scripts/external-pipeline.ts", ...args], {
                 cwd: repoRoot,
                 env: { ...process.env, EXTERNAL_LOCAL_PROFILE: profile },
               });
 
               let output = "";
+              let collectionOutput = "";
               const collect = (chunk: Buffer) => {
                 output += chunk.toString("utf8");
                 if (output.length > 20000) output = output.slice(-20000);
               };
-              child.stdout?.on("data", collect);
+              child.stdout?.on("data", (chunk: Buffer) => {
+                collect(chunk);
+                if (collecting) collectionOutput = (collectionOutput + chunk.toString("utf8")).slice(-20000);
+              });
               child.stderr?.on("data", collect);
 
               // Five rows can each try four providers twice, with a 27-second transport deadline.
@@ -256,7 +272,15 @@ function localPipeline(): Plugin {
               child.on("close", (code) => {
                 clearTimeout(timer);
                 if (code === 0) {
-                  finish(200, { status: "completed", code });
+                  const sources = collectionOutput.split(/\r?\n/).flatMap(line => {
+                    try {
+                      const item = JSON.parse(line);
+                      if (typeof item?.source !== "string" || typeof item?.state !== "string") return [];
+                      const { source, state, raw, fetched, inserted } = item;
+                      return [{ source, state, raw, fetched, inserted }];
+                    } catch { return []; }
+                  });
+                  finish(200, { status: "completed", code, ...(collecting ? { sources } : {}) });
                   return;
                 }
                 const detail = output.split(/\r?\n/).find(line =>
