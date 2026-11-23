@@ -18,6 +18,22 @@ To seek AI verdicts for saved rules decisions, run `npm run external:run -- --re
 
 For a fresh local collection, keep `npm run dev -- --port 8787` running in `leadflow-leads`. From `leadflow-ai`, run `npm run external:collect` followed by `npm run external:run -- --drain`. Collection requests up to 20 candidates per configured feed. Drain imports up to 50 pages from the saved cursor and checkpoints each page. The dashboard button processes one page from the producer's database. Collector counts measure feed screening, and the dashboard results show AI outcomes.
 
+### Reset both local stores on Windows
+
+Run the following from the `leadflow-leads` terminal and leave it open after Wrangler reports ready:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ..\leadflow-ai\scripts\reset-local-pipeline.ps1 -Stage Leads
+```
+
+Run the second command from the `leadflow-ai` terminal:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\reset-local-pipeline.ps1 -Stage AI
+```
+
+The Leads stage archives local Wrangler state and reapplies migrations on port 8787. The AI stage archives the local qualification ledger, profiles, and review output, then polls the five configured freelance feeds using `jobicy_rss` for Jobicy. It drains the new local database in shadow mode with Telegram and email disabled and opens the dashboard on port 5174. Backups are under the sibling `leadflow-local-backups` folder. A fresh poll can return listings that publishers still advertise.
+
 Keep secrets in the ignored `.env.external`. For local verification, use `FREELANCE_QUALIFICATION_MODE=shadow`, `TELEGRAM_ENABLED=false`, and `SAFE_OWNER_EMAIL_TEST=false`. Automatic failover here is local only.
 
 Local Telegram notices explicitly say LOCAL EXTERNAL LEAD REVIEW PREVIEW and contain no inline callback buttons: the production bot already consumes callbacks, and local records do not exist in its Sheet. This avoids a competing poller or buttons that cannot work. Real interactive approval remains the hosted Engine/Sheets path after later HTTPS setup. The local validator `node scripts/validate-external-local.mjs` separately checks actual review payloads and simulated authenticated approve/defer/reject decisions. A sent local owner preview is not a production CRM approval request.

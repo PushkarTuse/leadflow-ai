@@ -144,3 +144,9 @@ Added a compact verdict schema for backups, exact source quote recovery for typo
 The pipeline now tries AI first and uses deterministic qualification when the AI chain returns no validated verdict. The ledger stores only Accepted or Rejected outcomes for classified rows. A rules acceptance can enter the existing approval workflow. Provider failures, including quota, credits, service availability, timeouts, invalid responses and ungrounded quotes, are recorded separately from the decision. The dashboard, local state and run logs show per-provider health and counts by finalization method.
 
 The live retry finalized all seven previously unresolved rows as AI rejections, with five verdicts from Groq and two from Cloudflare. Gemini returned one HTTP 503 and Groq returned two HTTP 429s before recovering. The ledger now has 58 explicit verdicts, one accepted and 57 rejected. All 51 prior AI verdicts were preserved. The run used shadow mode with Telegram and owner email disabled.
+
+### Repeatable two-terminal reset
+
+`scripts/reset-local-pipeline.ps1` now has a Leads stage and an AI stage. The Leads stage archives the local Worker database and applies migrations. The AI stage verifies the fresh database, archives the dashboard ledger and profiles, polls all five feeds and drains the candidates before starting Vite. Use the commands in `docs/EXTERNAL_LEAD_API_SETUP.md`.
+
+The 24 November reset verified D1 was empty before the poll. It imported and finalized 57 candidates, with one acceptance and 56 rejections. AI decided 55 rows and rules decided two. Compared with the archived 58-row snapshot, 20 source IDs were new to this dataset. The backup folders created for this run end in `leads-20261124-004621-446` and `ai-20261124-004640-877`.
