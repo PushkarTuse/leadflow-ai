@@ -8,7 +8,7 @@
 - [x] Improve evidence corroboration and verify a real Mumbai/Pune pilot against saved inventory.
 - [x] Verify buyer-source availability and authorized brief preview and deduplication in test storage.
 - [x] Verify dashboard controls and initial draft artifacts.
-- [ ] Finish existing backlog and measure results. Pilot yield is below the requested ten.
+- [x] Finish the existing enrichment backlog and measure results. Pilot yield remains below the requested ten.
 - [ ] Verify an authorized live marketplace import and a due Find a Tender poll. No five-opportunity pilot exists yet.
 
 The saved inventory is the pilot input. Avoid a destructive reset while diagnosing it. Retain source cooldowns and use only unsent local artifacts.
@@ -22,6 +22,26 @@ The saved inventory is the pilot input. Avoid a destructive reset while diagnosi
 At the 21:02 IST checkpoint the live dashboard showed 537 completed enrichments out of 1,722 publisher records, 1,038 awaiting, three processing, 147 excluded, 353 evidence reviews, 174 source retries, seven qualified, 48 independently verified public contact routes across all decisions, and five qualified email draft-ready. The continuing backlog will change these counts. Normalized publisher IDs do not verify unique ownership. Three actual unsent drafts were checked in Chromium. One used local Ollama and two used the grounded fallback. Each EML contained plain text, HTML and the ten-frame embedded GIF. No recipient was populated.
 
 The producer preview/search changes are at `a0e88902fd0b6efceb63d99301430c70e78f58f4` on `feature-new-sources-aa`, verified on its remote. Producer typecheck and 46 tests passed. Consumer typecheck, 245 tests and its storefront/automation build passed. The build emitted Vite warnings for future native configuration loading and large existing 3D chunks. Chromium verified city selection, filters, pagination, preview validation, pause/resume availability and draft downloads against the local services.
+
+Consumer implementation checkpoint `bc5b30649ceec18234b9514ecebe6b6aee1ed510` is verified on `main`. Chromium also triggered the complete freelance control for the import-only source, observed an `IMPORT_ONLY` result, and reloaded the persisted results. The tighter copy validation rejected a local AI subject that duplicated its call to action. All three latest drafts used the evidence-backed templates and were saved as local EML previews.
+
+At 21:07 IST, 792 rows had completed evaluation. The dashboard showed 783 awaiting enrichment, three processing, 148 excluded, 599 evidence reviews, 181 source retries, eight qualified, 57 public contact routes across all decisions and six qualified email draft-ready. Qualified/count of verified public contact routes by city: Mumbai 3/14, Pune 2/5, Bengaluru 0/6, Hyderabad 0/5, Kolkata 1/7, Delhi 2/8, Chennai 0/12. The first-party domain or independent operator evidence was missing for 169 updated-rule records and a further 162 domains failed identity corroboration. These are observed gaps. Expanding publisher inventory alone does not resolve them.
+
+### Completed existing backlog at 21:10 IST
+
+The worker resumed after a browser-triggered pause and evaluated all 1,113 candidates in its resumed selection. The final persisted inventory has 1,578 completed evidence evaluations and 144 pre-screened exclusions without evidence evaluation. Compared with the backup, there are 1,437 first-time evaluations and 20 re-evaluated records. The dashboard has zero awaiting or processing, 148 excluded overall, 1,383 evidence reviews, 183 source retries, eight qualified, 57 verified public contact routes across all outcomes and six qualified email draft-ready. The dataset has 1,653 observed name/city combinations. They are neither unique owners nor a verified distinct-business count.
+
+| City | Publisher records | Qualified | Verified public contact route | Draft-ready |
+| --- | ---: | ---: | ---: | ---: |
+| Mumbai | 249 | 3 | 14 | 2 |
+| Pune | 245 | 2 | 5 | 2 |
+| Bengaluru | 249 | 0 | 6 | 0 |
+| Hyderabad | 242 | 0 | 5 | 0 |
+| Kolkata | 247 | 1 | 7 | 0 |
+| Delhi | 244 | 2 | 8 | 2 |
+| Chennai | 246 | 0 | 12 | 0 |
+
+Of the evaluated records, 932 had no corroborated first-party domain or independent operator source, 194 had a site that failed the identity check, 99 candidate sites lacked sufficient ownership evidence, 97 had DNS resolution failures, and 82 encountered a robots restriction. The final reset remains pending while authorized-source and live verification work is open. The 10-pilot, 50-per-city, 350-overall and 40–50 freelance targets remain unmet.
 
 ## Runtime contracts
 
@@ -48,6 +68,16 @@ npm run business:scan -- --enrich-metros --cities=Mumbai,Pune --updated-rules --
 
 Use `--retry-eligible` for due transient failures. Open `/pipeline`, choose a city, enable **Show all listings** for evidence and status details, and use **Resume existing backlog** to continue. Downloads are unsent EMLs with no recipient. Preview new authorized briefs and import only after permission is confirmed.
 
+After the Worker `/diagnostics` marks Find a Tender due, run this from LeadFlow AI to verify the real Worker path once and qualify any collected briefs in shadow mode:
+
+```powershell
+$env:EXTERNAL_LEADS_SOURCES = 'uk_tender'
+$env:FREELANCE_QUALIFICATION_MODE = 'shadow'
+$env:TELEGRAM_ENABLED = 'false'
+$env:SAFE_OWNER_EMAIL_TEST = 'false'
+npm run external:run -- --complete --drain --limit=20 --max-candidates=20 --pages=3
+```
+
 ## Source readiness and blockers
 
 | Source | Current finding and follow-up |
@@ -55,7 +85,7 @@ Use `--retry-eligible` for due transient failures. Open `/pipeline`, choose a ci
 | Overture | Populated the saved seven-city snapshot. OSM+Overture budget reallocation already works. Shared publisher lineage is not independent corroboration. |
 | Overpass | Previous run's public interpreter returned HTTP 502 for the 8.5 km four-family `nwr` search, before local normalization. The query requests named POIs with a 25-second server budget. The city runner stops further Overpass queries after the first upstream 429/5xx. The response alone cannot identify Overpass server load versus network intermediaries. If public service remains unsuitable, use a regional [Geofabrik OSM extract](https://download.geofabrik.de/asia/india/index.html), filter locally to a city's extent and required tags, and preserve ODbL attribution. Avoid endpoint rotation. |
 | Foursquare | File import only, with no authorized export in this environment. [Foursquare Places Portal instructions](https://docs.foursquare.com/data-products/docs/access-fsq-os-places) describe registering, generating an Iceberg catalog token, filtering by locality or bounding box in DuckDB, and exporting a city slice. The existing `fsq_os` importer requires a provenance manifest. This is not a live source. |
-| Website discovery | Current candidates come from permitted publisher websites and public business-domain email hints. An independent licensed directory or an approved search integration is needed to corroborate operator evidence for businesses without a discoverable site. [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing/) lists grounding by model and tier. The current text-only classifier does not enable that tool. |
+| Website discovery | Current candidates come from permitted publisher websites and public business-domain email hints. An independent licensed directory or an approved search integration is needed to corroborate operator evidence for businesses without a discoverable site. Google's [Gemini 3.5 Flash-Lite pricing](https://aistudio.google.com/docs/pricing#gemini-3.5-flash-lite) lists Google Search grounding as unavailable on the free tier for the configured model. The text-only classifier leaves that tool disabled. |
 | Hacker News | The revised bounded search pulls two current/recent monthly threads plus scoped Ask HN phrases. Live result was 51 screened, zero buyer candidates. The local qualification run also pulled zero, so no AI provider was called. |
 | Freelancer | The existing RSS connector requires an authorized feed. Set `FREELANCER_RSS_ENABLED=true` and `FREELANCER_RSS_FEEDS_JSON` to an array such as `[{ "feedId": "...", "url": "https://www.freelancer.com/...", "rightsReference": "..." }]` in the producer's ignored `.dev.vars`. For native API access, register via the [Freelancer Developer portal](https://developer.freelancer.com/) and request read access for active project discovery only. Native OAuth and its vendor-approved scope names still need verification. The authorized file workflow is available now. |
 | Upwork | [Upwork API access instructions](https://support.upwork.com/hc/en-us/articles/115015857647-How-to-request-an-API-key-from-Upwork) describe applying for a key and review. An approved export or alert can be imported now where its use is permitted. |
