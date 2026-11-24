@@ -1,4 +1,5 @@
 export const agencyUrl = "https://leadflow-agency.pages.dev";
+export const initialOutreachPolicy = "Initial outreach has no prices, rates, discounts, or package offers. Use we and our team. Use a short introductory call as the primary next step. Offer a local meeting only when configured by the application. Do not invent ratings, testimonials, or results. Use verified facts only.";
 
 export interface BusinessDraftFacts {
   name: string;
@@ -10,11 +11,14 @@ export interface BusinessDraftFacts {
   opportunity?: string;
   serviceIdea?: string;
   subjectIdea?: string;
+  meetingCity?: string;
 }
 
 export type BusinessCopy = { subject: string; proposal: string; question: string };
 
 const line = (value: string, maximum: number) => value.replace(/[\u0000-\u001f\u007f—]+/g, " ").trim().slice(0, maximum);
+const forbiddenOutreach = /[₹$€£]|\b(?:\d[\d,.]*\s*(?:inr|usd|eur|gbp|rupees?|dollars?)|(?:inr|usd|eur|gbp)\s*\d|\d{1,3}(?:,\d{3})+|pricing|price[ds]?|discounts?|package rates?|(?:starting|starts?|begins?)\s+(?:at|from)|if this (?:isn[’']t|is not) relevant|we(?:[’']ll| will) leave it there)\b/i;
+const safeOutreachLine = (value: string | undefined, maximum: number) => value && !forbiddenOutreach.test(value) ? line(value, maximum) : "";
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
 
@@ -65,12 +69,13 @@ export function validateBusinessCopy(input: unknown, facts: BusinessDraftFacts):
   // Model copy describes an idea. All factual claims, links, pricing and identity
   // come from the trusted listing or the controlled portions of the draft.
   if (/[\u0000-\u001f\u007f<>₹$€£%—]|\b(?:https?|www|guarantee|no website|no online presence|customers say|award-winning|best in|I|my|me)\b/i.test(combined)) return;
-  if (/\d/.test(combined) || /^(?:re|fwd):/i.test(subject) ||
+  if (forbiddenOutreach.test(combined) || /\d/.test(combined) || /^(?:re|fwd):/i.test(subject) ||
     !/^(?:(?:Can|Could|Would|How|What|Where|Do|Does)\b.+\?|[^:?!]{3,48}:\s+(?:from|a|an|one|beyond)\b[^!?]{5,45})$/i.test(subject.trim()) ||
     !/^We (?:could|can sketch|can build|can put together)\b/i.test(proposal) ||
     /\b(?:noticed|found|currently|already|you have|you are losing|streamline|elevate|boost|online presence)\b/i.test(proposal) ||
-    !/^(?:Would you like (?:us to|to see)|Would it help|(?:Could|Can|May) we|Would a|Is this a|Want (?:us to|to see))\b.*\?$/i.test(question) ||
-    !/\b(?:sketch|mockup|walkthrough|examples?|outline|priority|workflow|team|compare)\b/i.test(question)) return;
+    !/^(?:Would|Could|Can|Are|Do)\b.*\?$/i.test(question) ||
+    !/\b(?:short|brief|quick|introductory|intro)\b.{0,28}\b(?:call|conversation|chat)\b/i.test(question) ||
+    /\b(?:meet|meeting|in person)\b/i.test(question)) return;
   const identity = [facts.name, facts.city ?? ""].filter(value => value.trim().length > 3);
   if (!identity.some(value => subject.toLowerCase().includes(value.trim().toLowerCase()))) return;
   if (/^(?:a website idea|quick question|grow your business|business proposal)\b/i.test(subject)) return;
@@ -84,40 +89,47 @@ export function businessDraft(facts: BusinessDraftFacts, sender: string, copy?: 
   const fallback = industryCopy(facts, line(name, 45));
   const genericPhoneIdea=facts.serviceIdea?.startsWith("We could add a small enquiry option alongside your phone line");
   const useIndustryDetails=genericPhoneIdea&&/hotel|resort|lodging|dent|healthcare|clinic|physio/i.test(facts.category??"");
-  const alternativeCta=/menu/i.test(facts.serviceIdea??"")?"Would it help if we sent an example using one section of your menu?"
-    : /appointment|reserv|callback|book/i.test(facts.serviceIdea??"")?"Could we share a short walkthrough with the team that handles enquiries?"
-    : "Is this a workflow your team would like to explore?";
-  const selected = validateBusinessCopy(copy, facts) ?? (facts.serviceIdea&&!useIndustryDetails
-    ? {...fallback, proposal:line(facts.serviceIdea,250), question:alternativeCta}
-    : fallback);
-  const reviews = Number.isSafeInteger(facts.rating_count) && (facts.rating_count ?? 0) >= 100
-    ? `Your listing shows ${facts.rating_count} ratings. ` : "";
-  const website = facts.opportunity ? line(facts.opportunity, 350) : facts.website
+  const category = facts.category ?? "";
+  const proposal = safeOutreachLine(facts.serviceIdea,250);
+  const call = /hotel|resort|lodging/i.test(category) ? "Would a short call help us understand how your team handles stay enquiries?" :
+    /dent|healthcare|clinic|physio/i.test(category) ? "Would your team be open to a short call about how you handle appointment requests?" :
+    "Could we set up a brief introductory call to see whether this would be useful for your team?";
+  const selected = validateBusinessCopy(copy, facts) ?? {...fallback, proposal:proposal&&!useIndustryDetails?proposal:fallback.proposal, question:call};
+  const website = safeOutreachLine(facts.opportunity,350) || (facts.website
     ? `We saw the website linked on your listing${city} and had a small idea for it.`
-    : `We came across your listing${city} and didn’t see a website linked there.`;
-  const price = facts.country === "IN" && !facts.website && !facts.opportunity && !facts.serviceIdea
-    ? " Our starter websites begin at ₹5,999." : "";
-  const subject = line(facts.subjectIdea??"",84) || (reviews && !facts.website
-    ? `${facts.rating_count} ratings for ${line(name, 38)}. What’s the next click?` : selected.subject);
+    : `We came across your listing${city} and didn’t see a website linked there.`);
+  const subject = safeOutreachLine(facts.subjectIdea,84) || selected.subject;
+  const meeting = facts.meetingCity ? ` If meeting in ${line(facts.meetingCity,45)} is easier, we can discuss a time that suits both teams.` : "";
   const paragraphs = [
     `Hi ${name} team,`,
-    reviews + website + "\n\n" + selected.proposal,
-    `We’re LeadFlow AI. We build custom websites and apps, including booking and enquiry automation.${price}`,
-    `${selected.question} Our work is at ${agencyUrl}.`,
+    website + "\n\n" + selected.proposal,
+    `We’re LeadFlow AI. We build custom websites and applications around how teams work, including enquiry and booking automation. You can see examples of our work at ${agencyUrl}.`,
+    `${selected.question}${meeting}`,
     `Best,\n${line(sender, 60)}\nLeadFlow AI`,
-    "If this isn’t relevant, reply and we’ll leave it there.",
+    "To opt out of future emails, reply ‘unsubscribe’.",
   ];
   const html = paragraphs.map(text => `<p>${escapeHtml(text).replaceAll("\n", "<br>").replace(agencyUrl, `<a href="${agencyUrl}">${agencyUrl}</a>`)}</p>`);
   html.splice(5, 0, '<img src="cid:leadflow-signature" width="180" height="45" alt="LeadFlow AI" style="display:block">');
   const shortName = line(name, 34);
-  const category = facts.category ?? "";
   const task = /dent|clinic|salon|physio|spa/i.test(category) ? "a booking"
     : /hotel|resort|lodging/i.test(category) ? "a stay"
     : /restaurant|cafe|pizza|bakery/i.test(category) ? "the menu"
     : /shop|boutique|retail/i.test(category) ? "the collection"
     : /gym|fitness|yoga|sport/i.test(category) ? "a first class" : "an enquiry";
+  const extraSubjects = /hotel|resort|lodging/i.test(category) ? [
+    `Could guests share their stay dates with ${shortName} online?`,
+    `A stay enquiry that gives ${shortName} the details up front`,
+    `A simpler way to ask about a stay at ${shortName}`,
+  ] : /dent|healthcare|clinic|physio/i.test(category) ? [
+    `Can patients request a callback from ${shortName}?`,
+    `A short appointment form for ${shortName}`,
+    `Helping ${shortName} collect appointment requests`,
+  ] : /whatsapp/i.test(facts.opportunity??"") ? [
+    `Fewer follow-up messages on ${shortName} enquiries`,
+    `A better starting point for ${shortName} enquiries`,
+    `Could ${shortName} collect preferences before WhatsApp?`,
+  ] : [`${shortName}: one less step to ${task}`,`A mobile enquiry for ${shortName}`,`Could customers find ${task} faster at ${shortName}?`];
   const alternatives = [...new Set([industryCopy(facts, shortName).subject,
-    `${shortName}: one less step to ${task}`, `A first look at ${task} for ${shortName}`,
-    `Could customers find ${task} faster at ${shortName}?`])].filter(item => item !== subject).slice(0, 3);
+    ...extraSubjects])].filter(item => item !== subject).slice(0, 3);
   return { subject, alternatives, body: paragraphs.join("\n\n"), html: `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#fff;color:#172320"><div style="max-width:560px;margin:0 auto;padding:20px;font:16px/1.55 Arial,sans-serif">${html.join("")}</div></body></html>` };
 }

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { readFile, writeFile, rename, stat } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import { stateDirectory } from "../../scripts/external-local-config.mjs";
@@ -221,7 +222,7 @@ function localPipeline(): Plugin {
                 const backlog=body.mode==="backlog";
                 return json(200,await enrichBusinessScan(body.metros===true,backlog?5000:300,false,{backlog:true,
                   cities:typeof body.city==="string"?[body.city]:undefined,
-                  updatedRules:body.mode==="updated-rules",retriesOnly:body.mode==="retries",target:parseBusinessTarget(body.target)}));
+                  updatedRules:body.mode==="updated-rules",retriesOnly:body.mode==="retries",discover:body.mode==="discover",target:parseBusinessTarget(body.target)}));
               }catch(error){
                 return json(400,{error:(error as Error).message.slice(0,170)});
               }finally{businessScanning=false;}
@@ -338,14 +339,20 @@ function localPipeline(): Plugin {
               });
 
               let output = "";
-              let collectionOutput = "";
+              const sources:unknown[]=[];
               const collect = (chunk: Buffer) => {
                 output += chunk.toString("utf8");
                 if (output.length > 20000) output = output.slice(-20000);
               };
-              child.stdout?.on("data", (chunk: Buffer) => {
-                collect(chunk);
-                if (collecting) collectionOutput = (collectionOutput + chunk.toString("utf8")).slice(-20000);
+              child.stdout?.on("data", collect);
+              if(collecting&&child.stdout)createInterface({input:child.stdout}).on("line",line=>{
+                if(line.length>4096||sources.length>=30)return;
+                try{
+                  const item=JSON.parse(line);
+                  if(typeof item?.source!=="string"||typeof item?.state!=="string")return;
+                  const {source,state,raw,filtered,fetched,inserted,duplicates,filterReasons,problem}=item;
+                  sources.push({source,state,raw,filtered,fetched,inserted,duplicates,filterReasons,problem});
+                }catch{ /* Detailed runner output is separate from acquisition lines. */ }
               });
               child.stderr?.on("data", collect);
 
@@ -354,14 +361,6 @@ function localPipeline(): Plugin {
               child.on("close", (code) => {
                 clearTimeout(timer);
                 if (code === 0 || collecting) {
-                  const sources = collectionOutput.split(/\r?\n/).flatMap(line => {
-                    try {
-                      const item = JSON.parse(line);
-                      if (typeof item?.source !== "string" || typeof item?.state !== "string") return [];
-                      const { source, state, raw, fetched, inserted, duplicates } = item;
-                      return [{ source, state, raw, fetched, inserted, duplicates }];
-                    } catch { return []; }
-                  });
                   if (code === 0 || sources.length) {
                     finish(200, { status: code === 0 ? "completed" : "partial", code, ...(collecting ? { sources } : {}) });
                     return;

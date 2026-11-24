@@ -1,6 +1,7 @@
 import { parse, type DefaultTreeAdapterTypes } from "parse5";
 import { normalizedBusinessName, type BusinessEvidence } from "../packages/core/business-qualification";
 import { publicWebsite } from "./business-web";
+import type { BusinessSearchHint } from "./business-search";
 
 type Node = DefaultTreeAdapterTypes.Node;
 type HtmlPage = { url:string;html:string };
@@ -8,8 +9,10 @@ export type BusinessObservation = {field:"identity"|"location"|"ownership"|"digi
 export type EvidenceInput = {name:string;city:string|null;title:string|null;website:string|null;email:string|null;phone:string|null;address?:string|null};
 export type EvaluatedBusiness = {
   status:"qualified"|"excluded"|"review"|"retry"; reason:string; observations:BusinessObservation[];
-  identityHost?:string; websiteObservation?:"not_listed"|"social_only"|"official_site"|"parent_site"|"inaccessible"|"unverified";
+  identityHost?:string; websiteObservation?:"not_listed"|"not_found_after_checks"|"social_only"|"official_site"|"parent_site"|"inaccessible"|"unverified";
   evidence?:BusinessEvidence;
+  discoveryHints?:BusinessSearchHint[];
+  discoveryCheckedAt?:string;
 };
 type Page = {url:URL;headings:string[];lines:string[];links:{label:string;href:string}[];entities:Record<string,unknown>[]};
 const hidden = new Set(["script","style","noscript","template","svg","blockquote"]);
@@ -84,13 +87,13 @@ function parsePage(input:HtmlPage):Page {
   return {url:new URL(input.url),headings:headings.filter(Boolean),lines:lines.filter(Boolean).slice(0,1400),links,entities};
 }
 
-const directoryOrSocial = /(?:^|\.)(?:google\.[a-z.]+|goo\.gl|business\.site|facebook\.com|instagram\.com|linkedin\.com|linktr\.ee|youtube\.com|wa\.me|whatsapp\.com|zomato\.com|swiggy\.com|justdial\.com|practo\.com|tripadvisor\.[a-z.]+|wikipedia\.org|openstreetmap\.org)$/i;
+const directoryOrSocial = /(?:^|\.)(?:google\.[a-z.]+|goo\.gl|business\.site|facebook\.com|instagram\.com|linkedin\.com|linktr\.ee|youtube\.com|wa\.me|whatsapp\.com|zomato\.com|swiggy\.com|justdial\.com|practo\.com|tripadvisor\.[a-z.]+|wikipedia\.org|openstreetmap\.org|whatclinic\.com|healthfinder\.in|doczone\.in|lybrate\.com|magicpin\.in|dnb\.com|findglocal\.com|opendi\.in|medtrick\.com|yellowpages\.net|indiadentalclinic\.com|lyfskills\.com)$/i;
 const personalMail = /^(?:gmail\.com|googlemail\.com|outlook\.com|hotmail\.[a-z.]+|live\.com|proton\.[a-z.]+|yahoo\.[a-z.]+|icloud\.com|rediffmail\.com|gmx\.[a-z.]+|aol\.com|yandex\.[a-z.]+|mail\.ru|zoho\.com)$/i;
 const sharedHost = /(?:^|\.)(?:wixsite\.com|wordpress\.com|blogspot\.[a-z.]+|godaddysites\.com|myshopify\.com|square\.site|google\.com)$/i;
 
-export function websiteGuesses(row:EvidenceInput):string[]{
+export function websiteGuesses(row:EvidenceInput, hints:BusinessSearchHint[]=[]):string[]{
   const candidates:string[]=[];
-  for(const value of [row.website, row.email?.includes("@")&&!personalMail.test(row.email.split("@").at(-1)??"")?row.email.split("@").at(-1):null]){
+  for(const value of [row.website, row.email?.includes("@")&&!personalMail.test(row.email.split("@").at(-1)??"")?row.email.split("@").at(-1):null,...hints.map(item=>item.url)]){
     if(!value)continue;
     try{
       const u=publicWebsite(/^https?:\/\//i.test(value)?value:"https://"+value);
@@ -138,8 +141,8 @@ const signals=[
     idea:"We could add a short quote brief that captures the service, timeline and main details for your team before replying.",type:/service|shop|design|photograph|repair|law|account|plumb|consult/i},
 ];
 
-export async function evaluateBusiness(row:EvidenceInput, read:(url:string)=>Promise<HtmlPage>, now=new Date()):Promise<EvaluatedBusiness> {
-  const urls=websiteGuesses(row), observations:BusinessObservation[]=[];
+export async function evaluateBusiness(row:EvidenceInput, read:(url:string)=>Promise<HtmlPage>, now=new Date(), hints:BusinessSearchHint[]=[]):Promise<EvaluatedBusiness> {
+  const urls=websiteGuesses(row,hints).slice(0,3), observations:BusinessObservation[]=[];
   if(!urls.length){
     const socialOnly=row.website && /(?:facebook\.com|instagram\.com|linkedin\.com)/i.test(row.website);
     return {status:"review",reason:"Permitted source has no corroborated first-party domain or independent operator evidence",observations,

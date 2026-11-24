@@ -1,9 +1,10 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useImperativeHandle, useRef, useState, type FormEvent, type Ref } from "react";
 import type { Business, BusinessScan } from "../../../scripts/local-business";
 
 const endpoint = "/api/local/pipeline/business";
 const labels = { osm: "OpenStreetMap", overture: "Overture Places", fsq_os: "Foursquare Open Source" };
-type Draft = { id:number; fingerprint:string; subject: string; alternatives: string[]; body: string; method: string; eml: string };
+type Draft = { id:number; fingerprint:string; subject: string; alternatives: string[]; body: string; method: string; eml: string;
+  html:string;artifacts:{eml:string;html:string} };
 const businessState=(row:Business)=>{
   if(row.processing)return "Processing";
   if(row.outreach?.status==="excluded")return "Excluded";
@@ -23,7 +24,9 @@ async function request<T>(path = "", body?: object): Promise<T> {
   return data as T;
 }
 
-export function LocalBusinessPanel() {
+export type BusinessPipelineControls={run:()=>Promise<void>;metros:()=>Promise<void>;resume:()=>Promise<void>;retry:()=>Promise<void>};
+
+export function LocalBusinessPanel({controlsRef,onBusy}:{controlsRef?:Ref<BusinessPipelineControls>;onBusy?:(busy:boolean)=>void}) {
   const [location, setLocation] = useState("");
   const [budget, setBudget] = useState(250);
   const [target, setTarget] = useState(50);
@@ -34,10 +37,17 @@ export function LocalBusinessPanel() {
   const [busy, setBusy] = useState(false);
   const [draftBusy, setDraftBusy] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const preview=useRef<HTMLHeadingElement>(null);
+  useEffect(()=>{if(draft){preview.current?.focus();preview.current?.scrollIntoView({block:"start"});}},[draft]);
   const [withEmailOnly, setWithEmailOnly] = useState(false);
   const [showScreened, setShowScreened] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  useEffect(()=>onBusy?.(busy||jobActive||draftBusy),[busy,jobActive,draftBusy,onBusy]);
+  useImperativeHandle(controlsRef,()=>({
+    run:()=>location.trim()?search(location.trim()):scan?enrich("backlog"):search("india-metros"),
+    metros:()=>search("india-metros"),resume:()=>enrich("backlog"),retry:()=>enrich("retries"),
+  }));
 
   useEffect(() => {
     void request<{ scan: BusinessScan | null }>("?metros=1")
@@ -86,12 +96,12 @@ export function LocalBusinessPanel() {
     } catch (error) { setError((error as Error).message); }
   }
 
-  async function prepare(row: Business) {
+  async function prepare(row: Business,useAi=false) {
     setDraftBusy(true);
     setDraft(null);
     setError("");
     setMessage("");
-    try { setDraft(await request<Draft>("/draft", { id: row.id, source: row.source, sourceId: row.source_id, country: row.country, useAi: true })); }
+    try { setDraft(await request<Draft>("/draft", { id: row.id, source: row.source, sourceId: row.source_id, country: row.country, useAi })); }
     catch (error) { setError((error as Error).message); }
     finally { setDraftBusy(false); }
   }
@@ -108,14 +118,21 @@ export function LocalBusinessPanel() {
     finally { setBusy(false); }
   }
 
-  function saveDraft() {
+  function saveDraft(format:"eml"|"html") {
     if (!draft) return;
-    const url = URL.createObjectURL(new Blob([draft.eml], { type: "message/rfc822" }));
+    const url = URL.createObjectURL(new Blob([draft[format]], { type: format==="eml"?"message/rfc822":"text/html;charset=utf-8" }));
     const link = document.createElement("a");
     link.href = url;
-    link.download = "leadflow-outreach-draft.eml";
+    link.download = `leadflow-draft-${draft.id}.${format}`;
+    document.body.append(link);
     link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+
+  async function copyDraft(value:string,label:string){
+    try{await navigator.clipboard.writeText(value);setMessage(`${label} copied.`);}
+    catch{setMessage("Clipboard unavailable. Select the text or download the draft.");}
   }
 
   async function decideDraft(decision:"approved"|"rejected") {
@@ -129,10 +146,11 @@ export function LocalBusinessPanel() {
   }
 
   const city = scan?.cities.find(item => item.city === activeCity) ?? scan?.cities[0];
+  const draftRow = draft && scan?.cities.flatMap(item=>item.rows).find(row=>row.id===draft.id);
   const rows = city?.rows.filter(row => (showScreened || row.outreach?.status === "qualified") &&
     (!withEmailOnly || publicContact(row))) ?? [];
   const shownPage=Math.min(page,Math.max(0,Math.ceil(rows.length/25)-1));
-  async function enrich(mode:"backlog"|"updated-rules"|"retries", selection?:string){
+  async function enrich(mode:"backlog"|"updated-rules"|"retries"|"discover", selection?:string){
     setBusy(true);setError("");
     try{
       const result=await request<{scan:BusinessScan;evaluated:number;counts:Record<string,number>;paused:boolean}>("/enrich",{metros:metroView,mode,city:selection,target});
@@ -156,7 +174,7 @@ export function LocalBusinessPanel() {
     <section id="businesses" className="note-panel" aria-labelledby="business-title" style={{ margin: "1.5rem 0" }}>
       <h2 id="business-title">Local businesses</h2>
       <p>Find businesses by city or country and prepare an outreach draft for review.</p>
-      <form onSubmit={(event: FormEvent) => { event.preventDefault(); if (location.trim()) void search(location.trim()); }}
+      <details><summary>Business locations and acquisition limits</summary><form onSubmit={(event: FormEvent) => { event.preventDefault(); if (location.trim()) void search(location.trim()); }}
         style={{ display: "flex", alignItems: "end", gap: "0.6rem", flexWrap: "wrap" }}>
         <label>
           <span style={{ display: "block" }}>City or country</span>
@@ -168,7 +186,7 @@ export function LocalBusinessPanel() {
         <button className="button" disabled={busy || jobActive || !location.trim()} type="submit">Run complete business pipeline</button>
         <button className="button secondary" disabled={busy || jobActive} type="button" onClick={() => void search("india-metros")}>Run all 7 Indian metros</button>
         <button className="button secondary" disabled={busy} type="button" onClick={() => void restoreMetros()}>View saved metros</button>
-      </form>
+      </form></details>
       {(busy||jobActive) && <p role="status">Processing businesses… <button type="button" onClick={()=>void request("/pause",{}).then(()=>setMessage("Pausing after the active batch.")).catch(error=>setError(error.message))}>Pause enrichment</button></p>}
       {error && <p role="alert">{error}</p>}
       {!draft && message && <p role="status">{message}</p>}
@@ -195,24 +213,30 @@ export function LocalBusinessPanel() {
           </label>
           <label><input type="checkbox" checked={withEmailOnly} onChange={event => {setWithEmailOnly(event.target.checked);setPage(0);}} /> Verified contact route only</label>
           <label><input type="checkbox" checked={showScreened} onChange={event => {setShowScreened(event.target.checked);setPage(0);}} /> Show all listings</label>
-          <button className="button secondary" disabled={busy || draftBusy || jobActive} onClick={() => void review()}>AI screen priority listings</button>
-          <button className="button secondary" disabled={busy || draftBusy || jobActive} onClick={() => void enrich("backlog")}>Resume existing backlog</button>
-          <button className="button secondary" disabled={busy || draftBusy || jobActive || !city} onClick={() => void enrich("backlog",city?.city)}>Enrich selected city</button>
-          <button className="button secondary" disabled={busy || draftBusy || jobActive} onClick={() => void enrich("retries")}>Retry eligible failures</button>
-          <button className="button secondary" disabled={busy || draftBusy || jobActive} onClick={() => void enrich("updated-rules")}>Reprocess under updated rules</button>
         </div>
+        <details><summary>Business evidence controls</summary><div style={{display:"flex",gap:"0.5rem",flexWrap:"wrap"}}>
+          <button className="button secondary" disabled={busy || draftBusy || jobActive} onClick={() => void review()}>AI screen priority listings</button>
+          <button className="button secondary" disabled={busy || draftBusy || jobActive || !city} onClick={() => void enrich("backlog",city?.city)}>Enrich selected city</button>
+          <button className="button secondary" disabled={busy || draftBusy || jobActive} onClick={() => void enrich("updated-rules")}>Reprocess under updated rules</button>
+          <button className="button secondary" disabled={busy || draftBusy || jobActive} onClick={() => void enrich("discover",city?.city)}>Search for missing evidence</button>
+        </div></details>
         {draftBusy && <p role="status">Preparing email draft…</p>}
         {draft && <div className="note-panel" aria-label="Outreach draft" style={{ marginBlock: "1rem" }}>
           <img src="/email/leadflow-signature.gif" alt="LeadFlow AI" width="180" height="45" className="business-signature-motion" />
           <img src="/email/leadflow-signature.png" alt="LeadFlow AI" width="180" height="45" className="business-signature-still" />
           <style>{".business-signature-still{display:none}@media(prefers-reduced-motion:reduce){.business-signature-motion{display:none}.business-signature-still{display:block}}"}</style>
-          <h3>{draft.subject}</h3>
+          <h3 ref={preview} tabIndex={-1}>{draft.subject}</h3>
           <details><summary>Alternative subject lines</summary><ul>{draft.alternatives.map(subject => <li key={subject}>{subject}</li>)}</ul></details>
           <p>Draft written by {draft.method === "Rules" ? "the fallback template" : draft.method}</p>
           <p style={{ whiteSpace: "pre-wrap" }}>{draft.body}</p>
-          <button className="button secondary" onClick={() => void navigator.clipboard.writeText(draft.subject + "\n\n" + draft.body)
-            .then(() => setMessage("Draft copied.")).catch(() => setMessage("Clipboard unavailable. Use the draft download."))}>Copy draft</button>{" "}
-          <button className="button secondary" onClick={saveDraft}>Download branded draft</button>
+          <details><summary>HTML preview</summary><iframe title="Branded email preview" sandbox="" srcDoc={draft.html}
+            style={{width:"100%",minHeight:550,border:"1px solid currentColor",background:"white"}} /></details>
+          <p><small>Saved locally at <code>{draft.artifacts.eml}</code> and <code>{draft.artifacts.html}</code></small></p>
+          <button className="button secondary" onClick={()=>void copyDraft(draft.subject,"Subject")}>Copy subject</button>{" "}
+          <button className="button secondary" onClick={()=>void copyDraft(draft.body,"Email body")}>Copy email body</button>{" "}
+          <button className="button secondary" onClick={()=>saveDraft("eml")}>Download EML</button>{" "}
+          <button className="button secondary" onClick={()=>saveDraft("html")}>Download HTML</button>
+          {draftRow && <button className="button secondary" disabled={draftBusy||busy||jobActive} onClick={()=>void prepare(draftRow,true)}>Generate AI variation</button>}
           <button className="button secondary" disabled={draftBusy} onClick={()=>void decideDraft("approved")}>Approve draft locally</button>
           <button className="button secondary" disabled={draftBusy} onClick={()=>void decideDraft("rejected")}>Reject draft locally</button>
           {message && <p role="status">{message}</p>}

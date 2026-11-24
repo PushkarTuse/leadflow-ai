@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
-import { LocalBusinessPanel } from "./LocalBusinessPanel";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { LocalBusinessPanel, type BusinessPipelineControls } from "./LocalBusinessPanel";
 import { AuthorizedProjectImport } from "./AuthorizedProjectImport";
 import { discoveryState, type DiscoveryState } from "../../../packages/core/discovery-state";
 import { discoveryAiBanner, providerHealthLine, type DiscoveryAiHealth } from "../../../packages/core/discovery-ai-health";
@@ -228,10 +228,13 @@ export function PipelineDashboard() {
     "idle" | "running" | "completed" | "error"
   >("idle");
   const [runMessage, setRunMessage] = useState("");
-  const [collected, setCollected] = useState<{source: string; state: string; raw?: number; fetched?: number; inserted?: number; duplicates?: number}[]>([]);
+  const [collected, setCollected] = useState<{source: string; state: string; raw?: number; filtered?:number; fetched?: number;
+    inserted?: number; duplicates?: number;filterReasons?:Record<string,number>}[]>([]);
   const [target, setTarget] = useState(500);
   const [resultFilter,setResultFilter]=useState("all");
-  const [selected, setSelected] = useState(["hackernews","wordpress_jobs_rss"]);
+  const [selected, setSelected] = useState(["hackernews","wordpress_jobs_rss","uk_tender"]);
+  const businessControls=useRef<BusinessPipelineControls>(null);
+  const [businessBusy,setBusinessBusy]=useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -321,6 +324,8 @@ export function PipelineDashboard() {
     NO_BUYER_CANDIDATES: "No buyer candidates stored for the selected sources",
     UPSTREAM_ERROR: "Upstream request failed",
   }[health.state] : "Run the pipeline to check the upstream connection";
+  const canRunFreelance=Boolean(enabled&&runState!=="running"&&selected.length&&target>=1&&target<=500);
+  const processing=runState==="running"||businessBusy;
 
   return (
     <div className="container page">
@@ -335,7 +340,20 @@ export function PipelineDashboard() {
         <nav aria-label="Pipeline sections"><a href="#freelance">Freelance leads</a>{" · "}<a href="#businesses">Local businesses</a></nav>
       </div>
 
-      <LocalBusinessPanel />
+      <section className="note-panel" aria-label="Pipeline actions">
+        <h2>Run a pipeline</h2>
+        <div style={{display:"flex",flexWrap:"wrap",gap:"0.6rem"}}>
+          <button className="button" disabled={!canRunFreelance} onClick={()=>void run("complete")}>Run Freelance Pipeline</button>
+          <button className="button" disabled={businessBusy} onClick={()=>void businessControls.current?.run()}>Run Local Business Pipeline</button>
+          <button className="button secondary" disabled={!canRunFreelance||businessBusy} onClick={()=>void Promise.all([run("complete"),businessControls.current?.run()])}>Run Both Pipelines</button>
+          <button className="button secondary" disabled={businessBusy} onClick={()=>void businessControls.current?.metros()}>Run All Seven Indian Metros</button>
+          <button className="button secondary" disabled={businessBusy} onClick={()=>void businessControls.current?.resume()}>Resume Pending Work</button>
+          <button className="button secondary" disabled={processing} onClick={()=>void Promise.all([canRunFreelance?run("retry"):undefined,businessControls.current?.retry()])}>Retry Eligible Failures</button>
+        </div>
+        {processing && <p role="status"><progress aria-label="Pipeline processing" /> {runState==="running"&&businessBusy?"Both pipelines running":businessBusy?"Business evidence processing":"Freelance acquisition or qualification running"}</p>}
+      </section>
+
+      <LocalBusinessPanel controlsRef={businessControls} onBusy={setBusinessBusy} />
 
       <section id="freelance" className="note-panel">
         <h2>Freelance ingestion</h2>
@@ -349,11 +367,14 @@ export function PipelineDashboard() {
         <p>
           <strong>{enabled ? "ON" : "OFF"}</strong> — EXTERNAL_LEADS_ENABLED
         </p>
-        <fieldset><legend>Sources for the next poll</legend>
-          {Object.entries(attribution).map(([source,label]) => <label key={source} style={{marginRight:"0.8rem"}}>
-            <input type="checkbox" checked={selected.includes(source)} onChange={event => setSelected(current =>
+        <details><summary>Advanced freelance controls and source selection</summary>
+        <p>The default polls Hacker News buyer requests, WordPress projects and eligible UK tenders. Enable employment-oriented boards for diagnostics. Active source cooldowns are respected.</p>
+        <fieldset><legend>Sources for the next poll</legend><div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(175px,1fr))",gap:"0.5rem"}}>
+          {Object.entries(attribution).map(([source,label]) => <label key={source} style={{display:"flex",alignItems:"baseline",gap:"0.45rem"}}>
+            <input type="checkbox" disabled={liveSources?.sources.sources.find(item=>item.id===source)?.ready===false} checked={selected.includes(source)} onChange={event => setSelected(current =>
               event.target.checked ? [...current,source] : current.filter(item=>item!==source))} /> {label}
           </label>)}
+          </div>
           <label>Maximum new candidates <input type="number" min="1" max="500" value={target} onChange={event=>setTarget(Number(event.target.value))} /></label>
         </fieldset>
         <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
@@ -363,13 +384,6 @@ export function PipelineDashboard() {
             disabled={loading || !configured || toggle?.locked}
           >
             {enabled ? "Turn pipeline off" : "Turn pipeline on"}
-          </button>
-          <button
-            className="button"
-            onClick={() => void run("complete")}
-            disabled={!enabled || runState === "running" || !selected.length || target < 1 || target > 500}
-          >
-            Run complete freelance pipeline
           </button>
           <button
             className="button secondary"
@@ -394,11 +408,15 @@ export function PipelineDashboard() {
             Reload results
           </button>
         </div>
-        {runMessage && <p role="status">{runMessage}</p>}
         <AuthorizedProjectImport busy={!enabled||runState==="running"} onImported={()=>run("run",true)} />
+        </details>
+        {runMessage && <p role="status">{runMessage}</p>}
         {collected.length > 0 && <ul aria-label="Latest feed poll">
           {collected.map(source => <li key={source.source}>
-            <strong>{attribution[source.source] || source.source}</strong> · {source.state} · {source.raw ?? 0} raw · {source.fetched ?? 0} fetched · {source.inserted ?? 0} new · {source.duplicates ?? 0} duplicates
+            <strong>{attribution[source.source] || source.source}</strong> · {source.state} · {source.raw ?? 0} raw · {source.filtered ?? 0} filtered · {source.fetched ?? 0} fetched · {source.inserted ?? 0} new · {source.duplicates ?? 0} duplicates
+            {source.filterReasons&&Object.keys(source.filterReasons).length>0&&<details><summary>Collector filter reasons</summary>
+              <ul>{Object.entries(source.filterReasons).map(([reason,count])=><li key={reason}>{reason.replaceAll("_"," ")} · {count}</li>)}</ul>
+            </details>}
           </li>)}
         </ul>}
         {emailTest && (

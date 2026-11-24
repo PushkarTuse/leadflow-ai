@@ -33,6 +33,22 @@ const baseItem = {
   text: "SEEKING FREELANCER: We need a React website developer for a fixed scope project.",
 };
 
+it("rejects production of AI training tasks with a located exclusion and admits a real evaluation-system build to qualification",()=>{
+  const context=externalToLead(baseRow,{...baseItem,text:"SEEKING FREELANCER: Contract specialist for AI training. Record task execution and submit the output in SuperAnnotate."}).discovery_context!;
+  const canonical=canonicalEvidence(context);
+  const result=scoreFreelanceQualification(extractRuleEvidence(canonical,context),context,NOW);
+  expect(result.record.rejection_reason).toBe("OUT_OF_SERVICE_SCOPE");
+  expect(result.record.evidence_quotes).toEqual(expect.arrayContaining([expect.objectContaining({field:"exclusion",quote:"Record task execution"})]));
+  const product={...context,decoded_text:"We need an agency to build an evaluation system for AI training. The tool will score model responses against a rubric."};
+  expect(prefilterDiscovery(product,NOW).pass).toBe(true);
+});
+
+it("keeps scoped outsourced HN demand that does not use the monthly header",()=>{
+  const post={...baseItem,text:"Our team wants to outsource a project to build a reporting dashboard under a fixed scope."};
+  expect(externalToLead(baseRow,post).discovery_context?.decoded_text).toBe(post.text);
+  expect(()=>externalToLead(baseRow,{...post,text:"Seeking freelance work. I build reporting dashboards."})).toThrow(/intent mismatch/);
+});
+
 describe("Stage B: HN discovery evidence preservation", () => {
   it("decodes HTML entities exactly once and keeps raw_text untouched", () => {
     const text =

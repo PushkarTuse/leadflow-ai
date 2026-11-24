@@ -2,6 +2,8 @@
 
 This is the entry point for any AI (or human) picking up this repository. Read this file first, then open the latest capsule.
 
+The 25 November entry in [the operations ledger](docs/PIPELINE_OPERATIONS.md) records the recovered source runs, provider verdicts, offline Mumbai OSM import, draft policy and co-founder review package. All work was local and the previous databases and drafts were preserved.
+
 See [the operational verification ledger](docs/PIPELINE_OPERATIONS.md) for the latest real Mumbai/Pune pilot, enrichment controls, source permissions and remaining verification. Dashboard `http://127.0.0.1:5174/pipeline`, producer `http://127.0.0.1:8787`, Ollama `http://127.0.0.1:11434`.
 
 ## Resumed pipeline work — 24 November 2026

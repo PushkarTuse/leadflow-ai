@@ -5,19 +5,21 @@ import { businessOutreachGate, qualifyBusiness, type BusinessEvidence } from "..
 const facts = { name: "Kothrud Dental Care", category: "dentist", city: "Pune", country: "IN", website: null };
 
 describe("local business drafts", () => {
-  it("uses listed facts, booking language and local pricing", () => {
+  it("uses listed facts and invites a call without pricing", () => {
     const draft = businessDraft(facts, "Pushkar");
     expect(draft.subject).toBe("Could patients request an appointment at Kothrud Dental Care?");
     expect(draft.body).toContain("didn’t see a website linked there");
-    expect(draft.body).toContain("₹5,999");
-    expect(draft.body).toContain("custom websites and apps");
+    expect(draft.body).not.toMatch(/₹|5,999|pricing|leave it there/i);
+    expect(draft.body).toContain("custom websites and applications");
+    expect(draft.body).toContain("short call");
+    expect(draft.body).toContain("unsubscribe");
     expect(draft.body).not.toMatch(/ratings|reviews|customer feedback/);
     expect(draft.html).toContain('src="cid:leadflow-signature"');
   });
 
-  it("uses a verified rating count when present and omits Indian pricing abroad", () => {
+  it("omits directory rating hooks and pricing abroad", () => {
     const draft = businessDraft({ ...facts, name: "Dental <Practice>", country: "GB", rating_count: 324 }, "Aditya");
-    expect(draft.subject).toContain("324 ratings");
+    expect(draft.subject).not.toContain("324 ratings");
     expect(draft.body).not.toContain("₹");
     expect(draft.html).toContain("Dental &lt;Practice&gt;");
     expect(draft.body).toContain("Aditya");
@@ -33,7 +35,7 @@ describe("local business drafts", () => {
     const copy = {
       subject: "Can patients book from Kothrud Dental Care’s listing?",
       proposal: "We could put treatment details, hours and a WhatsApp booking request on a single mobile page.",
-      question: "Would you like us to sketch that page?",
+      question: "Would you be open to a short call about how your team handles bookings?",
     };
     expect(businessDraft(facts, "Pushkar", copy).subject).toBe(copy.subject);
     expect(businessDraft(facts, "Pushkar", copy).body).toContain(copy.proposal);
@@ -79,7 +81,14 @@ describe("business outreach qualification", () => {
 it("keeps an existing-site improvement scoped and omits starter pricing",()=>{
   const draft=businessDraft({...facts,website:"https://example.com",opportunity:"The business already publishes a PDF menu.",
     serviceIdea:"We could turn the menu into a searchable page."},"LeadFlow AI");
-  expect(draft.body).toContain("an example using one section of your menu");
+  expect(draft.body).toContain("turn the menu into a searchable page");
   expect(draft.body).not.toContain("₹5,999");
   expect(draft.body).not.toContain("—");
+});
+
+it("removes an older stored pricing subject, offer and defensive closing",()=>{
+  const draft=businessDraft({...facts,subjectIdea:"Packages start at ₹5,999",opportunity:"If this isn't relevant, we'll leave it there.",
+    serviceIdea:"We could build your website, starting at 5999 INR.",meetingCity:"Pune"},"Pushkar");
+  for(const copy of [draft.subject,draft.body,draft.html,...draft.alternatives])expect(copy).not.toMatch(/5,999|5999|₹|leave it there|package rates/);
+  expect(draft.body).toContain("meeting in Pune");
 });

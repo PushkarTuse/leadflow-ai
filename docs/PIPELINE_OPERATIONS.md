@@ -1,5 +1,48 @@
 # Operational verification ledger
 
+## 25 November 2026, source recovery and outreach revision
+
+### Verified live source and AI runs
+
+| Source | Raw | Filtered at collection | New producer rows | Status |
+| --- | ---: | ---: | ---: | --- |
+| Hacker News | 52 | 52 | 0 | Collector rerun recorded 39 seller offers, 12 without explicit buyer requests and one unmatched monthly-thread post. The earlier 51-post run retained counts only. |
+| WordPress Jobs | 10 | 8 | 2 | Feed succeeded. Existing filters require scoped buyer-side work and a usable listing reference. |
+| Himalayas | 160 | 18 | 100 | Feed succeeded. Of 142 records that passed the collector, the per-source cap admitted 100. |
+| Jobicy RSS | 118 | 5 | 100 | Feed succeeded. The per-source cap admitted 100 of 113 passing records. |
+| Remotive | 15 | 0 | 15 | Feed succeeded. Employment-oriented inventory remains opt-in. |
+| Find a Tender | 73 | 73 | 0 | Worker request succeeded after its prior cooldown at 00:47 IST. The next call returned `DEFERRED`. The latest lease permitted another poll after 06:47 IST. |
+| Freelancer | 0 | 0 | 0 | No authorized feed configured. |
+
+The producer admitted 217 records. The documented shadow drain fetched 217, all already imported into the local consumer state, and reclassified stored evidence. Its 100 inference requests yielded 51 valid verdicts (Groq 34, Cloudflare 17), plus eight rules finalizations. Gemini returned HTTP 503. Groq also reported 429s and unsupported evidence quotes. Cloudflare returned evidence-quote failures in addition to valid verdicts. OpenRouter's automatic free router returned schema failures or timeouts. Its pinned strict-schema free route returned HTTP 429 in the separate bounded probe. The account metadata confirmed OpenRouter's free tier, with no remaining limit exposed. Ollama `qwen2.5-coder:3b` returned valid diagnostic JSON locally. Gemini's model metadata returned HTTP 200. No inference request exposed credentials or changed account plans.
+
+One provisional HIGH match was an hourly AI training task-production contract. Archived evidence exposed explicit task recording and SuperAnnotate language, so the scope guard rejected it as `OUT_OF_SERVICE_SCOPE` with the located quote `Record task execution`. It preserves eligibility for genuine builds of evaluation systems. A focused replay of both WordPress briefs subsequently received two Groq verdicts. A paid, fixed-price six-page WordPress brief qualified at LOW, and an ongoing developer-partner relationship stayed in review. The mixed run had exhausted its local budget before reaching those briefs. Buyer-first replay and a diagnostic-board request budget now leave headroom for buyer-focused feeds in mixed runs. Complete records without a validated AI verdict remain retryable. Incomplete source evidence keeps its enrichment state. The console retains source reports even when the classification summary exceeds the old stdout buffer.
+
+| Source with saved candidates | Qualified | Rejected | Review | AI retry | Awaiting evidence | Saved scoring provenance |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Himalayas | 0 | 47 | 45 | 7 | 1 | Gemini 3, Groq 36, Cloudflare 22, OpenRouter 1, rules 37, source guard 1 |
+| Jobicy RSS | 0 | 57 | 9 | 34 | 0 | Groq 7, Cloudflare 2, rules 91 |
+| Remotive | 0 | 8 | 0 | 7 | 0 | Rules 15 |
+| WordPress Jobs | 1 | 0 | 1 | 0 | 0 | Groq 2 |
+
+Saved provenance includes older runs. The 25 November main drain used Groq and Cloudflare for valid live verdicts. The WordPress replay used Groq. The earlier 30-request run reached its local ceiling with 16 validated AI verdicts. Its 84 rules decisions therefore do not imply that every provider was unavailable. This observation is consistent with the current replay, where transport, rate limits and quote/schema failures consumed some of the bounded requests.
+
+### Offline business source and broader evidence
+
+- The previous Overpass response explicitly said the server was at capacity. A 1.2 km Pune dentist query returned one row in 43 seconds. The same public endpoint was used. Bulk discovery can now reuse an attributed offline extract.
+- A 25 MB [BBBike Bombay PBF](https://download.bbbike.org/osm/bbbike/Bombay/) passed through the new streaming CLI and the Worker importer. It added 70 Mumbai records, and the saved city inventory grew from 249 to 319. The importer writes `ODbL-1.0`, release, source URL, SHA-256 and OpenStreetMap attribution. Use city-sized extracts where available; Geofabrik regional extracts are the broader fallback. The parser streams named business nodes and leaves way/relation support for a later expansion. [OpenStreetMap copyright](https://www.openstreetmap.org/copyright)
+- The additional businesses brought the saved metro inventory to 1,792. Existing qualification and draft-ready counts remain 8 and 6. The offline slice screened out four records before evidence processing; 66 were evaluated, 64 went to evidence review and two to retry. Bounded public search reviewed 11 existing Mumbai/Pune businesses. Nine had no corroborated first-party domain or independent operator source, one failed identity matching, and one search target returned 404. All 11 stayed in evidence review.
+- Tavily documents 1,000 monthly free credits and explicitly allows commercial use on the Researcher plan. After registering at [Tavily](https://app.tavily.com/), create a key and put `TAVILY_API_KEY` and `TAVILY_RESEARCHER_CONFIRMED=true` in the ignored `.env.external`. Leave billing off. **Search for missing evidence** runs a bounded 20-record pilot. The adapter sends public names/categories/cities only, queries at basic depth, and treats URLs as hints for local identity and ownership verification. A Tavily live run requires the key. [Plan and usage rights](https://help.tavily.com/articles/5880393096-permitted-use-customer-applications)
+- [Groq browser search](https://console.groq.com/docs/tool-use/built-in-tools/browser-search) is documented for the GPT-OSS family and runs separately from structured output. Zero-cost browser-tool eligibility was not established for the account, so no browser-tool invocation was made. OpenRouter Web Search is billed separately. Cloudflare text inference did not establish an authorized free web-search capability.
+- Foursquare remains unconfigured. Use the [Foursquare Places Portal instructions](https://docs.foursquare.com/data-products/docs/access-fsq-os-places) to create an account, review the terms and generate an Iceberg catalog token. Query a Mumbai bounding box in DuckDB using the portal's snippet, then export active records and supply the release, checksum, license and attribution to `/import/fsq_os`. The [Hugging Face dataset](https://huggingface.co/datasets/foursquare/fsq-os-places) has a separate gated agreement. Give overlapping Overture/Foursquare evidence one provenance lineage where their provider IDs match.
+
+### Local handoff
+
+- Verify the operator workflow at `http://127.0.0.1:5174/pipeline`. Main actions sit above both panels. Advanced source selection and authorized imports are expandable. Draft preview opens and focuses in the page, includes an isolated HTML view, separate clipboard controls and working EML/HTML downloads. Acquisition and qualification statuses have separate summaries.
+- Revised unsent review package lives in `outputs/cofounder-review/`. The ZIP includes three each of EML, HTML and text, plus the consolidated PDF and Markdown. The older originals in `outputs/operations-20261124/` have matching hashes. EMLs have no recipient and embed the animated GIF and static PNG. The policy uses a short call, offers a meeting in configured cities, omits pricing and uses a one-line opt-out. No outreach was sent, deployed or reset.
+- Offline run: install `osmium` in the existing `.venv/local-business` only, download a permitted city PBF and invoke `scripts/import-osm-extract.py` with `--source-url`, `--release`, `--city`, `--bbox WEST SOUTH EAST NORTH` and `--limit`. Follow with `npm run business:scan -- --sync-osm=Mumbai`. No database reset is needed.
+- Worker migration `0004_filter_reasons.sql` adds a nullable diagnostics field and was applied locally using `npm run db:local -- --persist-to .wrangler/state`.
+
 ## 24 November 2026, baseline before changes
 
 - [x] Read the resume reports and checked both Git worktrees. Consumer `8670cfd` on `main`, producer `2a3a935` on `feature-new-sources-aa`. Both matched their upstreams. Private untracked `AGENTS.md` files are outside the change set.

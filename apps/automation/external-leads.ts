@@ -58,6 +58,17 @@ export function externalOrigin(value:string):string {
 const HN_THREAD_FETCH_BUDGET = 1;
 const SAFE_LINK = /^https?:\/\/[^\s/@]+(?:[/:?#][^\s@]*)?$/i;
 
+function hasHnBuyerRequest(title:string,body:string):boolean{
+  const content=title+"\n"+body;
+  if(/^(?:seeking work|seeking freelance (?:work|projects|opportunities)|for hire|available for work|looking for (?:work|clients))\b/i.test(body))return false;
+  if(/^seeking freelancer\b/i.test(body))return true;
+  if(/\b(?:full[- ]time (?:job|employee|employment|position|role)|where (?:can|do) (?:we|i) (?:find|hire))\b/i.test(content))return false;
+  const explicitBuyer=/\b(?:we|i|our team|my company)\b.{0,40}\b(?:needs?|wants? to hire|wants? to outsource|looking for|seeking|plans? to hire)\b/i.test(content)||
+    /^(?:Ask HN:\s*)?(?:seeking (?:an? )?(?:freelancer|contractor)|need (?:an? )?(?:freelance|contract) (?:developer|designer)|paid project\b)/i.test(title);
+  return explicitBuyer&&/\b(?:build|develop|fix|migrate|integrate|automate|implement|redesign|create|revamp)\b/i.test(content)&&
+    /\b(?:website|web\s*app|mobile app|platform|application|dashboard|api|mvp|automation|integration|wordpress|shopify|database|workflow|e-commerce|ecommerce|data pipeline|reporting system|prototype)\b/i.test(content);
+}
+
 function decodeEntities(value:string):string {
   return value
     .replace(/&#x([0-9a-f]+);/gi,(_,h:string)=>String.fromCodePoint(parseInt(h,16)))
@@ -118,7 +129,7 @@ export function externalToLead(raw:unknown, hnItem?:unknown, hnThread?:unknown):
     const unavailable=Boolean(item.dead||item.deleted);
     description=cleanText(item.text || item.title || '');
     title=cleanText(item.title || description).slice(0,200);
-    if(!unavailable && row.category==='freelance_request' && !/^seeking freelancer\b/i.test(description))
+    if(!unavailable && row.category==='freelance_request' && !hasHnBuyerRequest(item.title??'',description))
       throw new Error('HN hiring intent mismatch');
     if(item.time) posted_at=new Date(item.time*1000).toISOString();
     const rawText=item.text || '';
@@ -169,11 +180,8 @@ export function externalToLead(raw:unknown, hnItem?:unknown, hnThread?:unknown):
       throw new Error('Himalayas expiry or application link missing');
     if(hn){
       const body=evidence.decoded_text.trim();
-      const buyer = evidence.hn_item_type === 'story'
-        ? /^Ask HN:\s*/i.test(evidence.original_title) &&
-          /\b(?:we|i|our team)\s+(?:(?:are|am)\s+)?(?:need|want to hire|looking for|seeking)\b/i.test(`${evidence.original_title}\n${body}`) &&
-          !/^(?:seeking work|seeking freelance\b|for hire|available for work|looking for (?:work|clients))\b/i.test(body)
-        : /^seeking freelancer\b/i.test(body);
+      const titledStory=/^Ask HN:\s*/i.test(evidence.original_title);
+      const buyer=(evidence.hn_item_type==='story')===titledStory&&hasHnBuyerRequest(evidence.original_title,body);
       if(!/^[1-9]\d{0,14}$/.test(row.source_id) || row.url!==`https://news.ycombinator.com/item?id=${row.source_id}` || !buyer)
         throw new Error('HN buyer evidence mismatch');
     } else if(evidence.hn_item_type) {

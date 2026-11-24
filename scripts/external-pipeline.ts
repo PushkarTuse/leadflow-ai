@@ -167,7 +167,8 @@ async function main(){
   const requalifyAll=process.argv.includes('--requalify-all')||
     ['1','true'].includes(get('FORCE_REQUALIFY').toLowerCase());
   const retryDiscoveryAi=process.argv.includes('--retry-discovery-ai');
-  const replayStored=requalifyAll||retryDiscoveryAi;
+  const recheckAccepted=process.argv.includes('--recheck-accepted');
+  const replayStored=requalifyAll||retryDiscoveryAi||recheckAccepted;
   const requalificationRun=requalifyMissing||replayStored;
   const qualificationMode=get('FREELANCE_QUALIFICATION_MODE','shadow');
   if(qualificationMode!=='shadow'&&qualificationMode!=='enforce')
@@ -210,10 +211,10 @@ async function main(){
         const response=await fetch(`${upstream}/collect/${source}?limit=${Math.min(collectLimit,target-unique)}&freshDays=${days}&pages=${pages}`,{
           method:'POST',headers:{Authorization:`Bearer ${token}`},redirect:'error',signal:AbortSignal.timeout(Math.min(115000,Math.max(1,deadline-Date.now()))),
         });
-        const {state,fetched,inserted,duplicates,raw,filtered,accepted,error}=await response.json();
+        const {state,fetched,inserted,duplicates,raw,filtered,accepted,error,filterReasons}=await response.json();
         unique+=Number(inserted)||0;
         const problem=typeof error==='string'&&/^[A-Z\d_]{3,65}$/.test(error)?error:undefined;
-        console.log(JSON.stringify({source,http:response.status,state,raw,filtered,passedCollector:accepted,fetched,inserted,duplicates,problem}));
+        console.log(JSON.stringify({source,http:response.status,state,raw,filtered,passedCollector:accepted,fetched,inserted,duplicates,filterReasons,problem}));
         if(!response.ok)process.exitCode=1;
       }catch{
         console.log(JSON.stringify({source,state:'PROVIDER_UNAVAILABLE',raw:0,fetched:0,inserted:0,duplicates:0}));
@@ -274,10 +275,9 @@ async function main(){
     const freshSince=get('LEADFLOW_FRESH_SINCE');
     let checkpointKey=JSON.stringify(freshSince?[upstream,allowedSources,1,freshSince]:[upstream,allowedSources,1]);
     let sourceHealth:unknown=null;
-    let previousAiHealth:DiscoveryAiHealth|undefined;
     let cooldowns:Parameters<typeof discoveryAiChain>[3]={};
     let modelCache:DiscoveryCache={};
-    try{const old=JSON.parse(await readFile(file,'utf8'));Object.assign(store,old.store);if(replayStored&&old.checkpointKey)checkpointKey=old.checkpointKey;if(old.checkpointKey===checkpointKey&&old.cursor)cursor=old.cursor;if(old.emailTest)emailTest=old.emailTest as EmailTestState;sourceHealth=old.sourceHealth??null;cooldowns=old.cooldowns??{};previousAiHealth=old.aiHealth;modelCache=old.modelCache??{};}
+    try{const old=JSON.parse(await readFile(file,'utf8'));Object.assign(store,old.store);if(replayStored&&old.checkpointKey)checkpointKey=old.checkpointKey;if(old.checkpointKey===checkpointKey&&old.cursor)cursor=old.cursor;if(old.emailTest)emailTest=old.emailTest as EmailTestState;sourceHealth=old.sourceHealth??null;cooldowns=old.cooldowns??{};modelCache=old.modelCache??{};}
     catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('Unreadable local state; restore before retrying');}
     if(requalifyMissing&&!replayStored)cursor={after:0};
     let httpCount=0;
@@ -305,6 +305,10 @@ async function main(){
     }};
     const config=configSchema.parse({ownerUserId:get('TELEGRAM_OWNER_USER_ID','local-owner'),ownerChatId:get('TELEGRAM_OWNER_CHAT_ID','local-owner')});
     const chain=discoveryAiChain(providers,{json:requestJson},discoveryAiLimit,cooldowns,Date.now,modelCache);
+    const prioritySource=(source:string)=>["wordpress_jobs_rss","hackernews","freelancer_rss","authorized_projects","uk_tender"].includes(source);
+    const preserveBuyerBudget=allowedSources.some(prioritySource)&&allowedSources.some(source=>!prioritySource(source));
+    const diagnosticBudget=Math.floor(discoveryAiLimit*0.8);
+    let diagnosticRequests=0;
     const finalizedBy={ai:0,rules:0,sourceGuard:0};
     const recordFinalization=(lead:ReturnType<typeof store.leads>[number])=>{
       const source=lead.qualification_audit?.decision_source;
@@ -313,14 +317,18 @@ async function main(){
       else if(source==='SOURCE_GUARD')finalizedBy.sourceGuard++;
     };
     const save=async()=>{
-      const health=chain.health(finalizedBy);
-      const aiHealth=Object.values(finalizedBy).some(Boolean)||health.allUnavailable ? health : previousAiHealth??health;
+      const aiHealth=chain.health(finalizedBy);
       await writeFile(file+'.tmp',JSON.stringify({offset:0,checkpointKey,cursor,store,emailTest,sourceHealth,cooldowns,aiHealth,modelCache},null,2));
       await rename(file+'.tmp',file);
     };
     const engine=new Engine(store,config,undefined,aiRequested?input=>{
       if (input.discovery_context) {
-        return chain.classify(input.discovery_context);
+        const diagnostic=preserveBuyerBudget&&!prioritySource(input.discovery_context.provider);
+        if(diagnostic&&diagnosticRequests>=diagnosticBudget)return {warning:'No AI verdict: diagnostic-board budget reached; buyer-source quota reserved'};
+        const before=chain.coverage.requests;
+        const outcome=chain.classify(input.discovery_context);
+        if(diagnostic)diagnosticRequests+=chain.coverage.requests-before;
+        return outcome;
       }
       if (!aiEnabled) return { warning: aiSetupWarning };
       if(aiProvider==='gemini'&&geminiReady)return classifyGemini(network,input,{enabled:true,freeTierConfirmed:true,dataUseApproved:true,apiKey:aiApiKey,model:aiModel});
@@ -329,13 +337,16 @@ async function main(){
     let requalified=0,requalificationSkipped=0;
     let result={imported:0,duplicates:0,invalid:0,nextOffset:0,fetched:0,sourceState:''};
     if(replayStored||!preview){
-      for(const lead of store.leads().filter(isDiscoveryCandidate)){
+      for(const lead of store.leads().filter(isDiscoveryCandidate).sort((left,right)=>
+        Number(prioritySource(right.discovery_context?.provider??""))-Number(prioritySource(left.discovery_context?.provider??"")))){
+        if(recheckAccepted&&lead.qualification_audit?.operational_state!=="QUALIFIED"&&
+          !(lead.qualification_audit?.operational_state==="RETRY_CLASSIFICATION"&&lead.qualification_audit.decision_source==="SOURCE_GUARD"))continue;
         if(!lead.discovery_context){requalificationSkipped++;continue;}
         const decisionSource=lead.qualification_audit?.decision_source;
         const retryable=lead.qualification_audit?.operational_state==='RETRY_CLASSIFICATION';
         if(!replayStored&&decisionSource!=='NO_MODEL'&&!retryable&&lead.qualification?.operator_decision)continue;
         if(!requalifyAll&&!allowedSources.includes(lead.discovery_context.provider))continue;
-        if(retryDiscoveryAi||(!requalifyAll&&retryable)){
+        if(retryDiscoveryAi||(!recheckAccepted&&!requalifyAll&&retryable)){
           if(decisionSource==='MODEL'||decisionSource==='SOURCE_GUARD')continue;
           if(lead.qualification_audit?.operational_state&&!retryable)continue;
           if(decisionSource==='RULES_FALLBACK'&&(!chain.available()||chain.exhausted()))continue;

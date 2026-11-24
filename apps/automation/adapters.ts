@@ -310,6 +310,7 @@ export function classifyOpenAICompatibleDiscovery(
     baseUrl?: string;
     reasoningEffort?: "low";
     compactVerdict?: boolean;
+    strictOpenRouter?: boolean;
   },
 ): { signals?: DiscoverySignals; warning?: string; method?: "openai-compatible" } {
   if (!options.enabled) return { warning: "AI disabled; local rules used" };
@@ -349,6 +350,7 @@ export function classifyOpenAICompatibleDiscovery(
     endpoint,
     options.model,
     options.compactVerdict ? "compact-verdict" : "full-extraction",
+    options.strictOpenRouter ? "required-json-schema" : "json-object",
     qualificationVersions.schema_version,
     qualificationVersions.rules_version,
     qualificationVersions.prompt_version,
@@ -383,7 +385,9 @@ export function classifyOpenAICompatibleDiscovery(
         ...(options.reasoningEffort
           ? { reasoning_effort: options.reasoningEffort, max_completion_tokens: 1600 }
           : { max_tokens: 800 }),
-        response_format: { type: "json_object" },
+        response_format: options.strictOpenRouter ? {type:"json_schema",json_schema:{name:"lead_verdict",strict:true,
+          schema:options.compactVerdict?discoveryVerdictJsonSchema:discoveryExtractionJsonSchema}} : { type: "json_object" },
+        ...(options.strictOpenRouter?{provider:{require_parameters:true}}:{}),
       },
     }));
     const text = result.choices[0].message.content;
@@ -409,6 +413,7 @@ export function classifyDiscoveryAI(
     baseUrl?: string;
     reasoningEffort?: "low";
     compactVerdict?: boolean;
+    strictOpenRouter?: boolean;
   },
 ): { signals?: DiscoverySignals; warning?: string; method?: "gemini" | "openai-compatible" } {
   const provider = options.provider || "gemini";

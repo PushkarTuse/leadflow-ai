@@ -399,11 +399,14 @@ export class Engine {
     const prefilterResult = prefilterDiscovery(context, now, policy);
 
     let ruleEvidence = extractRuleEvidence(canonical, context);
+    const initial = scoreFreelanceQualification(ruleEvidence, context, now, policy);
+    const obviousExclusion = initial.record.evidence_quotes.some(item => item.field === "exclusion") &&
+      ["FULL_TIME_ONLY", "INTERNSHIP", "SELLER_SELF_PROMOTION", "UNPAID_OR_EQUITY_ONLY"].includes(initial.record.rejection_reason ?? "");
 
     let extractorWarning = "";
     let extractionMethod: "gemini" | "openai-compatible" = "gemini";
     let discoveryProvider: NonNullable<Lead["qualification_audit"]>["discovery_provider"];
-    if (prefilterResult.pass && this.extractor && !injectionPattern.test(canonical)) {
+    if (prefilterResult.pass && !obviousExclusion && this.extractor && !injectionPattern.test(canonical)) {
       try {
         const extResult = this.extractor(input);
         if (extResult?.discoverySignals) {
@@ -422,7 +425,7 @@ export class Engine {
       }
     }
 
-    const { record, audit } = scoreFreelanceQualification(
+    const { record, audit } = obviousExclusion ? initial : scoreFreelanceQualification(
       ruleEvidence,
       context,
       now,
@@ -435,6 +438,7 @@ export class Engine {
     audit.decision_source = guarded ? "SOURCE_GUARD" : modelVerdict ? "MODEL" : "RULES_FALLBACK";
     audit.operational_state=discoveryState({provider:context.provider,decision:proposed?"ACCEPTED":"REJECTED",
       reason:record.rejection_reason,source:audit.decision_source,boundary:audit.project_boundary,
+      incomplete:context.truncated||!context.complete,
       warning:extractorWarning||(!modelVerdict?"No validated AI verdict":"")});
     const accepted = proposed && audit.operational_state === "QUALIFIED";
     if (modelVerdict && !guarded) {

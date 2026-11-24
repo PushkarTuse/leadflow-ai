@@ -28,7 +28,7 @@ export function freeDiscoveryBackups(get: (name: string) => string): DiscoveryPr
   const settings = [
     { id: 'groq', apiKey: get('GROQ_API_KEY'), model: 'openai/gpt-oss-120b', reasoningEffort: 'low' },
     { id: 'cloudflare', apiKey: get('CLOUDFLARE_AI_API_TOKEN'), model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast' },
-    { id: 'openrouter', apiKey: get('OPENROUTER_API_KEY'), model: 'openrouter/free' },
+    { id: 'openrouter', apiKey: get('OPENROUTER_API_KEY'), model: 'inclusionai/ling-3.2-flash:free', strictOpenRouter:true },
   ] as const;
   return settings.flatMap(({ id, ...options }) => options.apiKey && urls[id] ? [{
     id,

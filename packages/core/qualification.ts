@@ -6,7 +6,7 @@ import { z } from "zod";
  */
 
 export const QUALIFICATION_SCHEMA_VERSION = "freelance.v2";
-export const QUALIFICATION_RULES_VERSION = "rules.v5";
+export const QUALIFICATION_RULES_VERSION = "rules.v6";
 export const QUALIFICATION_PROMPT_VERSION = "prompt.v3";
 export const CAPABILITY_LIST_VERSION = "capabilities.v1";
 export const QUALIFICATION_POLICY_VERSION = "policy.v4";
@@ -1014,6 +1014,11 @@ export function prefilterDiscovery(
     }
   }
 
+  const trainingTasks=context.decoded_text.match(/\b(?:record task execution|annotate (?:each |the )?(?:task|data)|label training data|rate model (?:outputs|responses)|score model (?:outputs|responses))\b/i);
+  if(trainingTasks&&/\b(?:SuperAnnotate|AI training|model training data|data annotation)\b/i.test(context.decoded_text)&&
+    !/\b(?:build|ship|deploy|implement)\b.{0,45}\b(?:annotation platform|training pipeline|evaluation system|data platform|model monitoring)\b/i.test(context.decoded_text))
+    return {pass:false,reason:"OUT_OF_SERVICE_SCOPE",evidence:trainingTasks[0]};
+
   // Truncated / incomplete: hold, don't reject
   // (handled downstream as INSUFFICIENT_CONTEXT if remaining gates can't be satisfied)
 
@@ -1651,11 +1656,11 @@ export function extractRuleEvidence(
 
   // Determine primary rejection reason from precedence order
   const PRECEDENCE: RejectionReason[] = [
-    "SOURCE_NOT_ALLOWED", "SOURCE_UNAVAILABLE", "UNSAFE_CONTENT", "STALE_OR_CLOSED",
+    "SOURCE_NOT_ALLOWED", "SOURCE_UNAVAILABLE", "UNSAFE_CONTENT", "STALE_OR_CLOSED", "OUT_OF_SERVICE_SCOPE",
     "SELLER_SELF_PROMOTION", "FULL_TIME_ONLY", "EMPLOYMENT_CONTRACT_ONLY", "INTERNSHIP",
     "UNPAID_OR_EQUITY_ONLY", "AGGREGATOR_ONLY", "NO_CLIENT_NEED",
     "AMBIGUOUS_DIRECTION", "ENGAGEMENT_UNCLEAR", "PAYMENT_UNCLEAR", "SCOPE_MISSING",
-    "INSUFFICIENT_CONTEXT", "OUT_OF_SERVICE_SCOPE", "LOCATION_INCOMPATIBLE",
+    "INSUFFICIENT_CONTEXT", "LOCATION_INCOMPATIBLE",
   ];
 
   let primaryReason: RejectionReason | null = null;
@@ -1838,6 +1843,10 @@ export function scoreFreelanceQualification(
     // Prefilter reasons take precedence
     allReasons = [prefilter.reason, ...allReasons];
     primaryReason = prefilter.reason;
+    if(prefilter.reason==="OUT_OF_SERVICE_SCOPE"&&prefilter.evidence&&canonical.includes(prefilter.evidence)&&
+      !locatedQuotes.some(item=>item.field==="exclusion"&&item.quote===prefilter.evidence)){
+      locatedQuotes.unshift({field:"exclusion",quote:prefilter.evidence,...locateEvidence(canonical,prefilter.evidence)});
+    }
   }
 
   // Apply staleness check with explicit "filled" / "closed" markers
@@ -1859,11 +1868,11 @@ export function scoreFreelanceQualification(
 
   // Re-determine primary reason using full precedence
   const PRECEDENCE: RejectionReason[] = [
-    "SOURCE_NOT_ALLOWED", "SOURCE_UNAVAILABLE", "UNSAFE_CONTENT", "STALE_OR_CLOSED",
+    "SOURCE_NOT_ALLOWED", "SOURCE_UNAVAILABLE", "UNSAFE_CONTENT", "STALE_OR_CLOSED", "OUT_OF_SERVICE_SCOPE",
     "SELLER_SELF_PROMOTION", "FULL_TIME_ONLY", "EMPLOYMENT_CONTRACT_ONLY", "INTERNSHIP",
     "UNPAID_OR_EQUITY_ONLY", "AGGREGATOR_ONLY", "NO_CLIENT_NEED",
     "AMBIGUOUS_DIRECTION", "ENGAGEMENT_UNCLEAR", "PAYMENT_UNCLEAR", "SCOPE_MISSING",
-    "INSUFFICIENT_CONTEXT", "OUT_OF_SERVICE_SCOPE", "LOCATION_INCOMPATIBLE",
+    "INSUFFICIENT_CONTEXT", "LOCATION_INCOMPATIBLE",
   ];
   primaryReason = null;
   for (const reason of PRECEDENCE) {

@@ -8,7 +8,8 @@ const fixtures: [string, Parameters<typeof discoveryState>[0], DiscoveryState][]
   ["full-time with transient provider error", {decision:"REJECTED",reason:"FULL_TIME_ONLY",warning:"No AI verdict"}, "REJECTED"],
   ["unclear engagement after quota", {decision:"REJECTED",source:"RULES_FALLBACK",reason:"ENGAGEMENT_UNCLEAR",warning:"No AI verdict: HTTP 429"}, "RETRY_CLASSIFICATION"],
   ["ambiguous verdict despite model response", {decision:"REJECTED",reason:"ENGAGEMENT_UNCLEAR",source:"MODEL"}, "REVIEW"],
-  ["truncated buyer brief", {decision:"REJECTED",reason:"INSUFFICIENT_CONTEXT",warning:"No AI verdict"}, "AWAITING_ENRICHMENT"],
+  ["truncated buyer brief", {decision:"REJECTED",reason:"INSUFFICIENT_CONTEXT",incomplete:true,warning:"No AI verdict"}, "AWAITING_ENRICHMENT"],
+  ["complete listing with provider failure", {decision:"REJECTED",reason:"INSUFFICIENT_CONTEXT",warning:"No AI verdict: HTTP 503"}, "RETRY_CLASSIFICATION"],
   ["UK eligibility requires confirmation", {decision:"ACCEPTED",provider:"uk_tender"}, "REVIEW"],
 ];
 describe("operational project qualification",()=>{
