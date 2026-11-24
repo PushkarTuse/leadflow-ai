@@ -14,7 +14,7 @@ export interface BusinessDraftFacts {
 
 export type BusinessCopy = { subject: string; proposal: string; question: string };
 
-const line = (value: string, maximum: number) => value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, maximum);
+const line = (value: string, maximum: number) => value.replace(/[\u0000-\u001f\u007f—]+/g, " ").trim().slice(0, maximum);
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
 
@@ -55,13 +55,13 @@ export function validateBusinessCopy(input: unknown, facts: BusinessDraftFacts):
   const combined = [subject, proposal, question].join(" ");
   // Model copy describes an idea. All factual claims, links, pricing and identity
   // come from the trusted listing or the controlled portions of the draft.
-  if (/[\u0000-\u001f\u007f<>₹$€£%]|\b(?:https?|www|guarantee|no website|no online presence|customers say|award-winning|best in|I|my|me)\b/i.test(combined)) return;
+  if (/[\u0000-\u001f\u007f<>₹$€£%—]|\b(?:https?|www|guarantee|no website|no online presence|customers say|award-winning|best in|I|my|me)\b/i.test(combined)) return;
   if (/\d/.test(combined) || /^(?:re|fwd):/i.test(subject) ||
     !/^(?:(?:Can|Could|Would|How|What|Where|Do|Does)\b.+\?|[^:?!]{3,48}:\s+(?:from|a|an|one|beyond)\b[^!?]{5,45})$/i.test(subject.trim()) ||
     !/^We (?:could|can sketch|can build|can put together)\b/i.test(proposal) ||
     /\b(?:noticed|found|currently|already|you have|you are losing|streamline|elevate|boost|online presence)\b/i.test(proposal) ||
-    !/^(?:Would you like (?:us to|to see)|(?:Could|Can|May) we|Want (?:us to|to see))\b.*\?$/i.test(question) ||
-    !/\b(?:sketch|mockup)\b/i.test(question)) return;
+    !/^(?:Would you like (?:us to|to see)|Would it help|(?:Could|Can|May) we|Would a|Is this a|Want (?:us to|to see))\b.*\?$/i.test(question) ||
+    !/\b(?:sketch|mockup|walkthrough|examples?|outline|priority|workflow|team|compare)\b/i.test(question)) return;
   const identity = [facts.name, facts.city ?? ""].filter(value => value.trim().length > 3);
   if (!identity.some(value => subject.toLowerCase().includes(value.trim().toLowerCase()))) return;
   if (/^(?:a website idea|quick question|grow your business|business proposal)\b/i.test(subject)) return;
@@ -73,16 +73,20 @@ export function businessDraft(facts: BusinessDraftFacts, sender: string, copy?: 
   const name = line(facts.name, 80);
   const city = facts.city ? ` in ${line(facts.city, 55)}` : "";
   const fallback = industryCopy(facts, line(name, 45));
+  const alternativeCta=/menu/i.test(facts.serviceIdea??"")?"Would it help if we sent an example using one section of your menu?"
+    : /appointment|reserv|callback|book/i.test(facts.serviceIdea??"")?"Could we share a short walkthrough with the team that handles enquiries?"
+    : "Is this a workflow your team would like to explore?";
   const selected = validateBusinessCopy(copy, facts) ?? (facts.serviceIdea
-    ? {...fallback, proposal:line(facts.serviceIdea,250), question:"Would you like us to send a short sketch of how this could work?"}
+    ? {...fallback, proposal:line(facts.serviceIdea,250), question:alternativeCta}
     : fallback);
   const reviews = Number.isSafeInteger(facts.rating_count) && (facts.rating_count ?? 0) >= 100
     ? `Your listing shows ${facts.rating_count} ratings. ` : "";
   const website = facts.opportunity ? line(facts.opportunity, 350) : facts.website
     ? `We saw the website linked on your listing${city} and had a small idea for it.`
     : `We came across your listing${city} and didn’t see a website linked there.`;
-  const price = facts.country === "IN" ? " For web projects, our starter sites begin at ₹5,999." : "";
-  const subject = facts.subjectIdea || (reviews && !facts.website
+  const price = facts.country === "IN" && !facts.website && !facts.opportunity && !facts.serviceIdea
+    ? " Our starter websites begin at ₹5,999." : "";
+  const subject = line(facts.subjectIdea??"",84) || (reviews && !facts.website
     ? `${facts.rating_count} ratings for ${line(name, 38)}. What’s the next click?` : selected.subject);
   const paragraphs = [
     `Hi ${name} team,`,

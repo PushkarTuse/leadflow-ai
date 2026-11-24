@@ -107,13 +107,26 @@ export function robotsAllows(text:string,url:URL):boolean {
     const char=String.fromCharCode(Number.parseInt(token.slice(1),16));
     return /^[a-z0-9._~-]$/i.test(char)?char:token.toUpperCase();
   });
+  const normalizedPath=normalize(path);
+  const matches=(pattern:string)=>{
+    let input=0,token=0,star=-1,resume=0;
+    while(input<normalizedPath.length){
+      if(pattern[token] === "*"){star=token++;resume=input;}
+      else if(pattern[token]===normalizedPath[input]){token++;input++;}
+      else if(star>=0){token=star+1;input=++resume;}
+      else return false;
+    }
+    while(pattern[token]==="*")token++;
+    return token===pattern.length;
+  };
+  const rules=eligible.flatMap(group=>group.rules);
+  if(rules.length>600)return false;
   let best:{length:number;allow:boolean}|undefined;
-  for(const rule of eligible.flatMap(g=>g.rules)){
+  for(const rule of rules){
     if(rule.value.length>300 || (rule.value.match(/\*/g)?.length??0)>6) return false;
     const anchored=rule.value.endsWith("$");
     const value=normalize(anchored?rule.value.slice(0,-1):rule.value);
-    const pattern=value.split("*").map(part=>part.replace(/[\\^$.*+?()[\]{}|]/g,"\\$&")).join(".*");
-    if(!new RegExp("^"+pattern+(anchored?"$":"")).test(normalize(path))) continue;
+    if(!matches(value+(anchored?"":"*"))) continue;
     const length=value.replaceAll("*","").length;
     if(!best||length>best.length||(length===best.length&&rule.allow))best={length,allow:rule.allow};
   }
@@ -134,12 +147,14 @@ export function publicPageReader() {
     const end=Date.now()+18000;
     for(let redirect=0;redirect<4;redirect++){
       if(!policies.has(url.origin)){
-        const robots=new URL("/robots.txt",url);
+        let robots=new URL("/robots.txt",url);
         let response=await spaced(robots,"robots",end);
-        if(redirectCodes.has(response.status)&&response.location){
+        for(let hop=0;hop<2&&redirectCodes.has(response.status)&&response.location;hop++){
           const target=publicWebsite(response.location,robots);
-          if(target.hostname===robots.hostname &&
-            (target.protocol===robots.protocol || target.protocol==="https:"))response=await spaced(target,"robots",end);
+          if(target.hostname.replace(/^www\./,"")!==robots.hostname.replace(/^www\./,"")||target.pathname!=="/robots.txt"||
+            (robots.protocol==="https:"&&target.protocol!=="https:"))break;
+          robots=target;
+          response=await spaced(robots,"robots",end);
         }
         policies.set(url.origin,response.status===200?response.text:[404,410].includes(response.status)?"":null);
       }

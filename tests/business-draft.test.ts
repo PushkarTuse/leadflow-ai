@@ -75,3 +75,11 @@ describe("business outreach qualification", () => {
     expect(qualifyBusiness({name: "Lakeview Clinic", website: "https://dominos.com.example.test/"}).status).toBe("prospect");
   });
 });
+
+it("keeps an existing-site improvement scoped and omits starter pricing",()=>{
+  const draft=businessDraft({...facts,website:"https://example.com",opportunity:"The business already publishes a PDF menu.",
+    serviceIdea:"We could turn the menu into a searchable page."},"LeadFlow AI");
+  expect(draft.body).toContain("an example using one section of your menu");
+  expect(draft.body).not.toContain("₹5,999");
+  expect(draft.body).not.toContain("—");
+});

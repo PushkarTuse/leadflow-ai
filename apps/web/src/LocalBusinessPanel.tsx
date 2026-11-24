@@ -150,6 +150,7 @@ export function LocalBusinessPanel() {
         <h3>{scan.query === "india-metros" ? "Indian metro scan" : scan.query}</h3>
         {scan.countrySample && <p>Country sample from up to three major cities.</p>}
         <p>Last updated <time dateTime={scan.updatedAt}>{new Date(scan.updatedAt).toLocaleString()}</time></p>
+        {scan.freshSince && <p>Fresh scan since <time dateTime={scan.freshSince}>{new Date(scan.freshSince).toLocaleString()}</time></p>}
         <ul>
           {scan.cities.map(item => <li key={item.city}>
             <strong>{item.city}</strong> · {item.sources.reduce((total, source) => total + source.fetched, 0)} fetched · {item.rows.length} unique displayed · {item.rows.filter(row => row.outreach?.status === "excluded").length} excluded · {item.rows.filter(row => row.outreach?.status === "review").length} in review · {item.rows.filter(row => row.outreach?.status === "qualified").length} qualified / 50 target · {item.rows.filter(row => row.outreach?.draftReady).length} draft-ready
@@ -197,7 +198,10 @@ export function LocalBusinessPanel() {
               <td>{row.outreach?.status} · {row.outreach?.score ?? 0}/100
                 {row.outreach && <div>{row.outreach.reason}</div>}
                 {row.evidence && <><a href={row.evidence.ownershipUrl} target="_blank" rel="noreferrer">Ownership evidence</a>{" · "}
-                  <a href={row.evidence.opportunityUrl} target="_blank" rel="noreferrer">Opportunity evidence</a><div>{row.evidence.opportunity}</div></>}</td>
+                  <a href={row.evidence.opportunityUrl} target="_blank" rel="noreferrer">Opportunity evidence</a><div>{row.evidence.opportunity}</div></>}
+                {Boolean(row.enrichment?.observations.length) && <details><summary>Public observations</summary>
+                  <ul>{row.enrichment?.observations.map(item=><li key={item.field}><a href={item.url} target="_blank" rel="noreferrer">{item.field}</a> · {item.value}</li>)}</ul>
+                </details>}</td>
               <td>{row.evidence?.websiteStatus.replaceAll("_"," ") ?? (row.website ? "Listed, unverified" : "Unlisted in source")}</td>
               <td>{row.email || "Unlisted"}</td>
               <td>{row.phone || "Unlisted"}</td>

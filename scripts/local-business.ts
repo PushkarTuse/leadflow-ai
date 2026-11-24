@@ -27,13 +27,14 @@ export type Business = {
   tags?: string[]; qualification?: BusinessQualification;
   status?: string; found_at?: string;
   evidence?: BusinessEvidence; outreach?: ReturnType<typeof businessOutreachGate>;
-  enrichment?: EvaluatedBusiness & {nextAt:string; fingerprint:string};
+  enrichment?: EvaluatedBusiness & {nextAt:string; fingerprint:string; hintHost?:string};
 };
 type SourceResult = { source: Source; status: string; fetched: number; inserted: number; shown?: number };
 export interface BusinessScan {
   query: string;
   countrySample: boolean;
   updatedAt: string;
+  freshSince?:string;
   cities: { city: string; country: string; sources: SourceResult[]; rows: Business[] }[];
 }
 
@@ -162,9 +163,11 @@ function labelBusinesses(scan: BusinessScan, evidence: Record<string, BusinessEv
     if (rules.status !== "prospect" || !row.qualification) row.qualification = rules;
     const automated=enrichment[recordKey(row)];
     row.enrichment=automated?.fingerprint===fingerprintBusiness(row)?automated:undefined;
-    row.evidence = evidence[recordKey(row)] ?? row.enrichment?.evidence;
+    const savedEvidence=evidence[recordKey(row)];
+    const humanEvidence=savedEvidence && (!scan.freshSince || savedEvidence.verifiedAt>=scan.freshSince) ? savedEvidence:undefined;
+    row.evidence = humanEvidence ?? row.enrichment?.evidence;
     row.outreach = businessOutreachGate(row.qualification, row.evidence);
-    if(!evidence[recordKey(row)] && row.enrichment && row.outreach.status!=="excluded"){
+    if(!humanEvidence && row.enrichment && row.outreach.status!=="excluded"){
       if(row.enrichment.status==="excluded")row.outreach={status:"excluded",reason:row.enrichment.reason,score:0,contactable:false,draftReady:false};
       if(row.enrichment.status==="retry"||row.enrichment.status==="review")
         row.outreach={status:"review",reason:row.enrichment.reason,score:0,contactable:false,draftReady:false};
@@ -178,7 +181,7 @@ function labelBusinesses(scan: BusinessScan, evidence: Record<string, BusinessEv
   return scan;
 }
 
-export async function enrichBusinessScan(metros = true, maximum = 18) {
+export async function enrichBusinessScan(metros = true, maximum = 18, recheck = false) {
   if(!Number.isInteger(maximum)||maximum<1||maximum>300)throw new Error("Enrichment limit must be 1–300");
   await mkdir(dataDirectory,{recursive:true});
   const lock=enrichmentPath+".lock";
@@ -190,9 +193,17 @@ export async function enrichBusinessScan(metros = true, maximum = 18) {
     const human=await evidenceRecords();
     const start=Date.now(), deadline=start+9*60_000;
     const counts={qualified:0,excluded:0,review:0,retry:0}, reasons:Record<string,number>={};
+    const hint=(row:Business)=>{
+      if(!recheck || !scan.freshSince)return;
+      const prior=human[recordKey(row)];
+      if(!prior || prior.verifiedAt>=scan.freshSince || prior.websiteStatus!=="official_site")return;
+      if(row.enrichment?.hintHost===businessHost(prior.ownershipUrl) && Date.parse(row.enrichment.nextAt)>start)return;
+      if(!row.enrichment || !websiteGuesses(row).some(url=>businessHost(url)===businessHost(prior.ownershipUrl)))
+        return prior.ownershipUrl;
+    };
     const prospects=scan.cities.map(city=>city.rows
-      .filter(row=>row.outreach?.status!=="excluded"&&!human[recordKey(row)] &&
-        (!row.enrichment||Date.parse(row.enrichment.nextAt)<=start))
+      .filter(row=>row.outreach?.status!=="excluded"&&(!human[recordKey(row)]||scan.freshSince&&human[recordKey(row)].verifiedAt<scan.freshSince) &&
+        (recheck ? Boolean(hint(row)) : (!row.enrichment||Date.parse(row.enrichment.nextAt)<=start)))
       .sort((a,b)=>priority(b)-priority(a)));
     function priority(row:Business){
       return Number(websiteGuesses(row).length>0)*20+Number(Boolean(row.email))*5+
@@ -208,12 +219,13 @@ export async function enrichBusinessScan(metros = true, maximum = 18) {
     const read=publicPageReader();
     for(let offset=0;offset<picks.length&&Date.now()<deadline;offset+=3){
       const batch=picks.slice(offset,offset+3);
-      const results=await Promise.all(batch.map(row=>evaluateBusiness(row,read)));
+      const results=await Promise.all(batch.map(row=>evaluateBusiness({...row,website:hint(row)||row.website},read)));
       for(const [i,result] of results.entries()){
         const row=batch[i];
         counts[result.status]++;
         reasons[result.reason]=(reasons[result.reason]??0)+1;
         records[recordKey(row)]={...result,fingerprint:fingerprintBusiness(row),
+          ...(recheck?{hintHost:businessHost(hint(row)??null)}:{}),
           nextAt:new Date(Date.now()+(result.status==="retry"?1:result.status==="review"?7:30)*86400000).toISOString()};
       }
       const temporary=enrichmentPath+".tmp";
@@ -248,6 +260,7 @@ export async function runBusinessScan(term: string, onCity?: (city: BusinessScan
   const { locations, countrySample } = await placeData<{ locations: Location[]; countrySample: boolean }>({ action: "resolve", location: query });
   const scan: BusinessScan = { query, countrySample, updatedAt: new Date().toISOString(), cities: [] };
   const startedAt = scan.updatedAt;
+  if(process.env.LEADFLOW_FRESH_ONLY==="true")scan.freshSince=startedAt;
   let osmEnabled = (await settings()).LOCAL_BUSINESS_OSM_ENABLED !== "false";
   const evidence = await evidenceRecords();
   await mkdir(dataDirectory, { recursive: true });
@@ -431,9 +444,9 @@ export async function makeBusinessDraft(id: number, source: string, sourceId: st
   const eligibility = saved.find(row => row.qualification?.status !== "prospect")?.qualification ?? qualifyBusiness(lead);
   const reviewed=saved.find(row=>row.evidence);
   if(reviewed?.outreach?.status==="review")throw new Error(reviewed.outreach.reason);
-  const evidence = (await evidenceRecords())[recordKey(lead)] ?? reviewed?.evidence;
+  const evidence = reviewed?.evidence;
   const gate = businessOutreachGate(eligibility, evidence);
-  if (gate.status !== "qualified" || !gate.draftReady || lead.status !== "new") throw new Error("Draft requires verified local ownership, an opportunity, a public email or reviewed route and new status");
+  if (!evidence || gate.status !== "qualified" || !gate.draftReady || lead.status !== "new") throw new Error("Draft requires verified local ownership, an opportunity, a public email or reviewed route and new status");
   const facts = { ...lead, category: lead.title, opportunity: evidence.opportunity, serviceIdea: evidence.serviceIdea, subjectIdea:evidence.subjectIdea,
     country: lead.country ?? (/^[A-Z]{2}$/.test(country) ? country : null) };
   const tailored = useAi ? await askBusinessAi(
@@ -477,7 +490,8 @@ export async function makeBusinessDraft(id: number, source: string, sourceId: st
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const run = process.argv.includes("--enrich-metros") ? enrichBusinessScan(true,Number(process.argv.find(arg=>arg.startsWith("--limit="))?.slice(8)??18))
+  const run = process.argv.includes("--enrich-metros") ? enrichBusinessScan(true,Number(process.argv.find(arg=>arg.startsWith("--limit="))?.slice(8)??18),
+    process.argv.includes("--recheck-official-hints"))
     .then(({scan:_,...summary})=>console.log(JSON.stringify(summary))) :
     process.argv.includes("--rebuild-metros") ? rebuildMetroSnapshot() :
     process.argv.includes("--review-metros") ? reviewBusinessScan(true).then(result => {

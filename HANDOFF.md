@@ -2,6 +2,10 @@
 
 This is the entry point for any AI (or human) picking up this repository. Read this file first, then open the latest capsule.
 
+## Resumed pipeline work — 24 November 2026
+
+Read `docs/PIPELINE_RESUME_RESULTS.md` for the clean run and verified checks. `docs/COPILOT_HANDOFF.md` documents the earlier checkpoints and current source and enrichment contracts. The previous five business drafts and ownership evidence are historical and are excluded from fresh classification.
+
 ## Pipeline overhaul and fresh run — 24 November 2026
 
 Read `docs/PIPELINE_OVERHAUL.md` for the checklist, source audit, exact counts and timestamped reset backups. The loopback dashboard is on 5174 and the Worker on 8787. The fresh ledger received 100 unique Jobicy candidates and qualified zero. The business evidence queue holds 861 fresh publisher IDs with five owner-and-opportunity-verified, contactable EML drafts. Keep the sample drafts unsent. UK Find a Tender is wired with bounded discovery and a local review stage. The underlying Worker call failed in the live run. Preserve the existing cooldown and use the next allowed poll to investigate. Code changes remain in the local working trees.

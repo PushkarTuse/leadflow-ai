@@ -7,6 +7,7 @@ export type QualificationState = "ACCEPTED" | "REJECTED" | "REVIEW";
 
 export interface LeadRow {
   lead_id: string;
+  created_at?:string;
   title: string;
   raw_description?: string;
   client_name_if_public: string;
@@ -111,6 +112,7 @@ interface EmailTest {
 }
 
 interface StatusPayload {
+  freshSince?:string|null;
   offset: number;
   store: { rows: LeadRow[]; requestRows: RequestRow[] };
   emailTest: EmailTest | null;
@@ -162,6 +164,7 @@ export function PipelineAiHealth({ health }: { health: DiscoveryAiHealth }) {
   );
 }
 const attribution: Record<string,string> = {
+  authorized_projects:"Authorized buyer briefs",
   hackernews:"Hacker News", wordpress_jobs_rss:"WordPress Jobs", freelancer_rss:"Freelancer",
   himalayas:"Himalayas", jobicy_rss:"Jobicy", remotive:"Remotive",
   uk_tender:"UK Find a Tender",
@@ -219,6 +222,7 @@ export function PipelineDashboard() {
   const [runMessage, setRunMessage] = useState("");
   const [collected, setCollected] = useState<{source: string; state: string; raw?: number; fetched?: number; inserted?: number; duplicates?: number}[]>([]);
   const [target, setTarget] = useState(500);
+  const [resultFilter,setResultFilter]=useState("all");
   const [selected, setSelected] = useState(["hackernews","wordpress_jobs_rss"]);
 
   const load = useCallback(async () => {
@@ -446,6 +450,13 @@ export function PipelineDashboard() {
 
       <section>
         <h2>Latest local results</h2>
+        {status?.freshSince && <p>Fresh run since <time dateTime={status.freshSince}>{new Date(status.freshSince).toLocaleString()}</time>
+          {" · "}{rows.filter(row=>row.created_at && row.created_at>=status.freshSince!).length} fresh
+          {" · "}{rows.filter(row=>!row.created_at || row.created_at<status.freshSince!).length} earlier records</p>}
+        <label>Show decisions <select value={resultFilter} onChange={event=>setResultFilter(event.target.value)}>
+          <option value="all">All decisions</option>
+          {Object.entries(discoveryLabels).map(([key,label])=><option key={key} value={key}>{label}</option>)}
+        </select></label>
         <div
           aria-label="Qualification counts"
           style={{
@@ -534,7 +545,7 @@ export function PipelineDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((lead) => {
+                {rows.filter(lead=>resultFilter==="all"||localReviewState(lead)===resultFilter).map((lead) => {
                   const request = requests.find(
                     (r) => r.lead_id === lead.lead_id,
                   );

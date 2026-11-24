@@ -331,10 +331,12 @@ async function main(){
       for(const lead of store.leads().filter(isDiscoveryCandidate)){
         if(!lead.discovery_context){requalificationSkipped++;continue;}
         const decisionSource=lead.qualification_audit?.decision_source;
-        if(!replayStored&&decisionSource!=='NO_MODEL'&&lead.qualification?.operator_decision)continue;
+        const retryable=lead.qualification_audit?.operational_state==='RETRY_CLASSIFICATION';
+        if(!replayStored&&decisionSource!=='NO_MODEL'&&!retryable&&lead.qualification?.operator_decision)continue;
         if(!requalifyAll&&!allowedSources.includes(lead.discovery_context.provider))continue;
-        if(retryDiscoveryAi){
+        if(retryDiscoveryAi||(!requalifyAll&&retryable)){
           if(decisionSource==='MODEL'||decisionSource==='SOURCE_GUARD')continue;
+          if(lead.qualification_audit?.operational_state&&!retryable)continue;
           if(decisionSource==='RULES_FALLBACK'&&(!chain.available()||chain.exhausted()))continue;
         }
         const qualified=engine.requalifyDiscovery(lead.lead_id,lead,true);
@@ -429,7 +431,7 @@ async function main(){
       blocked_by_source:blocked,ai_attempted:attempted,ai_succeeded:succeeded,ai_failed:failed,
       ai_skipped:Math.max(0,result.imported+requalified-succeeded-failed),
       ai_failure_reasons:chain.failures,ai_provider:providerSetting,gemini_attempted:Boolean(chain.callsByProvider.gemini),
-      discovery_ai_requests:requests,ai_requests_by_provider:chain.callsByProvider,ai_verdicts_by_provider:chain.verdictsByProvider,
+      discovery_ai_requests:requests,discovery_ai_cache_hits:chain.coverage.cacheHits,ai_requests_by_provider:chain.callsByProvider,ai_verdicts_by_provider:chain.verdictsByProvider,
       discovery_ai_pause:!chain.available()?(aiSetupWarning||Object.values(cooldowns).map(item=>item.warning).join('; ')):'',
       methods:store.leads().map(l=>({id:l.lead_id,method:l.method,warning:l.extractionWarning})),
       telegram:requalificationRun?'suppressed during requalification':qualificationMode==='shadow'?'suppressed by shadow mode':telegram?'owner preview notifications + executive summary':'local payloads only',

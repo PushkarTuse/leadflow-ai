@@ -39,4 +39,8 @@ describe("business evidence gates",()=>{
     expect(websiteGuesses({...row,website:"https://facebook.com/x",email:"test@gmail.com"})).toEqual([]);
     expect((await evaluateBusiness(row,async()=>{throw new Error("PUBLIC_HTTP_503");})).status).toBe("retry");
   });
+  it("keeps a matching branch with a declared parent in review",async()=>{
+    const schema='<script type="application/ld+json">{"name":"North Lane Dental","branchOf":{"name":"Parent operator"}}</script>';
+    expect((await evaluate(base+schema+"<p>Family-run dental practice.</p><p>Call our team to book an appointment.</p>"))).toMatchObject({status:"review"});
+  });
 });

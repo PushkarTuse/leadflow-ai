@@ -10,13 +10,16 @@ export type EvaluatedBusiness = {
   status:"qualified"|"excluded"|"review"|"retry"; reason:string; observations:BusinessObservation[];
   identityHost?:string; evidence?:BusinessEvidence;
 };
-type Page = {url:URL;headings:string[];lines:string[];links:{label:string;href:string}[]};
+type Page = {url:URL;headings:string[];lines:string[];links:{label:string;href:string}[];entities:Record<string,unknown>[]};
 const hidden = new Set(["script","style","noscript","template","svg"]);
 const block = new Set(["p","li","div","section","article","td","h1","h2","h3","title","br","footer"]);
 const within = (value:string,size=450) => value.replace(/\s+/g," ").trim().slice(0,size);
 const host = (domain:string) => domain.toLowerCase().replace(/^www\./,"");
 
 function cleanError(error:unknown) {
+  const code=(error as NodeJS.ErrnoException|null)?.code;
+  if(code&&/^(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|CERT_HAS_EXPIRED|UNABLE_TO_VERIFY_LEAF_SIGNATURE)$/.test(code))
+    return "PUBLIC_NETWORK_"+code;
   return error instanceof Error && /^(?:UNSAFE|PUBLIC|ENOTFOUND|EAI_AGAIN|AbortError)[A-Z0-9_]*$/.test(error.message)
     ? error.message : "PUBLIC_PAGE_UNAVAILABLE";
 }
@@ -24,6 +27,7 @@ function cleanError(error:unknown) {
 function parsePage(input:HtmlPage):Page {
   const tree=parse(input.html);
   const headings:string[]=[], lines:string[]=[], links:Page["links"]=[];
+  const entities:Page["entities"]=[];
   const queue:{node:Node;close?:boolean}[]=[{node:tree}];
   let current="", anchor:{node:Node;href:string;text:string}|undefined;
   let heading:{node:Node;text:string}|undefined;
@@ -42,6 +46,18 @@ function parsePage(input:HtmlPage):Page {
       if(anchor)anchor.text+=value;
       if(heading)heading.text+=value;
     }
+    if(tag==="script" && "attrs" in node && "childNodes" in node && node.attrs.some(a=>a.name==="type"&&a.value==="application/ld+json")){
+      const first=node.childNodes[0];
+      if(first&&"value" in first&&first.value.length<30_000&&entities.length<15){
+        try{
+          const data=JSON.parse(first.value);
+          const objects=Array.isArray(data)?data:Array.isArray(data?.["@graph"])?data["@graph"]:[data];
+          for(const object of objects.slice(0,15-entities.length)){
+            if(object&&typeof object==="object"&&typeof object.name==="string"&&object.name.length<200)entities.push(object);
+          }
+        }catch{ /* Skip invalid structured markup. */ }
+      }
+    }
     if(hidden.has(tag) || !("childNodes" in node))continue;
     if("attrs" in node && node.attrs.some(attr=>attr.name==="hidden" || attr.name==="aria-hidden"&&attr.value==="true" ||
       attr.name==="style"&&/display\s*:\s*none|visibility\s*:\s*hidden/i.test(attr.value))) continue;
@@ -50,11 +66,15 @@ function parsePage(input:HtmlPage):Page {
       const href=node.attrs.find(attr=>attr.name==="href")?.value;
       if(href)anchor={node,href:href.slice(0,1600),text:""};
     }
+    if(tag==="img"&&links.length<250&&"attrs" in node){
+      const meta=Object.fromEntries(node.attrs.map(attr=>[attr.name,attr.value]));
+      if(meta.src&&/\bmenu\b/i.test(meta.alt??""))links.push({label:within(meta.alt,120),href:meta.src.slice(0,1600)});
+    }
     if(["title","h1","h2"].includes(tag)&&headings.length<28)heading={node,text:""};
     queue.push({node,close:true});
     for(let index=node.childNodes.length-1;index>=0;index--)queue.push({node:node.childNodes[index]});
   }
-  return {url:new URL(input.url),headings:headings.filter(Boolean),lines:lines.filter(Boolean).slice(0,1400),links};
+  return {url:new URL(input.url),headings:headings.filter(Boolean),lines:lines.filter(Boolean).slice(0,1400),links,entities};
 }
 
 const directoryOrSocial = /(?:^|\.)(?:google\.[a-z.]+|goo\.gl|business\.site|facebook\.com|instagram\.com|linkedin\.com|linktr\.ee|youtube\.com|wa\.me|whatsapp\.com|zomato\.com|swiggy\.com|justdial\.com|practo\.com|tripadvisor\.[a-z.]+|wikipedia\.org|openstreetmap\.org)$/i;
@@ -68,6 +88,7 @@ export function websiteGuesses(row:EvidenceInput):string[]{
     try{
       const u=publicWebsite(/^https?:\/\//i.test(value)?value:"https://"+value);
       if(directoryOrSocial.test(u.hostname)||sharedHost.test(u.hostname))continue;
+      u.protocol="https:";
       u.search="";
       if(!candidates.some(item=>host(new URL(item).hostname)===host(u.hostname)))candidates.push(u.href);
     }catch { /* An untrusted source field supplies no candidate. */ }
@@ -75,10 +96,10 @@ export function websiteGuesses(row:EvidenceInput):string[]{
   return candidates;
 }
 
-const identityName = (name:string) => normalizedBusinessName(name).replace(/\b(?:pvt|private|limited|ltd|llp|inc)\b/g," ").replace(/\s+/g," ").trim();
+const identityName = (name:string) => normalizedBusinessName(name).replace(/^the /,"").replace(/\b(?:pvt|private|limited|ltd|llp|inc)\b/g," ").replace(/\s+/g," ").trim();
 const matchesText=(value:string,term:string)=>(" "+normalizedBusinessName(value)+" ").includes(" "+term+" ");
 const phoneDigits=(value:string|null)=>value?.replace(/[^0-9]/g,"").slice(-10);
-const owned = /\b(?:independently (?:owned|operated|run)|(?:family|owner|founder)[ -](?:owned|operated|run|led)|(?:founded|established|run|operated|owned) by|our (?:founder|owner)\b|founder (?:and|&) (?:owner|director))\b/i;
+const owned = /\b(?:independently (?:owned|operated|run)|(?:family|owner|founder)[ -](?:owned|operated|run|led)|(?:founded|established|run|operated|owned|taken over) by|our (?:founder|owner)\b|founder (?:and|&) (?:owner|director))\b/i;
 const corporate = /\b(?:become (?:our |a )?franchisee|franchise opportunities|franchise locations|franchise enquiry|nationwide chain|global chain|part of (?:the )?.{2,55} (?:group|holdings)|operated by .{2,55} franchis(?:ee|or))\b/i;
 const actionPaths = /\b(?:about|contact|book(?:ing)?|appointments?|menu|visit|services|reservations?|enquir(?:e|ies))\b/i;
 const signals=[
@@ -117,12 +138,18 @@ export async function evaluateBusiness(row:EvidenceInput, read:(url:string)=>Pro
       catch { /* Incomplete evidence remains in review. */ }
     }
     const name=identityName(row.name), city=normalizedBusinessName(row.city??"");
-    const namePage=pages.find(page=>name.length>=5 && page.headings.some(value=>matchesText(value,name)));
+    const identityHeading=(page:Page)=>page.headings.find(value=>matchesText(value,name)) ??
+      page.entities.find(entity=>identityName(String(entity.name))===name)?.name as string|undefined;
+    const namePage=pages.find(page=>name.length>=5 && identityHeading(page));
     const directoryPhone=phoneDigits(row.phone);
     const locationPage=pages.find(page=>page.lines.some(value=>city.length>=3 && matchesText(value,city)) ||
-      directoryPhone?.length===10 && page.links.some(link=>link.href.startsWith("tel:")&&phoneDigits(link.href)===directoryPhone));
+      directoryPhone?.length===10 && (page.links.some(link=>link.href.startsWith("tel:")&&phoneDigits(link.href)===directoryPhone)||
+        page.lines.some(line=>(line.match(/(?:\+?\d[\s()-]*){10,15}/g)??[]).some(phone=>phoneDigits(phone)===directoryPhone))));
     if(!namePage||!locationPage){mismatched=true;continue;}
-    observations.push(evidence("identity",namePage.headings.find(value=>matchesText(value,name))!,namePage.url));
+    observations.push(evidence("identity",identityHeading(namePage)!,namePage.url));
+    const parent=pages.find(page=>page.entities.some(entity=>identityName(String(entity.name))===name&&Boolean(entity.branchOf||entity.parentOrganization)));
+    if(parent)return {status:"review",reason:"First-party markup shows a parent or branch; purchasing autonomy is unconfirmed",
+      identityHost:host(home.url.hostname),observations:[...observations,evidence("corporate","Matched organization declares a parent or branch relationship",parent.url)]};
     const corp=pages.flatMap(page=>page.lines.filter(line=>corporate.test(line)).map(line=>({line,page}))).at(0);
     if(corp)return {status:"excluded",reason:"Official site shows corporate or franchise control",
       identityHost:host(home.url.hostname), observations:[...observations,evidence("corporate",corp.line,corp.page.url)]};
@@ -131,15 +158,18 @@ export async function evaluateBusiness(row:EvidenceInput, read:(url:string)=>Pro
       identityHost:host(home.url.hostname),observations};
     observations.push(evidence("ownership",owner.line,owner.page.url));
     const contacts=pages.flatMap(page=>page.links.filter(link=>/^(?:mailto:[^\s?]+@[^\s?]+\.[a-z]{2,}(?:\?|$)|tel:[\d+() .-]{7,}$)/i.test(link.href))
+      .filter(link=>!/^mailto:(?:[^@]*@(?:example\.(?:com|net|org)|domain\.com)|(?:name|you|username)@[^?]+)/i.test(link.href))
       .map(link=>({page,kind:link.href.toLowerCase().startsWith("mailto:")?"email" as const:"phone" as const})));
     const contact=contacts.find(route=>route.kind==="email")??contacts[0];
     if(contact)observations.push(evidence("contact",`Official page publishes a business ${contact.kind} link`,contact.page.url));
     const idea=pages.flatMap(page=>signals.filter(signal=>signal.type.test(row.title??""))
       .flatMap(signal=>page.lines.filter(line=>signal.pattern.test(line)).map(line=>({page,line,idea:signal.idea,fact:signal.fact})))).at(0);
-    const menu=pages.flatMap(page=>page.links.filter(link=>/menu/i.test(link.label+" "+link.href)&&/\.(?:pdf|jpe?g|png)(?:[?#]|$)/i.test(link.href))
+    const phoneBooking=pages.flatMap(page=>page.links.filter(link=>/^tel:/i.test(link.href)&&/\b(?:book|reserv|appointment)/i.test(link.label))
+      .map(link=>({page,line:link.label,idea:signals[0].idea,fact:signals[0].fact}))).at(0);
+    const menu=pages.flatMap(page=>page.links.filter(link=>/\bmenu\b/i.test(link.label+" "+link.href)&&/\.(?:pdf|jpe?g|png|webp)(?:[?#]|$)/i.test(link.href))
       .map(link=>({page,line:link.label||"Menu linked as a PDF or image",fact:"Your site links to a document version of your menu.",
         idea:"We could make the document menu browsable and searchable on a phone, while keeping your existing menu design."}))).at(0);
-    const opportunity=idea??menu;
+    const opportunity=idea??phoneBooking??menu;
     if(!opportunity) return {status:"review",reason:"Local control documented; no supported digital opportunity was observed",
       identityHost:host(home.url.hostname),observations};
     observations.push(evidence("digital",opportunity.line,opportunity.page.url));
@@ -150,5 +180,6 @@ export async function evaluateBusiness(row:EvidenceInput, read:(url:string)=>Pro
         verifiedAt:now.toISOString(),
       }};
   }
-  return {status:mismatched?"review":"retry",reason:mismatched?"Candidate site did not match both business name and location/contact":unreachable,observations};
+  const restricted=/ROBOTS|UNSAFE|HTTP_(?:400|401|403|404|410)|CONTENT_REJECTED/.test(unreachable);
+  return {status:mismatched||restricted?"review":"retry",reason:mismatched?"Candidate site did not match both business name and location/contact":unreachable,observations};
 }

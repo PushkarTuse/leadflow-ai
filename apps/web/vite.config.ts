@@ -97,6 +97,7 @@ async function readLatestState() {
     emailTest,
     sourceHealth,
     aiHealth,
+    freshSince: process.env.LEADFLOW_FRESH_SINCE || null,
     directory,
     stateFile: path.basename(latest.file),
   };

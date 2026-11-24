@@ -127,13 +127,22 @@ Move-LocalState $aiRoot 'data\external-profiles' 'consumer-profiles'
 Move-LocalState $aiRoot 'outputs\external' 'consumer-outputs'
 Move-LocalState $aiRoot 'data\local-business\latest.json' 'local-business-latest.json'
 Move-LocalState $aiRoot 'data\local-business\metros.json' 'local-business-metros.json'
+Move-LocalState $aiRoot 'data\local-business\enrichment-v1.json' 'local-business-enrichment.json'
 Move-LocalState $aiRoot 'outputs\local-business' 'local-business-drafts'
+if ($PreserveHistory -and (Test-Path -LiteralPath $archive -PathType Container)) {
+    foreach ($history in @('evidence.json', 'draft-review.json')) {
+        $historyPath = Join-Path $aiRoot ('data\local-business\' + $history)
+        if (Test-Path -LiteralPath $historyPath -PathType Leaf) {
+            Copy-Item -LiteralPath $historyPath -Destination (Join-Path $archive ('retained-' + $history))
+        }
+    }
+}
 
 $env:EXTERNAL_LOCAL_PROFILE = ''
 $env:LEADFLOW_LOCAL_PROFILE = ''
 $env:EXTERNAL_LEADS_ENABLED = 'true'
 $env:EXTERNAL_LEADS_API_ORIGIN = $origin
-$env:EXTERNAL_LEADS_SOURCES = 'hackernews,wordpress_jobs_rss,himalayas,jobicy_rss,remotive,uk_tender'
+$env:EXTERNAL_LEADS_SOURCES = 'hackernews,wordpress_jobs_rss,himalayas,jobicy_rss,remotive,uk_tender,authorized_projects'
 $env:FREELANCE_QUALIFICATION_MODE = 'shadow'
 $env:TELEGRAM_ENABLED = 'false'
 $env:SAFE_OWNER_EMAIL_TEST = 'false'
