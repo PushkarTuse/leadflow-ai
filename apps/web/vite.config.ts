@@ -7,7 +7,8 @@ import { spawn } from "node:child_process";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import { stateDirectory } from "../../scripts/external-local-config.mjs";
-import { makeBusinessDraft, readBusinessScan, reviewBusinessScan, runBusinessScan } from "../../scripts/local-business";
+import { makeBusinessDraft, readBusinessScan, recordBusinessEvidence, reviewBusinessScan, reviewLocalDraft, runBusinessScan } from "../../scripts/local-business";
+import { FREELANCE_BUYER_SOURCES } from "../../packages/core/qualification";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const envFile = path.join(repoRoot, ".env.external");
@@ -85,7 +86,7 @@ async function readLatestState() {
     .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
     .sort((a, b) => b.modified - a.modified)[0];
   if (!latest) return { ...emptyState, stateFile: null, directory };
-  const { offset, store, emailTest, sourceHealth, aiHealth } = JSON.parse(await readFile(latest.file, "utf8"));
+  const { offset = 0, store = emptyState.store, emailTest, sourceHealth, aiHealth } = JSON.parse(await readFile(latest.file, "utf8"));
   const visibleRows = store.rows.filter((row: {discovery_context?: {expires_at?: string}}) => {
     const expires = row.discovery_context?.expires_at;
     return !expires || Date.parse(expires) > Date.now();
@@ -148,9 +149,18 @@ function localPipeline(): Plugin {
               try {
                 const data = JSON.parse(await readBody(req));
                 if (typeof data.location !== "string") return json(400, { error: "Enter a city or country" });
-                return json(200, { scan: await runBusinessScan(data.location) });
+                return json(200, { scan: await runBusinessScan(data.location, undefined, data.budget ?? 250) });
               } catch (error) {
                 return json(400, { error: (error as Error).message.slice(0, 170) });
+              } finally { businessScanning = false; }
+            }
+            if (pathname === "/api/local/pipeline/business/evidence" && req.method === "POST") {
+              if (businessScanning) return json(409, { error: "A business operation is already running" });
+              businessScanning = true;
+              try {
+                return json(200, { result: await recordBusinessEvidence(JSON.parse(await readBody(req))) });
+              } catch {
+                return json(400, { error: "Check the listing identity and provide valid HTTPS evidence and an opportunity." });
               } finally { businessScanning = false; }
             }
             if (pathname === "/api/local/pipeline/business/draft" && req.method === "POST") {
@@ -162,6 +172,13 @@ function localPipeline(): Plugin {
               } catch (error) {
                 return json(400, { error: (error as Error).message.slice(0, 170) });
               } finally { businessScanning = false; }
+            }
+            if (pathname === "/api/local/pipeline/business/draft-review" && req.method === "POST") {
+              if (businessScanning) return json(409, { error: "A business operation is already running" });
+              businessScanning = true;
+              try { return json(200, await reviewLocalDraft(JSON.parse(await readBody(req)))); }
+              catch { return json(400, { error: "Could not record the review. Reload the current draft." }); }
+              finally { businessScanning = false; }
             }
             if (pathname === "/api/local/pipeline/business/review" && req.method === "POST") {
               if (businessScanning) return json(409, { error: "A business scan or review is already running" });
@@ -239,6 +256,17 @@ function localPipeline(): Plugin {
                 });
               }
 
+              const collecting = pathname.endsWith("/collect");
+              const requested = collecting ? JSON.parse(await readBody(req) || "{}") : {};
+              const selected = requested.sources;
+              if (selected !== undefined && (!Array.isArray(selected) || !selected.length ||
+                selected.some(source => !FREELANCE_BUYER_SOURCES.includes(source)))) {
+                return json(400,{status:"error",error:"Select at least one supported source."});
+              }
+              const target = requested.target ?? 500;
+              if (!Number.isInteger(target) || target < 1 || target > 500) {
+                return json(400,{status:"error",error:"Candidate limit must be 1–500."});
+              }
               running = true;
               let settled = false;
               const finish = (code: number, body: unknown) => {
@@ -248,11 +276,11 @@ function localPipeline(): Plugin {
                 json(code, body);
               };
 
-              const collecting = pathname.endsWith("/collect");
-              const args = collecting ? ["--collect", "--limit=100"] : [];
+              const args = collecting ? ["--collect", "--limit=100", `--max-candidates=${target}`] : [];
               const child = spawn(process.execPath, ["--import", "tsx", "scripts/external-pipeline.ts", ...args], {
                 cwd: repoRoot,
-                env: { ...process.env, EXTERNAL_LOCAL_PROFILE: profile },
+                env: { ...process.env, EXTERNAL_LOCAL_PROFILE: profile,
+                  ...(selected ? { EXTERNAL_LEADS_SOURCES: selected.join(",") } : {}) },
               });
 
               let output = "";
@@ -271,17 +299,19 @@ function localPipeline(): Plugin {
               const timer = setTimeout(() => child.kill(), 5 * 4 * 2 * 27000 + 60000);
               child.on("close", (code) => {
                 clearTimeout(timer);
-                if (code === 0) {
+                if (code === 0 || collecting) {
                   const sources = collectionOutput.split(/\r?\n/).flatMap(line => {
                     try {
                       const item = JSON.parse(line);
                       if (typeof item?.source !== "string" || typeof item?.state !== "string") return [];
-                      const { source, state, raw, fetched, inserted } = item;
-                      return [{ source, state, raw, fetched, inserted }];
+                      const { source, state, raw, fetched, inserted, duplicates } = item;
+                      return [{ source, state, raw, fetched, inserted, duplicates }];
                     } catch { return []; }
                   });
-                  finish(200, { status: "completed", code, ...(collecting ? { sources } : {}) });
-                  return;
+                  if (code === 0 || sources.length) {
+                    finish(200, { status: code === 0 ? "completed" : "partial", code, ...(collecting ? { sources } : {}) });
+                    return;
+                  }
                 }
                 const detail = output.split(/\r?\n/).find(line =>
                   /^External run failed: Upstream http:\/\/127\.0\.0\.1:\d{1,5} returned /.test(line));

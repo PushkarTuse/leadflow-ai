@@ -10,6 +10,7 @@ const listingHosts: Record<(typeof FREELANCE_BUYER_SOURCES)[number],readonly str
   hackernews:['news.ycombinator.com'], wordpress_jobs_rss:['jobs.wordpress.net'],
   freelancer_rss:['www.freelancer.com','freelancer.com'], himalayas:['himalayas.app'],
   jobicy_rss:['jobicy.com'],remotive:['remotive.com'],
+  uk_tender:['www.find-tender.service.gov.uk'],
 };
 const listingEvidenceSchema=z.object({
   version:z.literal(1),
@@ -222,7 +223,7 @@ export function externalToLead(raw:unknown, hnItem?:unknown, hnThread?:unknown):
   });
 }
 
-export function pullExternalLeads(http:Http, options:{origin:string;token:string;offset:number;limit:number;allowedSources:readonly string[];cursor?:ExternalCursor},
+export function pullExternalLeads(http:Http, options:{origin:string;token:string;offset:number;limit:number;allowedSources:readonly string[];cursor?:ExternalCursor; since?:string},
   ingest:(lead:LeadInput)=>{duplicate:boolean}, guard:()=>void=()=>{}) {
   const origin=externalOrigin(options.origin);
   if(options.token.length<32 || /[\r\n]/.test(options.token))throw new Error('External API token must be at least 32 characters');
@@ -235,7 +236,8 @@ export function pullExternalLeads(http:Http, options:{origin:string;token:string
   const cursor=options.cursor;
   const paging=cursor?`order=asc&after_id=${cursor.after}${cursor.until===undefined?'':`&until_id=${cursor.until}`}`
     :`sort=found_at&order=desc&offset=${options.offset}`;
-  const page=pageSchema.parse(http.json(`${origin}/leads?category=freelance_request&${sourceFilter}&include=evidence&limit=${options.limit}&${paging}`,
+  const since = options.since ? `&since=${encodeURIComponent(options.since)}` : '';
+  const page=pageSchema.parse(http.json(`${origin}/leads?category=freelance_request&${sourceFilter}&include=evidence&limit=${options.limit}&${paging}${since}`,
     {headers:{Authorization:`Bearer ${options.token}`}}));
   if(page.offset!==(cursor?0:options.offset) || page.count!==page.leads.length || page.count>options.limit)throw new Error('External page mismatch');
   let nextCursor:ExternalCursor|undefined;

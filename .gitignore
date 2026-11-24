@@ -19,3 +19,5 @@ playwright-report/
 test-results/
 *.log
 .aider*
+
+graphify-out/

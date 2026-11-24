@@ -7,6 +7,32 @@ export type BusinessIdentity = {
   tags?: string[];
 };
 
+export const digitalStatuses = ["official_site", "parent_site", "social_only_observed", "listed_site_unavailable",
+  "not_found_after_checks", "not_listed", "unknown"] as const;
+
+export type BusinessEvidence = {
+  ownership: "independent" | "locally_controlled" | "corporate";
+  websiteStatus: typeof digitalStatuses[number];
+  ownershipUrl: string;
+  opportunityUrl: string;
+  opportunity: string;
+  serviceIdea?: string;
+  subjectIdea?: string;
+  contactUrl?: string;
+  verifiedAt: string;
+};
+
+export function businessOutreachGate(listing: BusinessQualification, evidence?: BusinessEvidence, now = Date.now()) {
+  if (listing.status === "excluded" || evidence?.ownership === "corporate")
+    return { status: "excluded", reason: listing.status === "excluded" ? listing.reason : "Corporate control confirmed", score: 0, contactable: false } as const;
+  if (!evidence || !Number.isFinite(Date.parse(evidence.verifiedAt)) ||
+    now - Date.parse(evidence.verifiedAt) > 30 * 86400000 || evidence.websiteStatus === "parent_site" ||
+    evidence.websiteStatus === "unknown" || evidence.websiteStatus === "not_listed" || !evidence.opportunity.trim())
+    return { status: "review", reason: listing.status === "review" ? listing.reason : "Verify local control and a specific digital opportunity", score: 0, contactable: false } as const;
+  return { status: "qualified", reason: "Reviewed local ownership and digital opportunity", score: evidence.contactUrl ? 90 : 70,
+    contactable: Boolean(evidence.contactUrl) } as const;
+}
+
 const chains: [RegExp, string][] = [
   [/\bdominos(?: pizza)?\b|\bdomino pizza\b/, "Domino's"],
   [/\bmc\s*donalds\b|\bmcdonald\s*s\b|\bmcdonald corporation\b/, "McDonald's"],
@@ -57,6 +83,8 @@ export function qualifyBusiness(facts: BusinessIdentity, repeatedAcrossCities = 
     return { status: "review", reason: "Listing indicates a branch, franchise, dealership, or corporate office", method: "Rules" };
   if ((facts.tags ?? []).some(tag => tag.startsWith("brand:wikidata=") || tag.startsWith("brand=")))
     return { status: "review", reason: "Source lists a brand; check who controls the business website", method: "Rules" };
+  if ((facts.tags ?? []).includes("POSSIBLE_DUPLICATE"))
+    return { status: "review", reason: "Source identity overlaps another listing; compare the address and contact route", method: "Rules" };
   if (repeatedAcrossCities)
     return { status: "review", reason: "The same name appears in at least three cities", method: "Rules" };
   return { status: "prospect", reason: "No chain signal found in the supplied listing", method: "Rules" };

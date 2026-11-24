@@ -7,6 +7,9 @@ export interface BusinessDraftFacts {
   country: string | null;
   website: string | null;
   rating_count?: number | null;
+  opportunity?: string;
+  serviceIdea?: string;
+  subjectIdea?: string;
 }
 
 export type BusinessCopy = { subject: string; proposal: string; question: string };
@@ -54,7 +57,7 @@ export function validateBusinessCopy(input: unknown, facts: BusinessDraftFacts):
   // come from the trusted listing or the controlled portions of the draft.
   if (/[\u0000-\u001f\u007f<>₹$€£%]|\b(?:https?|www|guarantee|no website|no online presence|customers say|award-winning|best in|I|my|me)\b/i.test(combined)) return;
   if (/\d/.test(combined) || /^(?:re|fwd):/i.test(subject) ||
-    !/^(?:Can|Could|Would|How|What|Where|Do|Does)\b.+\?$/i.test(subject.trim()) ||
+    !/^(?:(?:Can|Could|Would|How|What|Where|Do|Does)\b.+\?|[^:?!]{3,48}:\s+(?:from|a|an|one|beyond)\b[^!?]{5,45})$/i.test(subject.trim()) ||
     !/^We (?:could|can sketch|can build|can put together)\b/i.test(proposal) ||
     /\b(?:noticed|found|currently|already|you have|you are losing|streamline|elevate|boost|online presence)\b/i.test(proposal) ||
     !/^(?:Would you like (?:us to|to see)|(?:Could|Can|May) we|Want (?:us to|to see))\b.*\?$/i.test(question) ||
@@ -69,14 +72,18 @@ export function validateBusinessCopy(input: unknown, facts: BusinessDraftFacts):
 export function businessDraft(facts: BusinessDraftFacts, sender: string, copy?: BusinessCopy) {
   const name = line(facts.name, 80);
   const city = facts.city ? ` in ${line(facts.city, 55)}` : "";
-  const selected = validateBusinessCopy(copy, facts) ?? industryCopy(facts, line(name, 45));
+  const fallback = industryCopy(facts, line(name, 45));
+  const selected = validateBusinessCopy(copy, facts) ?? (facts.serviceIdea
+    ? {...fallback, proposal:line(facts.serviceIdea,250), question:"Would you like us to send a short sketch of how this could work?"}
+    : fallback);
   const reviews = Number.isSafeInteger(facts.rating_count) && (facts.rating_count ?? 0) >= 100
     ? `Your listing shows ${facts.rating_count} ratings. ` : "";
-  const website = facts.website
+  const website = facts.opportunity ? line(facts.opportunity, 350) : facts.website
     ? `We saw the website linked on your listing${city} and had a small idea for it.`
     : `We came across your listing${city} and didn’t see a website linked there.`;
-  const price = facts.country === "IN" ? " Our starter websites begin at ₹5,999." : "";
-  const subject = reviews && !facts.website ? `${facts.rating_count} ratings for ${line(name, 38)}. What’s the next click?` : selected.subject;
+  const price = facts.country === "IN" ? " For web projects, our starter sites begin at ₹5,999." : "";
+  const subject = facts.subjectIdea || (reviews && !facts.website
+    ? `${facts.rating_count} ratings for ${line(name, 38)}. What’s the next click?` : selected.subject);
   const paragraphs = [
     `Hi ${name} team,`,
     reviews + website + "\n\n" + selected.proposal,
@@ -87,5 +94,14 @@ export function businessDraft(facts: BusinessDraftFacts, sender: string, copy?: 
   ];
   const html = paragraphs.map(text => `<p>${escapeHtml(text).replaceAll("\n", "<br>").replace(agencyUrl, `<a href="${agencyUrl}">${agencyUrl}</a>`)}</p>`);
   html.splice(5, 0, '<img src="cid:leadflow-signature" width="180" height="45" alt="LeadFlow AI" style="display:block">');
-  return { subject, body: paragraphs.join("\n\n"), html: `<html><body style="font:15px Arial,sans-serif;color:#172320">${html.join("")}</body></html>` };
+  const shortName = line(name, 34);
+  const category = facts.category ?? "";
+  const task = /dent|clinic|salon|physio|spa/i.test(category) ? "a booking"
+    : /restaurant|cafe|pizza|bakery/i.test(category) ? "the menu"
+    : /shop|boutique|retail/i.test(category) ? "the collection"
+    : /gym|fitness|yoga/i.test(category) ? "a first class" : "an enquiry";
+  const alternatives = [...new Set([industryCopy(facts, shortName).subject,
+    `${shortName}: one less step to ${task}`, `A first look at ${task} for ${shortName}`,
+    `Could customers find ${task} faster at ${shortName}?`])].filter(item => item !== subject).slice(0, 3);
+  return { subject, alternatives, body: paragraphs.join("\n\n"), html: `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#fff;color:#172320"><div style="max-width:560px;margin:0 auto;padding:20px;font:16px/1.55 Arial,sans-serif">${html.join("")}</div></body></html>` };
 }

@@ -48,7 +48,7 @@ def locations(query):
         row = line.split("\t")
         for name in (row[0], row[1], row[4]):
             countries[normal(name)] = row[0]
-    countries.update({"uk": "GB", "greatbritain": "GB", "usa": "US"})
+    countries.update({"uk": "GB", "greatbritain": "GB", "usa": "US", "uae": "AE"})
 
     if query == "india-metros":
         terms = [(name, "IN") for name in METROS]
@@ -112,7 +112,7 @@ def overture(place, target):
     with reader:
         for batch in reader:
             fields = [key for key in ("id", "names", "basic_category", "categories", "taxonomy",
-                                      "confidence", "operating_status", "addresses", "websites", "phones", "emails")
+                                      "confidence", "operating_status", "brand", "addresses", "websites", "phones", "emails")
                       if key in batch.schema.names]
             for record in batch.select(fields).to_pylist():
                 name = (record.get("names") or {}).get("primary")
@@ -129,6 +129,13 @@ def overture(place, target):
                     continue
                 names.add(key)
                 fields = {}
+                brand = record.get("brand") or {}
+                brand_name = (brand.get("names") or {}).get("primary")
+                brand_id = brand.get("wikidata")
+                brand_tags = [f"{key}={value}"[:100] for key, value in (("brand", brand_name), ("brand:wikidata", brand_id))
+                              if isinstance(value, str) and value.strip() and not re.search(r"[\x00-\x1f\x7f]", value)]
+                if brand_tags:
+                    fields["tags"] = brand_tags
                 for column, label, pattern in (
                     ("websites", "website", r"https?://[^\s]+"),
                     ("phones", "phone", r"\+?[\d() .-]{6,40}"),

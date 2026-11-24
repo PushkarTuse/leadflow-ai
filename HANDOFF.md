@@ -2,6 +2,10 @@
 
 This is the entry point for any AI (or human) picking up this repository. Read this file first, then open the latest capsule.
 
+## Pipeline overhaul and fresh run — 24 November 2026
+
+Read `docs/PIPELINE_OVERHAUL.md` for the checklist, source audit, exact counts and timestamped reset backups. The loopback dashboard is on 5174 and the Worker on 8787. The fresh ledger received 100 unique Jobicy candidates and qualified zero. The business evidence queue holds 861 fresh publisher IDs with five owner-and-opportunity-verified, contactable EML drafts. Keep the sample drafts unsent. UK Find a Tender is wired with bounded discovery and a local review stage. The underlying Worker call failed in the live run. Preserve the existing cooldown and use the next allowed poll to investigate. Code changes remain in the local working trees.
+
 ## Business qualification and wider freelance search — 24 November 2026
 
 Open http://127.0.0.1:5174/pipeline#businesses for the screened business queue or http://127.0.0.1:5174/pipeline#freelance to refresh freelance feeds and qualify the next batch. The saved seven-metro scan held 578 listings. Rules excluded 52, AI held three, and 523 remained visible as prospects, including 173 with listed email. Gemini and Groq screened 84 priority records. A Chromium test confirmed known chains are hidden by default, the local API refuses to draft for an excluded Domino’s branch, and branded drafts download as unsent EML files.

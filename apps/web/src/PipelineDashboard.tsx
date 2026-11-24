@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { LocalBusinessPanel } from "./LocalBusinessPanel";
 import { discoveryAiBanner, providerHealthLine, type DiscoveryAiHealth } from "../../../packages/core/discovery-ai-health";
 
-export type QualificationState = "ACCEPTED" | "REJECTED";
+export type QualificationState = "ACCEPTED" | "REJECTED" | "REVIEW";
 
 export interface LeadRow {
   lead_id: string;
@@ -53,6 +53,13 @@ export function qualificationState(row: LeadRow): QualificationState {
   return "REJECTED";
 }
 
+function localReviewState(row:LeadRow): QualificationState {
+  if (row.discovery_context?.provider === "uk_tender") return "REVIEW";
+  if (qualificationState(row) === "REJECTED" && row.qualification_audit?.project_boundary !== "ONGOING_SEAT" &&
+    /^(?:ENGAGEMENT_UNCLEAR|PAYMENT_UNCLEAR|SCOPE_MISSING|AMBIGUOUS_DIRECTION)$/.test(row.qualification?.rejection_reason ?? "")) return "REVIEW";
+  return qualificationState(row);
+}
+
 export function displayPriority(state: QualificationState, priority?: string) {
   return state === "ACCEPTED" ? priority || "—" : "—";
 }
@@ -70,7 +77,7 @@ function paymentLabel(budget?: NonNullable<LeadRow["qualification"]>["budget_sig
 }
 
 export function qualificationCounts(rows: LeadRow[]) {
-  const counts = { ACCEPTED: 0, REJECTED: 0 };
+  const counts = { ACCEPTED: 0, REJECTED: 0, REVIEW: 0 };
   for (const row of rows) counts[qualificationState(row)]++;
   return { raw: rows.length, accepted: counts.ACCEPTED, rejected: counts.REJECTED };
 }
@@ -154,6 +161,7 @@ export function PipelineAiHealth({ health }: { health: DiscoveryAiHealth }) {
 const attribution: Record<string,string> = {
   hackernews:"Hacker News", wordpress_jobs_rss:"WordPress Jobs", freelancer_rss:"Freelancer",
   himalayas:"Himalayas", jobicy_rss:"Jobicy", remotive:"Remotive",
+  uk_tender:"UK Find a Tender",
 };
 
 const cell: CSSProperties = {
@@ -206,7 +214,9 @@ export function PipelineDashboard() {
     "idle" | "running" | "completed" | "error"
   >("idle");
   const [runMessage, setRunMessage] = useState("");
-  const [collected, setCollected] = useState<{source: string; state: string; raw?: number; fetched?: number; inserted?: number}[]>([]);
+  const [collected, setCollected] = useState<{source: string; state: string; raw?: number; fetched?: number; inserted?: number; duplicates?: number}[]>([]);
+  const [target, setTarget] = useState(500);
+  const [selected, setSelected] = useState(["hackernews","wordpress_jobs_rss","uk_tender"]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -253,16 +263,17 @@ export function PipelineDashboard() {
     if (refreshing) setCollected([]);
     setRunMessage(refreshing ? "Polling freelance sources…" : "Qualifying the next batch…");
     try {
-      const res = await fetch(`/api/local/pipeline/${action}`, { method: "POST", headers: { "X-LeadFlow-Local": "1" } });
+      const res = await fetch(`/api/local/pipeline/${action}`, { method: "POST", headers: { "X-LeadFlow-Local": "1","Content-Type":"application/json" },
+        ...(refreshing ? {body:JSON.stringify({sources:selected,target})} : {}) });
       const data = (await res.json()) as { status: string; error?: string; sources?: typeof collected };
-      if (!res.ok || data.status !== "completed") {
+      if (!res.ok || !["completed","partial"].includes(data.status)) {
         setRunState("error");
         setRunMessage(
           data.error || "The pipeline run failed. Check the terminal output.",
         );
       } else {
         setRunState("completed");
-        setRunMessage(refreshing ? "Feed poll completed. See per-source results below." : "Qualification batch completed.");
+        setRunMessage(refreshing ? (data.status === "partial" ? "Feed poll was partial. See source outcomes." : "Feed poll completed. See per-source results below.") : "Qualification batch completed.");
         if (refreshing) setCollected(data.sources ?? []);
       }
     } catch {
@@ -281,7 +292,8 @@ export function PipelineDashboard() {
   const emailTest = status?.emailTest ?? null;
   const enabled = toggle?.enabled ?? false;
   const configured = toggle?.configured ?? false;
-  const counts = qualificationCounts(rows);
+  const counts = {raw:rows.length,accepted:rows.filter(row=>localReviewState(row)==="ACCEPTED").length,
+    rejected:rows.filter(row=>localReviewState(row)==="REJECTED").length,review:rows.filter(row=>localReviewState(row)==="REVIEW").length};
   const health = status?.sourceHealth;
   const healthLabel = health ? {
     OK: "Buyer candidates received",
@@ -317,6 +329,13 @@ export function PipelineDashboard() {
         <p>
           <strong>{enabled ? "ON" : "OFF"}</strong> — EXTERNAL_LEADS_ENABLED
         </p>
+        <fieldset><legend>Sources for the next poll</legend>
+          {Object.entries(attribution).map(([source,label]) => <label key={source} style={{marginRight:"0.8rem"}}>
+            <input type="checkbox" checked={selected.includes(source)} onChange={event => setSelected(current =>
+              event.target.checked ? [...current,source] : current.filter(item=>item!==source))} /> {label}
+          </label>)}
+          <label>Maximum new candidates <input type="number" min="1" max="500" value={target} onChange={event=>setTarget(Number(event.target.value))} /></label>
+        </fieldset>
         <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
           <button
             className="button secondary"
@@ -328,7 +347,7 @@ export function PipelineDashboard() {
           <button
             className="button"
             onClick={() => void run("collect")}
-            disabled={!enabled || runState === "running"}
+            disabled={!enabled || runState === "running" || !selected.length || target < 1 || target > 500}
           >
             Refresh freelance feeds
           </button>
@@ -350,7 +369,7 @@ export function PipelineDashboard() {
         {runMessage && <p role="status">{runMessage}</p>}
         {collected.length > 0 && <ul aria-label="Latest feed poll">
           {collected.map(source => <li key={source.source}>
-            <strong>{attribution[source.source] || source.source}</strong> · {source.state} · {source.raw ?? 0} raw · {source.fetched ?? 0} fetched · {source.inserted ?? 0} new
+            <strong>{attribution[source.source] || source.source}</strong> · {source.state} · {source.raw ?? 0} raw · {source.fetched ?? 0} fetched · {source.inserted ?? 0} new · {source.duplicates ?? 0} duplicates
           </li>)}
         </ul>}
         {emailTest && (
@@ -435,6 +454,7 @@ export function PipelineDashboard() {
             ["Raw candidates", counts.raw],
             ["Accepted", counts.accepted],
             ["Rejected", counts.rejected],
+            ["Review", counts.review],
           ].map(([label, count]) => (
             <span
               key={label}
@@ -540,7 +560,7 @@ export function PipelineDashboard() {
                         ? <a href={sourceLink} target="_blank" rel="noreferrer">{sourceLabel}</a>
                         : sourceLabel}</td>
                       <td style={cell}>
-                        <strong>{state === "ACCEPTED" ? "Accepted" : "Rejected"}</strong>
+                        <strong>{localReviewState(lead) === "REVIEW" ? "Review" : state === "ACCEPTED" ? "Accepted" : "Rejected"}</strong>
                       </td>
                       <td style={cell}>
                         {displayPriority(state, qualification?.priority)}

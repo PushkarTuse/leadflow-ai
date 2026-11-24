@@ -813,7 +813,7 @@ export type QualificationAudit = z.infer<typeof qualificationAuditSchema>;
  * Sources that supply original listing evidence for discovery classification.
  */
 export const FREELANCE_BUYER_SOURCES = [
-  "hackernews", "wordpress_jobs_rss", "freelancer_rss", "himalayas", "jobicy_rss", "remotive",
+  "hackernews", "wordpress_jobs_rss", "freelancer_rss", "himalayas", "jobicy_rss", "remotive", "uk_tender",
 ] as const;
 const ALLOWED_SOURCES = new Set<string>(FREELANCE_BUYER_SOURCES);
 

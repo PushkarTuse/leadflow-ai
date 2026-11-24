@@ -186,15 +186,32 @@ async function main(){
     if(preview||requalificationRun||drain)throw new Error('Run source collection as a separate command');
     const collectLimit=Number(process.argv.find(arg=>arg.startsWith('--limit='))?.slice(8)??20);
     if(!Number.isInteger(collectLimit)||collectLimit<1||collectLimit>100)throw new Error('Collection limit must be 1–100 per feed');
+    const option=(name:string,fallback:number,min:number,max:number)=>{
+      const value=Number(process.argv.find(arg=>arg.startsWith(`--${name}=`))?.slice(name.length+3)??fallback);
+      if(!Number.isInteger(value)||value<min||value>max)throw new Error(`Invalid --${name}`);
+      return value;
+    };
+    const target=option('max-candidates',500,1,500);
+    const days=option('fresh-days',14,1,30);
+    const pages=option('pages',5,1,7);
+    const deadline=Date.now()+option('max-seconds',240,5,600)*1000;
+    let unique=0;
     for(const source of allowedSources){
+      if(unique>=target||Date.now()>=deadline){
+        console.log(JSON.stringify({source,state:'BUDGET_REACHED',raw:0,fetched:0,inserted:0,duplicates:0}));
+        continue;
+      }
       try{
-        const response=await fetch(`${upstream}/collect/${source}?limit=${collectLimit}`,{
-          method:'POST',headers:{Authorization:`Bearer ${token}`},redirect:'error',signal:AbortSignal.timeout(90000),
+        const response=await fetch(`${upstream}/collect/${source}?limit=${Math.min(collectLimit,target-unique)}&freshDays=${days}&pages=${pages}`,{
+          method:'POST',headers:{Authorization:`Bearer ${token}`},redirect:'error',signal:AbortSignal.timeout(Math.min(115000,Math.max(1,deadline-Date.now()))),
         });
-        const {state,fetched,inserted,duplicates,raw,filtered,accepted}=await response.json();
-        console.log(JSON.stringify({source,http:response.status,state,raw,filtered,passedCollector:accepted,fetched,inserted,duplicates}));
+        const {state,fetched,inserted,duplicates,raw,filtered,accepted,error}=await response.json();
+        unique+=Number(inserted)||0;
+        const problem=typeof error==='string'&&/^[A-Z\d_]{3,65}$/.test(error)?error:undefined;
+        console.log(JSON.stringify({source,http:response.status,state,raw,filtered,passedCollector:accepted,fetched,inserted,duplicates,problem}));
         if(!response.ok)process.exitCode=1;
       }catch{
+        console.log(JSON.stringify({source,state:'PROVIDER_UNAVAILABLE',raw:0,fetched:0,inserted:0,duplicates:0}));
         console.error(`Collection failed for ${source}. Check the local API and source status.`);
         process.exitCode=1;
       }
@@ -249,7 +266,8 @@ async function main(){
   const lock=await open(file+'.lock','wx');
   try{
     const store=new MemoryStore();let cursor:ExternalCursor={after:0};let emailTest:EmailTestState={...emptyEmailTest};
-    let checkpointKey=JSON.stringify([upstream,allowedSources,1]);
+    const freshSince=get('LEADFLOW_FRESH_SINCE');
+    let checkpointKey=JSON.stringify(freshSince?[upstream,allowedSources,1,freshSince]:[upstream,allowedSources,1]);
     let sourceHealth:unknown=null;
     let previousAiHealth:DiscoveryAiHealth|undefined;
     let cooldowns:Parameters<typeof discoveryAiChain>[3]={};
@@ -325,7 +343,7 @@ async function main(){
       try {
         for(let page=0;page<(drain?100:1);page++){
           httpCount=0;
-          const pulled=pullExternalLeads(http,{origin,token:transportToken,offset:0,cursor,limit,allowedSources},lead=>{
+          const pulled=pullExternalLeads(http,{origin,token:transportToken,offset:0,cursor,limit,allowedSources,since:freshSince},lead=>{
             const ingested=engine.ingest(lead);
             if(!ingested.duplicate)recordFinalization(ingested.lead);
             if(requalifyMissing&&ingested.duplicate&&lead.discovery_context){

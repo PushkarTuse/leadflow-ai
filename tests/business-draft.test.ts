@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { businessDraft, validateBusinessCopy } from "../packages/core/business-draft";
-import { qualifyBusiness } from "../packages/core/business-qualification";
+import { businessOutreachGate, qualifyBusiness, type BusinessEvidence } from "../packages/core/business-qualification";
 
 const facts = { name: "Kothrud Dental Care", category: "dentist", city: "Pune", country: "IN", website: null };
 
@@ -47,6 +47,22 @@ describe("local business drafts", () => {
 });
 
 describe("business outreach qualification", () => {
+  it("requires positive evidence, distinguishes contact and holds parent or expired evidence", () => {
+    const now = Date.parse("2026-11-24T00:00:00Z");
+    const listing = qualifyBusiness({name: "Local Studio", website: null});
+    const evidence: BusinessEvidence = {
+      ownership:"locally_controlled", websiteStatus:"official_site", ownershipUrl:"https://example.com/about",
+      opportunityUrl:"https://example.com/services", opportunity:"The public class schedule is available on a PDF.",
+      verifiedAt:new Date(now).toISOString(),
+    };
+    expect(businessOutreachGate(listing)).toMatchObject({status:"review",contactable:false});
+    expect(businessOutreachGate(listing,evidence,now)).toMatchObject({status:"qualified",contactable:false});
+    expect(businessOutreachGate(listing,{...evidence,contactUrl:"https://example.com/contact"},now)).toMatchObject({status:"qualified",contactable:true});
+    expect(businessOutreachGate(listing,{...evidence,websiteStatus:"not_listed"},now).status).toBe("review");
+    expect(businessOutreachGate(listing,{...evidence,websiteStatus:"parent_site"},now).status).toBe("review");
+    expect(businessOutreachGate(listing,evidence,now+31*86400000).status).toBe("review");
+    expect(businessOutreachGate(qualifyBusiness({name:"Domino’s",website:null}),evidence,now).status).toBe("excluded");
+  });
   it.each(["Domino's Pizza Pune", "McDonald’s", "Starbucks Coffee"])("excludes the branch %s even with no website", name => {
     expect(qualifyBusiness({name, website: null}).status).toBe("excluded");
   });

@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory)]
     [ValidateSet('Leads', 'AI')]
-    [string]$Stage
+    [string]$Stage,
+    [switch]$PreserveHistory
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,9 +68,14 @@ function Invoke-Npm([string[]]$Arguments) {
 
 if ($Stage -eq 'Leads') {
     Stop-LocalService $leadsRoot '\bwrangler\.js\b.*\bdev\b' 8787
-    Move-LocalState $leadsRoot '.wrangler\state' 'worker-state'
-    Move-LocalState $leadsRoot '.wrangler\state-source-verification' 'worker-verification-state'
-    Move-LocalState $leadsRoot '.wrangler\tmp' 'worker-tmp'
+    if ($PreserveHistory) {
+        & python (Join-Path $aiRoot 'scripts\reset-overhaul-db.py') $archive
+        if ($LASTEXITCODE -ne 0) { throw 'Database backup or reset failed' }
+    } else {
+        Move-LocalState $leadsRoot '.wrangler\state' 'worker-state'
+        Move-LocalState $leadsRoot '.wrangler\state-source-verification' 'worker-verification-state'
+        Move-LocalState $leadsRoot '.wrangler\tmp' 'worker-tmp'
+    }
 
     Push-Location -LiteralPath $leadsRoot
     try {
@@ -97,7 +103,7 @@ try {
 } catch {
     throw 'Could not verify the local database using the API token from leadflow-leads/.dev.vars.'
 }
-if (!$stats.ok -or $stats.total -ne 0) { throw 'The local Worker database must be empty. Run the Leads stage first.' }
+if (!$stats.ok -or (!$PreserveHistory -and $stats.total -ne 0)) { throw 'The local Worker database must be empty. Run the Leads stage first.' }
 
 Stop-LocalService $aiRoot '\bvite\.js\b.*apps[/\\]web[/\\]vite\.config\.ts' 5174
 $activeRun = Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
@@ -108,7 +114,13 @@ if ($activeRun) { throw 'An external pipeline run is active. Wait for it to fini
 $data = Join-Path $aiRoot 'data'
 if (Test-Path -LiteralPath $data -PathType Container) {
     Get-ChildItem -LiteralPath $data -File -Filter 'external-*.json*' | ForEach-Object {
+        $isLedger = $PreserveHistory -and $_.Extension -eq '.json'
+        $cooldowns = if ($isLedger) { (Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json).cooldowns }
+        $oldPath = $_.FullName
         Move-LocalState $aiRoot ('data\' + $_.Name) $_.Name
+        if ($cooldowns) {
+            @{cooldowns=$cooldowns} | ConvertTo-Json -Compress -Depth 10 | Set-Content -LiteralPath $oldPath -Encoding ascii
+        }
     }
 }
 Move-LocalState $aiRoot 'data\external-profiles' 'consumer-profiles'
@@ -121,7 +133,7 @@ $env:EXTERNAL_LOCAL_PROFILE = ''
 $env:LEADFLOW_LOCAL_PROFILE = ''
 $env:EXTERNAL_LEADS_ENABLED = 'true'
 $env:EXTERNAL_LEADS_API_ORIGIN = $origin
-$env:EXTERNAL_LEADS_SOURCES = 'hackernews,wordpress_jobs_rss,himalayas,jobicy_rss,remotive'
+$env:EXTERNAL_LEADS_SOURCES = 'hackernews,wordpress_jobs_rss,himalayas,jobicy_rss,remotive,uk_tender'
 $env:FREELANCE_QUALIFICATION_MODE = 'shadow'
 $env:TELEGRAM_ENABLED = 'false'
 $env:SAFE_OWNER_EMAIL_TEST = 'false'
@@ -130,7 +142,14 @@ $env:FORCE_REQUALIFY = 'false'
 
 Push-Location -LiteralPath $aiRoot
 try {
-    & npm.cmd run external:collect
+    if ($PreserveHistory) {
+        $env:LEADFLOW_FRESH_ONLY = 'true'
+        $env:LEADFLOW_FRESH_SINCE = [DateTime]::UtcNow.ToString('o').Substring(0,23) + 'Z'
+        $env:EXTERNAL_DISCOVERY_AI_MAX_REQUESTS = '30'
+        & npm.cmd run external:collect -- --limit=100 --max-candidates=500 --fresh-days=14 --pages=5
+    } else {
+        & npm.cmd run external:collect
+    }
     if ($LASTEXITCODE -ne 0) { Write-Warning 'Some feed requests failed. Importing the candidates available in the local database.' }
     Invoke-Npm @('run', 'external:run', '--', '--drain')
     Remove-Item Env:\EXTERNAL_LEADS_ENABLED -ErrorAction SilentlyContinue

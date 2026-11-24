@@ -3,7 +3,7 @@ import type { Business, BusinessScan } from "../../../scripts/local-business";
 
 const endpoint = "/api/local/pipeline/business";
 const labels = { osm: "OpenStreetMap", overture: "Overture Places", fsq_os: "Foursquare Open Source" };
-type Draft = { subject: string; body: string; method: string; eml: string };
+type Draft = { id:number; fingerprint:string; subject: string; alternatives: string[]; body: string; method: string; eml: string };
 
 async function request<T>(path = "", body?: object): Promise<T> {
   const response = await fetch(endpoint + path, body ? {
@@ -17,6 +17,7 @@ async function request<T>(path = "", body?: object): Promise<T> {
 
 export function LocalBusinessPanel() {
   const [location, setLocation] = useState("");
+  const [budget, setBudget] = useState(250);
   const [scan, setScan] = useState<BusinessScan | null>(null);
   const [activeCity, setActiveCity] = useState("");
   const [busy, setBusy] = useState(false);
@@ -46,7 +47,7 @@ export function LocalBusinessPanel() {
         if (result.scan?.query === query && result.scan.updatedAt >= started) setScan(result.scan);
       }).catch(() => {});
     }, 5000);
-    try { setScan((await request<{ scan: BusinessScan }>("/scan", { location: query })).scan); }
+    try { setScan((await request<{ scan: BusinessScan }>("/scan", { location: query, budget })).scan); }
     catch (error) { setError((error as Error).message); }
     finally { window.clearInterval(interval); setBusy(false); }
   }
@@ -93,9 +94,29 @@ export function LocalBusinessPanel() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  async function decideDraft(decision:"approved"|"rejected") {
+    if (!draft) return;
+    setDraftBusy(true);
+    try {
+      await request("/draft-review",{id:draft.id,fingerprint:draft.fingerprint,decision});
+      setMessage(`Draft ${decision} for local review. Delivery status: unsent.`);
+    } catch (error) { setError((error as Error).message); }
+    finally { setDraftBusy(false); }
+  }
+
   const city = scan?.cities.find(item => item.city === activeCity) ?? scan?.cities[0];
-  const rows = city?.rows.filter(row => (showScreened || row.qualification?.status === "prospect") &&
-    (!withEmailOnly || Boolean(row.email))) ?? [];
+  const rows = city?.rows.filter(row => (showScreened || row.outreach?.status === "qualified") &&
+    (!withEmailOnly || Boolean(row.outreach?.contactable))) ?? [];
+
+  async function verify(row: Business, data: FormData) {
+    setBusy(true); setError("");
+    try {
+      await request("/evidence", { id: row.id, source: row.source, sourceId: row.source_id, ...Object.fromEntries(data) });
+      setScan((await request<{scan: BusinessScan | null}>(scan?.query === "india-metros" ? "?metros=1" : "")).scan);
+      setMessage("Evidence saved.");
+    } catch (error) { setError((error as Error).message); }
+    finally { setBusy(false); }
+  }
 
   return (
     <section id="businesses" className="note-panel" aria-labelledby="business-title" style={{ margin: "1.5rem 0" }}>
@@ -108,6 +129,7 @@ export function LocalBusinessPanel() {
           <input value={location} onChange={event => setLocation(event.target.value)} maxLength={100}
             placeholder="London, UK" style={{ padding: "0.65rem", border: "1px solid currentColor" }} />
         </label>
+        <label>Raw budget per city <input type="number" min="20" max="400" value={budget} onChange={event => setBudget(Number(event.target.value))} /></label>
         <button className="button" disabled={busy || !location.trim()} type="submit">Find businesses</button>
         <button className="button secondary" disabled={busy} type="button" onClick={() => void search("india-metros")}>Run 7 Indian metros</button>
         <button className="button secondary" disabled={busy} type="button" onClick={() => void restoreMetros()}>View saved metros</button>
@@ -121,7 +143,7 @@ export function LocalBusinessPanel() {
         <p>Last updated <time dateTime={scan.updatedAt}>{new Date(scan.updatedAt).toLocaleString()}</time></p>
         <ul>
           {scan.cities.map(item => <li key={item.city}>
-            <strong>{item.city}</strong> · {item.rows.length} listings · {item.rows.filter(row => row.qualification?.status === "prospect").length} prospects · {item.rows.filter(row => row.qualification?.status === "prospect" && row.email).length} prospects with email
+            <strong>{item.city}</strong> · {item.sources.reduce((total, source) => total + source.fetched, 0)} fetched · {item.rows.length} unique displayed · {item.rows.filter(row => row.outreach?.status === "excluded").length} excluded · {item.rows.filter(row => row.outreach?.status === "review").length} in review · {item.rows.filter(row => row.outreach?.status === "qualified").length} qualified / 50 target · {item.rows.filter(row => row.outreach?.contactable).length} draft-ready
             <ul>{item.sources.map(source => <li key={source.source}>
               {labels[source.source]} · {source.shown ?? 0} in inventory · {source.fetched} fetched, {source.inserted} added · {source.status}
             </li>)}</ul>
@@ -135,9 +157,9 @@ export function LocalBusinessPanel() {
               {scan.cities.map(item => <option key={item.city} value={item.city}>{item.city}</option>)}
             </select>
           </label>
-          <label><input type="checkbox" checked={withEmailOnly} onChange={event => setWithEmailOnly(event.target.checked)} /> With listed email only</label>
-          <label><input type="checkbox" checked={showScreened} onChange={event => setShowScreened(event.target.checked)} /> Show held and excluded listings</label>
-          <button className="button secondary" disabled={busy || draftBusy} onClick={() => void review()}>AI screen priority prospects</button>
+          <label><input type="checkbox" checked={withEmailOnly} onChange={event => setWithEmailOnly(event.target.checked)} /> Verified contact route only</label>
+          <label><input type="checkbox" checked={showScreened} onChange={event => setShowScreened(event.target.checked)} /> Show review and excluded listings</label>
+          <button className="button secondary" disabled={busy || draftBusy} onClick={() => void review()}>AI screen priority listings</button>
         </div>
         {draftBusy && <p role="status">Preparing email draft…</p>}
         {draft && <div className="note-panel" aria-label="Outreach draft" style={{ marginBlock: "1rem" }}>
@@ -145,11 +167,14 @@ export function LocalBusinessPanel() {
           <img src="/email/leadflow-signature.png" alt="LeadFlow AI" width="180" height="45" className="business-signature-still" />
           <style>{".business-signature-still{display:none}@media(prefers-reduced-motion:reduce){.business-signature-motion{display:none}.business-signature-still{display:block}}"}</style>
           <h3>{draft.subject}</h3>
+          <details><summary>Alternative subject lines</summary><ul>{draft.alternatives.map(subject => <li key={subject}>{subject}</li>)}</ul></details>
           <p>Draft written by {draft.method === "Rules" ? "the fallback template" : draft.method}</p>
           <p style={{ whiteSpace: "pre-wrap" }}>{draft.body}</p>
           <button className="button secondary" onClick={() => void navigator.clipboard.writeText(draft.subject + "\n\n" + draft.body)
             .then(() => setMessage("Draft copied.")).catch(() => setMessage("Clipboard unavailable. Use the draft download."))}>Copy draft</button>{" "}
           <button className="button secondary" onClick={saveDraft}>Download branded draft</button>
+          <button className="button secondary" disabled={draftBusy} onClick={()=>void decideDraft("approved")}>Approve draft locally</button>
+          <button className="button secondary" disabled={draftBusy} onClick={()=>void decideDraft("rejected")}>Reject draft locally</button>
           {message && <p role="status">{message}</p>}
         </div>}
         {rows.length ? <div style={{ overflowX: "auto" }}>
@@ -159,16 +184,37 @@ export function LocalBusinessPanel() {
             <tbody>{rows.map(row => <tr key={row.id} style={{ borderTop: "1px solid #7f7f7f55" }}>
               <td style={{ padding: "0.55rem" }}><strong>{row.name}</strong>{row.title && <div>{row.title}</div>}</td>
               <td>{row.url?.startsWith("https://") ? <a href={row.url} target="_blank" rel="noreferrer">{labels[row.source]}</a> : labels[row.source]}</td>
-              <td>{row.qualification?.status === "excluded" ? "Excluded" : row.qualification?.status === "review" ? "Held" : "Prospect"}
-                {row.qualification && <div>{row.qualification.reason} · {row.qualification.method}</div>}</td>
-              <td>{row.website ? "Listed" : "Unlisted"}</td>
+              <td>{row.outreach?.status} · {row.outreach?.score ?? 0}/100
+                {row.outreach && <div>{row.outreach.reason}</div>}
+                {row.evidence && <><a href={row.evidence.ownershipUrl} target="_blank" rel="noreferrer">Ownership evidence</a>{" · "}
+                  <a href={row.evidence.opportunityUrl} target="_blank" rel="noreferrer">Opportunity evidence</a><div>{row.evidence.opportunity}</div></>}</td>
+              <td>{row.evidence?.websiteStatus.replaceAll("_"," ") ?? (row.website ? "Listed, unverified" : "Unlisted in source")}</td>
               <td>{row.email || "Unlisted"}</td>
               <td>{row.phone || "Unlisted"}</td>
-              <td>{row.qualification?.status === "prospect" && <button className="button secondary"
-                disabled={draftBusy || busy} onClick={() => void prepare(row)}>Draft for {row.name}</button>}</td>
+              <td>{row.outreach?.contactable && <button className="button secondary"
+                disabled={draftBusy || busy} onClick={() => void prepare(row)}>Draft for {row.name}</button>}
+                {row.outreach?.status !== "excluded" && <details>
+                  <summary>Record verified evidence</summary>
+                  <form onSubmit={event => {event.preventDefault(); void verify(row,new FormData(event.currentTarget));}}>
+                    <label>Ownership <select name="ownership" defaultValue={row.evidence?.ownership ?? "independent"}>
+                      <option value="independent">Independent</option><option value="locally_controlled">Locally controlled</option><option value="corporate">Corporate</option>
+                    </select></label>
+                    <label>Official ownership evidence <input type="url" name="ownershipUrl" defaultValue={row.evidence?.ownershipUrl} required /></label>
+                    <label>Website status <select name="websiteStatus" defaultValue={row.evidence?.websiteStatus ?? "unknown"}>
+                      {["unknown","official_site","parent_site","social_only_observed","listed_site_unavailable","not_found_after_checks","not_listed"].map(status =>
+                        <option key={status} value={status}>{status.replaceAll("_"," ")}</option>)}
+                    </select></label>
+                    <label>Opportunity source <input type="url" name="opportunityUrl" defaultValue={row.evidence?.opportunityUrl} required /></label>
+                    <label>Verified observation <textarea name="opportunity" minLength={12} maxLength={350} defaultValue={row.evidence?.opportunity} required /></label>
+                    <label>Service idea, starting with “We could” <textarea name="serviceIdea" maxLength={250} defaultValue={row.evidence?.serviceIdea} /></label>
+                    <label>Preferred subject <input name="subjectIdea" maxLength={84} defaultValue={row.evidence?.subjectIdea} /></label>
+                    <label>Public contact page <input type="url" name="contactUrl" defaultValue={row.evidence?.contactUrl} /></label>
+                    <button type="submit" disabled={busy}>Save review</button>
+                  </form>
+                </details>}</td>
             </tr>)}</tbody>
           </table>
-        </div> : <p>No businesses match the current view.</p>}
+        </div> : <p>No qualified prospects in this view. Open the review listings to inspect the available evidence.</p>}
       </>}
     </section>
   );
