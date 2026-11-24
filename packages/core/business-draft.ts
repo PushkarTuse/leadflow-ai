@@ -20,9 +20,17 @@ const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character =>
 
 function industryCopy(facts: BusinessDraftFacts, name: string): BusinessCopy {
   const category = facts.category ?? "";
+  const observed=facts.opportunity??"";
+  if (/hotel|resort|lodging/i.test(category))
+    return { subject:`${name}: check dates before guests call`,
+      proposal:"We could give guests a mobile enquiry that collects travel dates, group size and room preferences before your team replies.",
+      question:"Would a sketch of that stay enquiry page be useful?" };
   if (/dent|healthcare|clinic|physio/i.test(category))
-    return { subject: `${name}: from Maps to an appointment`,
-      proposal: "We could put treatments, clinic hours and a WhatsApp appointment request on one page patients can use from their phone.",
+    return { subject: /phone/i.test(observed)?`${name}: an appointment option alongside the phone`:
+      `Could patients request an appointment at ${name}?`,
+      proposal: /phone/i.test(observed)
+        ? "We could add a short appointment request where patients choose a service and callback window, and your team confirms the appointment by phone."
+        : "We could put treatments, clinic hours and a WhatsApp appointment request on one page patients can use from their phone.",
       question: "Would you like us to sketch that patient booking page for you?" };
   if (/restaurant|cafe|bakery|pizza|coffee|eatery/i.test(category))
     return { subject: `Could customers see ${name}’s menu from Maps?`,
@@ -36,10 +44,10 @@ function industryCopy(facts: BusinessDraftFacts, name: string): BusinessCopy {
     return { subject: `A quicker quote request for ${name}`,
       proposal: "We could build a quote enquiry page with fields for the job, preferred timing and a photo.",
       question: "Would it help to see a sketch of that quote form?" };
-  if (/fitness|gym|yoga/i.test(category))
-    return { subject: `From class search to a trial at ${name}`,
-      proposal: "We could build a mobile page with class times and a trial-session enquiry that goes straight to your team.",
-      question: "Would you like us to sketch the timetable and trial enquiry page?" };
+  if (/fitness|gym|yoga|sport/i.test(category))
+    return { subject: /whatsapp/i.test(observed)?`What could ${name} ask before WhatsApp?`:`Can new customers find a class at ${name}?`,
+      proposal: "We could build a mobile page with class times and an enquiry that goes straight to your team.",
+      question: "Would you like us to sketch the schedule and enquiry page?" };
   return { subject: `${name}: a clearer path to a customer enquiry`,
     proposal: facts.website
       ? "We could walk through the listed site on mobile and sketch a simpler way for customers to ask about a service."
@@ -53,6 +61,7 @@ export function validateBusinessCopy(input: unknown, facts: BusinessDraftFacts):
   if (typeof subject !== "string" || typeof proposal !== "string" || typeof question !== "string") return;
   if (!subject.trim() || subject.length > 84 || proposal.length < 35 || proposal.length > 330 || question.length < 15 || question.length > 155) return;
   const combined = [subject, proposal, question].join(" ");
+  if(/\b(?:sketch|mockup|quick chat|quick call)\b/i.test(subject)||subject.trim().toLowerCase()===question.trim().toLowerCase())return;
   // Model copy describes an idea. All factual claims, links, pricing and identity
   // come from the trusted listing or the controlled portions of the draft.
   if (/[\u0000-\u001f\u007f<>₹$€£%—]|\b(?:https?|www|guarantee|no website|no online presence|customers say|award-winning|best in|I|my|me)\b/i.test(combined)) return;
@@ -73,10 +82,12 @@ export function businessDraft(facts: BusinessDraftFacts, sender: string, copy?: 
   const name = line(facts.name, 80);
   const city = facts.city ? ` in ${line(facts.city, 55)}` : "";
   const fallback = industryCopy(facts, line(name, 45));
+  const genericPhoneIdea=facts.serviceIdea?.startsWith("We could add a small enquiry option alongside your phone line");
+  const useIndustryDetails=genericPhoneIdea&&/hotel|resort|lodging|dent|healthcare|clinic|physio/i.test(facts.category??"");
   const alternativeCta=/menu/i.test(facts.serviceIdea??"")?"Would it help if we sent an example using one section of your menu?"
     : /appointment|reserv|callback|book/i.test(facts.serviceIdea??"")?"Could we share a short walkthrough with the team that handles enquiries?"
     : "Is this a workflow your team would like to explore?";
-  const selected = validateBusinessCopy(copy, facts) ?? (facts.serviceIdea
+  const selected = validateBusinessCopy(copy, facts) ?? (facts.serviceIdea&&!useIndustryDetails
     ? {...fallback, proposal:line(facts.serviceIdea,250), question:alternativeCta}
     : fallback);
   const reviews = Number.isSafeInteger(facts.rating_count) && (facts.rating_count ?? 0) >= 100
@@ -101,9 +112,10 @@ export function businessDraft(facts: BusinessDraftFacts, sender: string, copy?: 
   const shortName = line(name, 34);
   const category = facts.category ?? "";
   const task = /dent|clinic|salon|physio|spa/i.test(category) ? "a booking"
+    : /hotel|resort|lodging/i.test(category) ? "a stay"
     : /restaurant|cafe|pizza|bakery/i.test(category) ? "the menu"
     : /shop|boutique|retail/i.test(category) ? "the collection"
-    : /gym|fitness|yoga/i.test(category) ? "a first class" : "an enquiry";
+    : /gym|fitness|yoga|sport/i.test(category) ? "a first class" : "an enquiry";
   const alternatives = [...new Set([industryCopy(facts, shortName).subject,
     `${shortName}: one less step to ${task}`, `A first look at ${task} for ${shortName}`,
     `Could customers find ${task} faster at ${shortName}?`])].filter(item => item !== subject).slice(0, 3);

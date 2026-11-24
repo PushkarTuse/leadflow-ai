@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { LocalBusinessPanel } from "./LocalBusinessPanel";
+import { AuthorizedProjectImport } from "./AuthorizedProjectImport";
 import { discoveryState, type DiscoveryState } from "../../../packages/core/discovery-state";
 import { discoveryAiBanner, providerHealthLine, type DiscoveryAiHealth } from "../../../packages/core/discovery-ai-health";
 
@@ -140,6 +141,11 @@ interface TogglePayload {
   locked?: boolean;
 }
 
+type LiveSources = {
+  sources:{sources:{id:string;label:string;ready:boolean;configuration?:string}[]};
+  diagnostics:{source_state:{key:string;next_due_at?:string|null}[]};
+};
+
 const stages = [
   "External APIs",
   "Normalizer & Deduplicator",
@@ -214,6 +220,8 @@ function short(value: string, max = 120) {
 export function PipelineDashboard() {
   const [toggle, setToggle] = useState<TogglePayload | null>(null);
   const [status, setStatus] = useState<StatusPayload | null>(null);
+  const [liveSources,setLiveSources]=useState<LiveSources|null>(null);
+  const [sourceConnection,setSourceConnection]=useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [runState, setRunState] = useState<
@@ -229,13 +237,16 @@ export function PipelineDashboard() {
     setLoading(true);
     setError("");
     try {
-      const [toggleRes, statusRes] = await Promise.all([
+      const [toggleRes, statusRes, workers] = await Promise.all([
         fetch("/api/local/pipeline/toggle"),
         fetch("/api/local/pipeline/status"),
+        fetch("/api/local/pipeline/sources",{signal:AbortSignal.timeout(5000)}).catch(()=>null),
       ]);
       if (!toggleRes.ok || !statusRes.ok) throw new Error("unavailable");
       setToggle((await toggleRes.json()) as TogglePayload);
       setStatus((await statusRes.json()) as StatusPayload);
+      setLiveSources(workers?.ok?await workers.json():null);
+      setSourceConnection(workers?.ok?"":"Could not reach the local lead API. Saved run results are shown below.");
     } catch {
       setError(
         "The local pipeline API is not available. Start the dashboard with npm run dev.",
@@ -264,14 +275,14 @@ export function PipelineDashboard() {
     }
   }
 
-  async function run(action: "collect" | "run") {
+  async function run(action: "collect" | "run" | "complete" | "retry", imported=false) {
     setRunState("running");
-    const refreshing = action === "collect";
+    const refreshing = action === "complete" || action === "collect";
     if (refreshing) setCollected([]);
-    setRunMessage(refreshing ? "Polling freelance sources…" : "Qualifying the next batch…");
+    setRunMessage(action==="complete"?"Polling sources and qualifying opportunities…":refreshing ? "Polling freelance sources…" : "Qualifying opportunities…");
     try {
       const res = await fetch(`/api/local/pipeline/${action}`, { method: "POST", headers: { "X-LeadFlow-Local": "1","Content-Type":"application/json" },
-        ...(refreshing ? {body:JSON.stringify({sources:selected,target})} : {}) });
+        ...(refreshing || action==="retry" ? {body:JSON.stringify({sources:selected,target})} : imported?{body:JSON.stringify({sources:["authorized_projects"],drain:true})}:{}) });
       const data = (await res.json()) as { status: string; error?: string; sources?: typeof collected };
       if (!res.ok || !["completed","partial"].includes(data.status)) {
         setRunState("error");
@@ -280,7 +291,7 @@ export function PipelineDashboard() {
         );
       } else {
         setRunState("completed");
-        setRunMessage(refreshing ? (data.status === "partial" ? "Feed poll was partial. See source outcomes." : "Feed poll completed. See per-source results below.") : "Qualification batch completed.");
+        setRunMessage(refreshing ? (data.status === "partial" ? "Some sources were unavailable. See source outcomes and qualification results." : "Run completed. See per-source results below.") : "Qualification completed.");
         if (refreshing) setCollected(data.sources ?? []);
       }
     } catch {
@@ -355,6 +366,13 @@ export function PipelineDashboard() {
           </button>
           <button
             className="button"
+            onClick={() => void run("complete")}
+            disabled={!enabled || runState === "running" || !selected.length || target < 1 || target > 500}
+          >
+            Run complete freelance pipeline
+          </button>
+          <button
+            className="button secondary"
             onClick={() => void run("collect")}
             disabled={!enabled || runState === "running" || !selected.length || target < 1 || target > 500}
           >
@@ -367,6 +385,7 @@ export function PipelineDashboard() {
           >
             Qualify next batch
           </button>
+          <button className="button secondary" onClick={()=>void run("retry")} disabled={!enabled||!selected.length||runState==="running"}>Retry failed classifications</button>
           <button
             className="button secondary"
             onClick={() => void load()}
@@ -376,6 +395,7 @@ export function PipelineDashboard() {
           </button>
         </div>
         {runMessage && <p role="status">{runMessage}</p>}
+        <AuthorizedProjectImport busy={!enabled||runState==="running"} onImported={()=>run("run",true)} />
         {collected.length > 0 && <ul aria-label="Latest feed poll">
           {collected.map(source => <li key={source.source}>
             <strong>{attribution[source.source] || source.source}</strong> · {source.state} · {source.raw ?? 0} raw · {source.fetched ?? 0} fetched · {source.inserted ?? 0} new · {source.duplicates ?? 0} duplicates
@@ -394,6 +414,13 @@ export function PipelineDashboard() {
 
       <section className="note-panel" aria-label="Source health">
         <h2>Source health</h2>
+        {sourceConnection && <p role="alert">{sourceConnection}</p>}
+        {liveSources && <ul aria-label="Current source readiness">{liveSources.sources.sources.filter(source=>source.id in attribution).map(source=>{
+          const due=liveSources.diagnostics.source_state.filter(item=>item.key===`board:${source.id}`||item.key.startsWith(`feed:${source.id}:`))
+            .flatMap(item=>item.next_due_at??[]).sort().at(0);
+          return <li key={source.id}><strong>{attribution[source.id]}</strong> · {source.ready?"Configured":source.configuration??"Unconfigured"}
+            {due&&Date.parse(due)>Date.now()&&<> · Cooldown until <time dateTime={due}>{new Date(due).toLocaleString()}</time></>}</li>;
+        })}</ul>}
         <p><strong>{healthLabel}</strong></p>
         {health && <p>Upstream <code>{health.origin}</code> · {health.fetched ?? 0} fetched · <time dateTime={health.at}>{new Date(health.at).toLocaleString()}</time></p>}
         {health?.error && <p role="alert">{health.error}</p>}

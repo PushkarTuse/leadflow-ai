@@ -7,7 +7,7 @@ const facts = { name: "Kothrud Dental Care", category: "dentist", city: "Pune", 
 describe("local business drafts", () => {
   it("uses listed facts, booking language and local pricing", () => {
     const draft = businessDraft(facts, "Pushkar");
-    expect(draft.subject).toBe("Kothrud Dental Care: from Maps to an appointment");
+    expect(draft.subject).toBe("Could patients request an appointment at Kothrud Dental Care?");
     expect(draft.body).toContain("didn’t see a website linked there");
     expect(draft.body).toContain("₹5,999");
     expect(draft.body).toContain("custom websites and apps");

@@ -4,6 +4,14 @@ import type { Business, BusinessScan } from "../../../scripts/local-business";
 const endpoint = "/api/local/pipeline/business";
 const labels = { osm: "OpenStreetMap", overture: "Overture Places", fsq_os: "Foursquare Open Source" };
 type Draft = { id:number; fingerprint:string; subject: string; alternatives: string[]; body: string; method: string; eml: string };
+const businessState=(row:Business)=>{
+  if(row.processing)return "Processing";
+  if(row.outreach?.status==="excluded")return "Excluded";
+  if(row.outreach?.status==="qualified")return "Qualified";
+  if(row.enrichment?.status==="retry")return "Source retry";
+  return row.enrichment||row.evidence?"Evidence review":"Awaiting enrichment";
+};
+const publicContact=(row:Business)=>Boolean(row.outreach?.contactable||row.enrichment?.observations.some(item=>item.field==="contact"));
 
 async function request<T>(path = "", body?: object): Promise<T> {
   const response = await fetch(endpoint + path, body ? {
@@ -18,6 +26,9 @@ async function request<T>(path = "", body?: object): Promise<T> {
 export function LocalBusinessPanel() {
   const [location, setLocation] = useState("");
   const [budget, setBudget] = useState(250);
+  const [target, setTarget] = useState(50);
+  const [jobActive, setJobActive] = useState(false);
+  const [page, setPage] = useState(0);
   const [scan, setScan] = useState<BusinessScan | null>(null);
   const [activeCity, setActiveCity] = useState("");
   const [busy, setBusy] = useState(false);
@@ -34,6 +45,19 @@ export function LocalBusinessPanel() {
       .then(result => setScan(result.scan))
       .catch(error => setError(error.message));
   }, []);
+  const metroView=scan?.query==="india-metros";
+  const scanQuery=scan?.query;
+  useEffect(()=>{
+    if(!scanQuery)return;
+    const interval=window.setInterval(()=>{
+      void request<{scan:BusinessScan|null;scanning:boolean}>(metroView?"?metros=1":"").then(({scan:latest,scanning})=>{
+        if(latest?.query!==scanQuery)return;
+        setScan(latest);
+        setJobActive(scanning||latest.cities.some(city=>city.rows.some(row=>row.processing)));
+      }).catch(()=>{});
+    },busy?2000:8000);
+    return ()=>window.clearInterval(interval);
+  },[scanQuery,metroView,busy]);
 
   async function search(query: string) {
     setBusy(true);
@@ -47,7 +71,7 @@ export function LocalBusinessPanel() {
         if (result.scan?.query === query && result.scan.updatedAt >= started) setScan(result.scan);
       }).catch(() => {});
     }, 5000);
-    try { setScan((await request<{ scan: BusinessScan }>("/scan", { location: query, budget })).scan); }
+    try { setScan((await request<{ scan: BusinessScan }>("/scan", { location: query, budget,target,complete:true })).scan); }
     catch (error) { setError((error as Error).message); }
     finally { window.clearInterval(interval); setBusy(false); }
   }
@@ -106,13 +130,14 @@ export function LocalBusinessPanel() {
 
   const city = scan?.cities.find(item => item.city === activeCity) ?? scan?.cities[0];
   const rows = city?.rows.filter(row => (showScreened || row.outreach?.status === "qualified") &&
-    (!withEmailOnly || Boolean(row.outreach?.contactable))) ?? [];
-  async function enrich(){
+    (!withEmailOnly || publicContact(row))) ?? [];
+  const shownPage=Math.min(page,Math.max(0,Math.ceil(rows.length/25)-1));
+  async function enrich(mode:"backlog"|"updated-rules"|"retries", selection?:string){
     setBusy(true);setError("");
     try{
-      const result=await request<{scan:BusinessScan;evaluated:number;counts:Record<string,number>}>("/enrich",{metros:scan?.query==="india-metros"});
+      const result=await request<{scan:BusinessScan;evaluated:number;counts:Record<string,number>;paused:boolean}>("/enrich",{metros:metroView,mode,city:selection,target});
       setScan(result.scan);
-      setMessage(`${result.evaluated} evaluated · ${result.counts.qualified} qualified · ${result.counts.excluded} excluded · ${result.counts.review} review · ${result.counts.retry} waiting for a source retry`);
+      setMessage(`${result.paused?"Paused · ":""}${result.evaluated} evaluated · ${result.counts.qualified} qualified · ${result.counts.excluded} excluded · ${result.counts.review} review · ${result.counts.retry} waiting for a source retry`);
     }catch(error){setError((error as Error).message);}
     finally{setBusy(false);}
   }
@@ -139,11 +164,12 @@ export function LocalBusinessPanel() {
             placeholder="London, UK" style={{ padding: "0.65rem", border: "1px solid currentColor" }} />
         </label>
         <label>Raw budget per city <input type="number" min="20" max="400" value={budget} onChange={event => setBudget(Number(event.target.value))} /></label>
-        <button className="button" disabled={busy || !location.trim()} type="submit">Find businesses</button>
-        <button className="button secondary" disabled={busy} type="button" onClick={() => void search("india-metros")}>Run 7 Indian metros</button>
+        <label>Qualified target per city <input type="number" min="1" max="400" value={target} onChange={event=>setTarget(Number(event.target.value))} required /></label>
+        <button className="button" disabled={busy || jobActive || !location.trim()} type="submit">Run complete business pipeline</button>
+        <button className="button secondary" disabled={busy || jobActive} type="button" onClick={() => void search("india-metros")}>Run all 7 Indian metros</button>
         <button className="button secondary" disabled={busy} type="button" onClick={() => void restoreMetros()}>View saved metros</button>
       </form>
-      {busy && <p role="status">Scanning or screening businesses…</p>}
+      {(busy||jobActive) && <p role="status">Processing businesses… <button type="button" onClick={()=>void request("/pause",{}).then(()=>setMessage("Pausing after the active batch.")).catch(error=>setError(error.message))}>Pause enrichment</button></p>}
       {error && <p role="alert">{error}</p>}
       {!draft && message && <p role="status">{message}</p>}
       {scan && <>
@@ -153,9 +179,9 @@ export function LocalBusinessPanel() {
         {scan.freshSince && <p>Fresh scan since <time dateTime={scan.freshSince}>{new Date(scan.freshSince).toLocaleString()}</time></p>}
         <ul>
           {scan.cities.map(item => <li key={item.city}>
-            <strong>{item.city}</strong> · {item.sources.reduce((total, source) => total + source.fetched, 0)} fetched · {item.rows.length} unique displayed · {item.rows.filter(row => row.outreach?.status === "excluded").length} excluded · {item.rows.filter(row => row.outreach?.status === "review").length} in review · {item.rows.filter(row => row.outreach?.status === "qualified").length} qualified / 50 target · {item.rows.filter(row => row.outreach?.draftReady).length} draft-ready
+            <strong>{item.city}</strong> · {item.rows.length} publisher records · {item.rows.filter(row=>row.enrichment).length} evaluated · {(["Awaiting enrichment","Processing","Excluded","Evidence review","Source retry","Qualified"] as const).map(state=>`${item.rows.filter(row=>businessState(row)===state).length} ${state.toLowerCase()}`).join(" · ")} · {item.rows.filter(publicContact).length} verified contact routes · {item.rows.filter(row=>row.outreach?.draftReady).length} draft-ready
             <ul>{item.sources.map(source => <li key={source.source}>
-              {labels[source.source]} · {source.shown ?? 0} in inventory · {source.fetched} fetched, {source.inserted} added · {source.status}
+              {labels[source.source]} · {source.shown ?? 0} in inventory · {source.fetched} fetched, {source.inserted} added · {source.source==="fsq_os"&&!source.shown?"Unconfigured for this city. An authorized Foursquare Places export is required.":source.status}
             </li>)}</ul>
           </li>)}
         </ul>
@@ -163,14 +189,17 @@ export function LocalBusinessPanel() {
           <a href="https://docs.overturemaps.org/attribution/">Overture Maps</a>, and <a href="https://www.geonames.org/export/">GeoNames</a> for locations.</p>
         <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem", marginBlock: "1rem" }}>
           <label>Show city{" "}
-            <select value={city?.city ?? ""} onChange={event => setActiveCity(event.target.value)}>
+            <select value={city?.city ?? ""} onChange={event => {setActiveCity(event.target.value);setPage(0);}}>
               {scan.cities.map(item => <option key={item.city} value={item.city}>{item.city}</option>)}
             </select>
           </label>
-          <label><input type="checkbox" checked={withEmailOnly} onChange={event => setWithEmailOnly(event.target.checked)} /> Verified contact route only</label>
-          <label><input type="checkbox" checked={showScreened} onChange={event => setShowScreened(event.target.checked)} /> Show review and excluded listings</label>
-          <button className="button secondary" disabled={busy || draftBusy} onClick={() => void review()}>AI screen priority listings</button>
-          <button className="button secondary" disabled={busy || draftBusy} onClick={() => void enrich()}>Verify public business evidence</button>
+          <label><input type="checkbox" checked={withEmailOnly} onChange={event => {setWithEmailOnly(event.target.checked);setPage(0);}} /> Verified contact route only</label>
+          <label><input type="checkbox" checked={showScreened} onChange={event => {setShowScreened(event.target.checked);setPage(0);}} /> Show all listings</label>
+          <button className="button secondary" disabled={busy || draftBusy || jobActive} onClick={() => void review()}>AI screen priority listings</button>
+          <button className="button secondary" disabled={busy || draftBusy || jobActive} onClick={() => void enrich("backlog")}>Resume existing backlog</button>
+          <button className="button secondary" disabled={busy || draftBusy || jobActive || !city} onClick={() => void enrich("backlog",city?.city)}>Enrich selected city</button>
+          <button className="button secondary" disabled={busy || draftBusy || jobActive} onClick={() => void enrich("retries")}>Retry eligible failures</button>
+          <button className="button secondary" disabled={busy || draftBusy || jobActive} onClick={() => void enrich("updated-rules")}>Reprocess under updated rules</button>
         </div>
         {draftBusy && <p role="status">Preparing email draft…</p>}
         {draft && <div className="note-panel" aria-label="Outreach draft" style={{ marginBlock: "1rem" }}>
@@ -192,17 +221,17 @@ export function LocalBusinessPanel() {
           <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left" }}>
             <thead><tr>{["Business", "Source", "Screening", "Website", "Listed email", "Listed phone", "Draft"].map(title =>
               <th scope="col" key={title} style={{ padding: "0.55rem" }}>{title}</th>)}</tr></thead>
-            <tbody>{rows.map(row => <tr key={row.id} style={{ borderTop: "1px solid #7f7f7f55" }}>
+            <tbody>{rows.slice(shownPage*25,shownPage*25+25).map(row => <tr key={row.id} style={{ borderTop: "1px solid #7f7f7f55" }}>
               <td style={{ padding: "0.55rem" }}><strong>{row.name}</strong>{row.title && <div>{row.title}</div>}</td>
               <td>{row.url?.startsWith("https://") ? <a href={row.url} target="_blank" rel="noreferrer">{labels[row.source]}</a> : labels[row.source]}</td>
-              <td>{row.outreach?.status} · {row.outreach?.score ?? 0}/100
-                {row.outreach && <div>{row.outreach.reason}</div>}
+              <td>{businessState(row)} · {row.outreach?.score ?? 0}/100
+                {row.outreach && (row.enrichment||row.outreach.status==="excluded") && <div>{row.outreach.reason}</div>}
                 {row.evidence && <><a href={row.evidence.ownershipUrl} target="_blank" rel="noreferrer">Ownership evidence</a>{" · "}
                   <a href={row.evidence.opportunityUrl} target="_blank" rel="noreferrer">Opportunity evidence</a><div>{row.evidence.opportunity}</div></>}
                 {Boolean(row.enrichment?.observations.length) && <details><summary>Public observations</summary>
-                  <ul>{row.enrichment?.observations.map(item=><li key={item.field}><a href={item.url} target="_blank" rel="noreferrer">{item.field}</a> · {item.value}</li>)}</ul>
+                  <ul>{row.enrichment?.observations.map((item,index)=><li key={`${item.field}-${index}`}><a href={item.url} target="_blank" rel="noreferrer">{item.field}</a> · {item.value}</li>)}</ul>
                 </details>}</td>
-              <td>{row.evidence?.websiteStatus.replaceAll("_"," ") ?? (row.website ? "Listed, unverified" : "Unlisted in source")}</td>
+              <td>{(row.evidence?.websiteStatus??row.enrichment?.websiteObservation)?.replaceAll("_"," ") ?? (row.website ? "Listed, unverified" : "Unlisted in source")}</td>
               <td>{row.email || "Unlisted"}</td>
               <td>{row.phone || "Unlisted"}</td>
               <td>{row.outreach?.draftReady && <button className="button secondary"
@@ -228,7 +257,8 @@ export function LocalBusinessPanel() {
                 </details>}</td>
             </tr>)}</tbody>
           </table>
-        </div> : <p>No qualified prospects in this view. Open the review listings to inspect the available evidence.</p>}
+          <p>{shownPage*25+1}–{Math.min(rows.length,(shownPage+1)*25)} of {rows.length}{" "}<button type="button" disabled={!shownPage} onClick={()=>setPage(shownPage-1)}>Previous</button>{" "}<button type="button" disabled={(shownPage+1)*25>=rows.length} onClick={()=>setPage(shownPage+1)}>Next</button></p>
+        </div> : <p>No matches in this view. Show all listings to inspect availability and evidence.</p>}
       </>}
     </section>
   );

@@ -1,5 +1,7 @@
 # LeadFlow resumed execution — 24 November 2026
 
+The later pilot and current runtime status are in [PIPELINE_OPERATIONS.md](PIPELINE_OPERATIONS.md). The clean run below is historical and remains the baseline for the operational follow-up.
+
 ## Progress
 
 - [x] Recovered interrupted changes, reconciled provider-test expectations with cooldown behavior, tested and pushed both foundations.

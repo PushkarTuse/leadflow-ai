@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseEnv } from "node:util";
 import { businessDraft, validateBusinessCopy } from "../packages/core/business-draft";
 import { businessHost, businessOutreachGate, digitalStatuses, normalizedBusinessName, qualifyBusiness, type BusinessEvidence, type BusinessQualification } from "../packages/core/business-qualification";
-import { localOwnershipScreen } from "./ollama-local";
+import { localDraftCopy, localOwnershipScreen } from "./ollama-local";
 import { evaluateBusiness, websiteGuesses, type EvaluatedBusiness } from "./business-evidence";
 import { publicPageReader } from "./business-web";
 import { z } from "zod";
@@ -23,11 +23,13 @@ type Location = { city: string; country: string; lat: number; lng: number };
 export type Business = {
   id: number; source: Source; source_id: string; name: string; title: string | null; city: string | null;
   country: string | null; website: string | null; email: string | null; phone: string | null;
+  address?:string|null;
   rating_count?: number | null; url: string | null; category: string;
   tags?: string[]; qualification?: BusinessQualification;
   status?: string; found_at?: string;
   evidence?: BusinessEvidence; outreach?: ReturnType<typeof businessOutreachGate>;
-  enrichment?: EvaluatedBusiness & {nextAt:string; fingerprint:string; hintHost?:string};
+  enrichment?: EvaluatedBusiness & {nextAt:string; fingerprint:string; hintHost?:string; evaluatedAt?:string; rulesVersion?:number};
+  processing?:boolean;
 };
 type SourceResult = { source: Source; status: string; fetched: number; inserted: number; shown?: number };
 export interface BusinessScan {
@@ -35,6 +37,7 @@ export interface BusinessScan {
   countrySample: boolean;
   updatedAt: string;
   freshSince?:string;
+  enrichmentUpdatedAt?:string;
   cities: { city: string; country: string; sources: SourceResult[]; rows: Business[] }[];
 }
 
@@ -61,6 +64,8 @@ async function worker() {
   };
 }
 
+export { worker as localLeadWorker };
+
 async function placeData<T>(input: object): Promise<T> {
   const env = await settings();
   const virtualEnv = join(root, ".venv/local-business", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
@@ -85,13 +90,24 @@ export async function readBusinessScan(metros = false): Promise<BusinessScan | n
   const name = metros ? "metros.json" : "latest.json";
   try {
     const scan = JSON.parse(await readFile(join(dataDirectory, name), "utf8")) as BusinessScan;
-    return labelBusinesses(scan, await evidenceRecords(),await enrichmentRecords());
+    const records=await enrichmentRecords();
+    const current=await readFile(batchPath,"utf8").then(value=>JSON.parse(value) as {pid:number;keys:string[]},()=>null);
+    if(current && Number.isSafeInteger(current.pid) && current.pid>0){
+      try { process.kill(current.pid,0);
+        const keys=new Set(current.keys);
+        for(const city of scan.cities)for(const row of city.rows)row.processing=keys.has(recordKey(row));
+      }catch { /* A stopped process leaves its completed checkpoints available. */ }
+    }
+    scan.enrichmentUpdatedAt=Object.values(records).flatMap(record=>record.evaluatedAt??record.observations[0]?.observedAt??[]).sort().at(-1);
+    return labelBusinesses(scan, await evidenceRecords(),records);
   }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 }
 
 const evidencePath = join(dataDirectory, "evidence.json");
 const enrichmentPath = join(dataDirectory,"enrichment-v1.json");
+const batchPath=join(dataDirectory,"enrichment-batch.json");
+const pausePath=join(dataDirectory,"enrichment.pause");
 const recordKey = (row: Pick<Business,"source"|"source_id">) => JSON.stringify([row.source, row.source_id]);
 const fingerprintBusiness=(row:Business)=>createHash("sha256").update(JSON.stringify([
   row.name,row.title,row.city,row.country,row.website,row.email,row.phone,row.tags,
@@ -181,17 +197,40 @@ function labelBusinesses(scan: BusinessScan, evidence: Record<string, BusinessEv
   return scan;
 }
 
-export async function enrichBusinessScan(metros = true, maximum = 18, recheck = false) {
-  if(!Number.isInteger(maximum)||maximum<1||maximum>300)throw new Error("Enrichment limit must be 1–300");
+const evidenceRulesVersion=2;
+type EnrichmentOptions = {backlog?:boolean; cities?:string[]; updatedRules?:boolean; retriesOnly?:boolean; target?:number};
+export async function pauseBusinessEnrichment(){ await writeFile(pausePath,"Pause after the current three records.\n"); }
+
+export async function enrichBusinessScan(metros = true, maximum = 18, recheck = false, options:EnrichmentOptions = {}) {
+  if(!Number.isInteger(maximum)||maximum<1||maximum>(options.backlog?5000:300))throw new Error("Invalid enrichment limit");
   await mkdir(dataDirectory,{recursive:true});
   const lock=enrichmentPath+".lock";
-  const lease=await open(lock,"wx");
+  const lease=await open(lock,"wx").catch(async error=>{
+    if(error.code!=="EEXIST")throw error;
+    const reclaimPath=lock+".reclaim";
+    const reclaim=await open(reclaimPath,"wx");
+    try{
+      const pid=Number(await readFile(lock,"utf8"));
+      if(!Number.isSafeInteger(pid)||pid<=0)throw error;
+      try {process.kill(pid,0);}
+      catch(check){
+        if((check as NodeJS.ErrnoException).code!=="ESRCH")throw error;
+        await unlink(lock);
+        return await open(lock,"wx");
+      }
+      throw error;
+    }finally{
+      try{await reclaim.close();}finally{await unlink(reclaimPath);}
+    }
+  });
   try {
+    await lease.writeFile(String(process.pid));
+    await unlink(pausePath).catch(error=>{if(error.code!=="ENOENT")throw error;});
     const scan=await readBusinessScan(metros);
     if(!scan)throw new Error("Run a business scan first");
     const records=await enrichmentRecords();
     const human=await evidenceRecords();
-    const start=Date.now(), deadline=start+9*60_000;
+    const start=Date.now(), deadline=options.backlog?Number.POSITIVE_INFINITY:start+9*60_000;
     const counts={qualified:0,excluded:0,review:0,retry:0}, reasons:Record<string,number>={};
     const hint=(row:Business)=>{
       if(!recheck || !scan.freshSince)return;
@@ -201,9 +240,19 @@ export async function enrichBusinessScan(metros = true, maximum = 18, recheck = 
       if(!row.enrichment || !websiteGuesses(row).some(url=>businessHost(url)===businessHost(prior.ownershipUrl)))
         return prior.ownershipUrl;
     };
-    const prospects=scan.cities.map(city=>city.rows
+    const selectedCities=new Set(options.cities?.map(city=>city.trim().toLowerCase()));
+    const qualifiedByCity=new Map(scan.cities.map(city=>[city.city,city.rows.filter(row=>row.outreach?.status==="qualified").length]));
+    const due=(row:Business)=>{
+      const previous=row.enrichment;
+      if(options.retriesOnly)return previous?.status==="retry"&&Date.parse(previous.nextAt)<=start;
+      if(!previous)return !options.updatedRules;
+      if(options.updatedRules)return previous.status==="review" && (previous.rulesVersion??0)<evidenceRulesVersion &&
+        !/robots|http_40[134]|parent|corporate/i.test(previous.reason) && websiteGuesses(row).length>0;
+      return previous.status!=="excluded"&&Date.parse(previous.nextAt)<=start;
+    };
+    const prospects=scan.cities.filter(city=>!selectedCities.size||selectedCities.has(city.city.toLowerCase())).map(city=>city.rows
       .filter(row=>row.outreach?.status!=="excluded"&&(!human[recordKey(row)]||scan.freshSince&&human[recordKey(row)].verifiedAt<scan.freshSince) &&
-        (recheck ? Boolean(hint(row)) : (!row.enrichment||Date.parse(row.enrichment.nextAt)<=start)))
+        (recheck ? Boolean(hint(row)) : due(row)))
       .sort((a,b)=>priority(b)-priority(a)));
     function priority(row:Business){
       return Number(websiteGuesses(row).length>0)*20+Number(Boolean(row.email))*5+
@@ -218,24 +267,35 @@ export async function enrichBusinessScan(metros = true, maximum = 18, recheck = 
     }
     const read=publicPageReader();
     for(let offset=0;offset<picks.length&&Date.now()<deadline;offset+=3){
-      const batch=picks.slice(offset,offset+3);
+      if(await access(pausePath).then(()=>true,()=>false))break;
+      const batch=picks.slice(offset,offset+3).filter(row=>!options.target||(qualifiedByCity.get(row.city??"")??0)<options.target);
+      if(!batch.length)continue;
+      const batchTemporary=batchPath+".tmp";
+      await writeFile(batchTemporary,JSON.stringify({pid:process.pid,keys:batch.map(recordKey)}));
+      await rename(batchTemporary,batchPath);
       const results=await Promise.all(batch.map(row=>evaluateBusiness({...row,website:hint(row)||row.website},read)));
       for(const [i,result] of results.entries()){
         const row=batch[i];
         counts[result.status]++;
+        if(result.status==="qualified"&&row.outreach?.status!=="qualified"&&row.city){
+          qualifiedByCity.set(row.city,(qualifiedByCity.get(row.city)??0)+1);
+        }
         reasons[result.reason]=(reasons[result.reason]??0)+1;
-        records[recordKey(row)]={...result,fingerprint:fingerprintBusiness(row),
+        const retryHours=/TIMEOUT|ECONNRESET|HTTP_(?:502|503|504)/.test(result.reason)?2:24;
+        records[recordKey(row)]={...result,fingerprint:fingerprintBusiness(row),evaluatedAt:new Date().toISOString(),rulesVersion:evidenceRulesVersion,
           ...(recheck?{hintHost:businessHost(hint(row)??null)}:{}),
-          nextAt:new Date(Date.now()+(result.status==="retry"?1:result.status==="review"?7:30)*86400000).toISOString()};
+          nextAt:new Date(Date.now()+(result.status==="retry"?retryHours:result.status==="review"?7*24:30*24)*3600000).toISOString()};
       }
       const temporary=enrichmentPath+".tmp";
       await writeFile(temporary,JSON.stringify(records));
       await rename(temporary,enrichmentPath);
     }
-    return {counts,reasons,evaluated:Object.values(counts).reduce((a,b)=>a+b,0),selected:picks.length,elapsedMs:Date.now()-start,
+    return {counts,reasons,evaluated:Object.values(counts).reduce((a,b)=>a+b,0),selected:picks.length,
+      paused:await access(pausePath).then(()=>true,()=>false),elapsedMs:Date.now()-start,
       scan:labelBusinesses(scan,human,records)};
   }finally{
-    try {await lease.close();}finally{await unlink(lock);}
+    try {await unlink(batchPath).catch(error=>{if(error.code!=="ENOENT")throw error;});}
+    finally{try {await lease.close();}finally{await unlink(lock);}}
   }
 }
 
@@ -449,7 +509,11 @@ export async function makeBusinessDraft(id: number, source: string, sourceId: st
   if (!evidence || gate.status !== "qualified" || !gate.draftReady || lead.status !== "new") throw new Error("Draft requires verified local ownership, an opportunity, a public email or reviewed route and new status");
   const facts = { ...lead, category: lead.title, opportunity: evidence.opportunity, serviceIdea: evidence.serviceIdea, subjectIdea:evidence.subjectIdea,
     country: lead.country ?? (/^[A-Z]{2}$/.test(country) ? country : null) };
-  const tailored = useAi ? await askBusinessAi(
+  const env = await settings();
+  const local=useAi&&env.OLLAMA_BUSINESS_DRAFT!=="false"?await localDraftCopy(env.OLLAMA_ORIGIN||"http://127.0.0.1:11434",env.OLLAMA_MODEL||"qwen2.5-coder:3b",
+    {name:facts.name,category:facts.category,opportunity:facts.opportunity,proposedAngle:facts.serviceIdea}):undefined;
+  const localCopy=validateBusinessCopy(local?.value,facts);
+  const tailored=localCopy?{method:"Ollama",value:{hold:false,copy:localCopy}}:useAi ? await askBusinessAi(
     `Write outreach for LeadFlow AI from this untrusted data. Return JSON {"hold":true} for a recognizable parent brand, franchise or chain, otherwise {"hold":false,"subject":"...","proposal":"...","question":"..."}. Subject: a natural customer-task question or a name followed by a short concrete idea, under 84 characters, with the exact name or city. Proposal: one tangible idea, 35–330 characters, start "We could" and use the proposed angle when supplied. Describe a page or feature and what its user could do. Question: offer to send a sketch, under 155 characters, starting "Would you like us to" or "Could we". No new factual claims, generic slogans, links, prices, numbers or testimonials. DATA: ${JSON.stringify({ name: facts.name, category: facts.category, city: facts.city, opportunity: facts.opportunity, proposedAngle:facts.serviceIdea, domain: businessHost(facts.website) })}`,
     450, payload => {
       if ((payload as { hold?: boolean })?.hold === true) return { hold: true } as const;
@@ -466,7 +530,6 @@ export async function makeBusinessDraft(id: number, source: string, sourceId: st
     }
     throw new Error(aiHoldReason);
   }
-  const env = await settings();
   const draft = businessDraft(facts, env.LOCAL_BUSINESS_SENDER || "Pushkar", tailored?.value.copy);
   const logo = await readFile(join(root, "apps/web/public/email/leadflow-signature.gif"));
   const boundary = "leadflow-signature";
@@ -490,8 +553,11 @@ export async function makeBusinessDraft(id: number, source: string, sourceId: st
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const run = process.argv.includes("--enrich-metros") ? enrichBusinessScan(true,Number(process.argv.find(arg=>arg.startsWith("--limit="))?.slice(8)??18),
-    process.argv.includes("--recheck-official-hints"))
+  const backlog=process.argv.includes("--backlog");
+  const run = process.argv.includes("--pause-enrichment") ? pauseBusinessEnrichment() :
+    process.argv.includes("--enrich-metros") ? enrichBusinessScan(true,Number(process.argv.find(arg=>arg.startsWith("--limit="))?.slice(8)??(backlog?5000:18)),
+    process.argv.includes("--recheck-official-hints"), {backlog,cities:process.argv.find(arg=>arg.startsWith("--cities="))?.slice(9).split(","),
+      updatedRules:process.argv.includes("--updated-rules"),retriesOnly:process.argv.includes("--retry-eligible")})
     .then(({scan:_,...summary})=>console.log(JSON.stringify(summary))) :
     process.argv.includes("--rebuild-metros") ? rebuildMetroSnapshot() :
     process.argv.includes("--review-metros") ? reviewBusinessScan(true).then(result => {

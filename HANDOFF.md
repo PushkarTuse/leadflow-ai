@@ -2,6 +2,8 @@
 
 This is the entry point for any AI (or human) picking up this repository. Read this file first, then open the latest capsule.
 
+See [the operational verification ledger](docs/PIPELINE_OPERATIONS.md) for the latest real Mumbai/Pune pilot, enrichment controls, source permissions and remaining verification. Dashboard `http://127.0.0.1:5174/pipeline`, producer `http://127.0.0.1:8787`, Ollama `http://127.0.0.1:11434`.
+
 ## Resumed pipeline work — 24 November 2026
 
 Read `docs/PIPELINE_RESUME_RESULTS.md` for the clean run and verified checks. `docs/COPILOT_HANDOFF.md` documents the earlier checkpoints and current source and enrichment contracts. The previous five business drafts and ownership evidence are historical and are excluded from fresh classification.

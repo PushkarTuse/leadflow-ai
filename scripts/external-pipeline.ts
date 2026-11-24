@@ -159,7 +159,8 @@ async function main(){
   }}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
   const get=(key:string,fallback='')=>process.env[key]??fallback;
   const on=(key:string)=>get(key)==='true';
-  const collectSources=process.argv.includes('--collect');
+  const complete=process.argv.includes('--complete');
+  const collectSources=complete||process.argv.includes('--collect');
   const drain=process.argv.includes('--drain');
   const requalifyMissing=process.argv.includes('--requalify-missing')||
     ['1','true'].includes(get('REQUALIFY_MISSING').toLowerCase());
@@ -183,7 +184,7 @@ async function main(){
   if(!token&&!replayStored){const vars=await readFile('../leadflow-leads/.dev.vars','utf8');token=vars.split(/\r?\n/).find(l=>l.startsWith('API_TOKEN='))?.slice(10).trim()||'';}
   if(!token&&!replayStored)throw new Error('Local API token missing');
   if(collectSources){
-    if(preview||requalificationRun||drain)throw new Error('Run source collection as a separate command');
+    if(preview||requalificationRun||drain&&!complete)throw new Error('Run source collection as a separate command');
     const collectLimit=Number(process.argv.find(arg=>arg.startsWith('--limit='))?.slice(8)??20);
     if(!Number.isInteger(collectLimit)||collectLimit<1||collectLimit>100)throw new Error('Collection limit must be 1–100 per feed');
     const option=(name:string,fallback:number,min:number,max:number)=>{
@@ -220,7 +221,7 @@ async function main(){
         process.exitCode=1;
       }
     }
-    return;
+    if(!complete)return;
   }
   if(drain&&replayStored)throw new Error('Use --drain for new candidates or --retry-discovery-ai for saved candidates');
   const providerSetting=get('DISCOVERY_AI_PROVIDER',get('AI_PROVIDER','gemini'));

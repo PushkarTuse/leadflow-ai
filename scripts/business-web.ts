@@ -3,6 +3,8 @@ import { request as http } from "node:http";
 import { request as https } from "node:https";
 import { BlockList, isIP } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
+import { Readable } from "node:stream";
+import { createBrotliDecompress, createGunzip } from "node:zlib";
 
 const blocked = new BlockList();
 for (const [ip, bits] of [
@@ -50,7 +52,7 @@ async function get(url:URL, max:number, kind:"html"|"robots", end:number):Promis
     const socket=(url.protocol==="https:"?https:http)(url,{
       agent:false,family:pinned.family,signal:signals,maxHeaderSize:16*1024,
       lookup:(_host,_options,callback)=>callback(null,pinned.address,pinned.family),
-      headers:{"user-agent":userAgent,accept:kind==="html"?"text/html,application/xhtml+xml":"text/plain","accept-encoding":"identity"},
+      headers:{"user-agent":userAgent,accept:kind==="html"?"text/html,application/xhtml+xml":"text/plain","accept-encoding":"gzip, br"},
     },response=>{
       const status=response.statusCode??0;
       if(status!==200){
@@ -59,25 +61,49 @@ async function get(url:URL, max:number, kind:"html"|"robots", end:number):Promis
         return;
       }
       const type=String(response.headers["content-type"]??"").split(";")[0].trim().toLowerCase();
+      const encoding=String(response.headers["content-encoding"]??"").trim().toLowerCase();
       if((kind==="html"?!["text/html","application/xhtml+xml"].includes(type):type!=="text/plain") ||
-        !["","identity"].includes(String(response.headers["content-encoding"]??"")) ||
-        Number(response.headers["content-length"]??0)>max) {
+        !["","identity","gzip","br"].includes(encoding)) {
         response.destroy();
         reject(new Error("PUBLIC_CONTENT_REJECTED"));
         return;
       }
-      let length=0;
-      const chunks:Buffer[]=[];
-      response.on("data",(chunk:Buffer)=>{
-        length+=chunk.length;
-        if(length>max) response.destroy(new Error("PUBLIC_BODY_TOO_LARGE"));
-        else chunks.push(chunk);
-      });
-      response.once("error",reject);
-      response.once("aborted",()=>reject(new Error("PUBLIC_BODY_ABORTED")));
-      response.once("end",()=>resolve({status,text:Buffer.concat(chunks).toString("utf8")}));
+      if(Number(response.headers["content-length"]??0)>max){
+        reject(new Error("PUBLIC_BODY_TOO_LARGE"));
+        response.destroy();
+        return;
+      }
+      async function* boundedWire(){
+        let wire=0;
+        for await(const chunk of response){
+          wire+=chunk.length;
+          if(wire>max)throw new Error("PUBLIC_BODY_TOO_LARGE");
+          yield chunk;
+        }
+      }
+      const wire=Readable.from(boundedWire());
+      const decoder=encoding==="gzip"?createGunzip():encoding==="br"?createBrotliDecompress():null;
+      if(decoder) wire.on("error",error=>decoder.destroy(error));
+      const content=decoder?wire.pipe(decoder):wire;
+      void (async()=>{
+        try {
+          let decoded=0;
+          const chunks:Buffer[]=[];
+          for await(const chunk of content){
+            decoded+=chunk.length;
+            if(decoded>max)throw new Error("PUBLIC_BODY_TOO_LARGE");
+            chunks.push(chunk);
+          }
+          resolve({status,text:Buffer.concat(chunks).toString("utf8")});
+        }catch(error){
+          reject(signals.aborted?new Error("PUBLIC_PAGE_TIMEOUT"):error);
+        }finally{
+          wire.destroy();
+          response.destroy();
+        }
+      })();
     });
-    socket.once("error",reject);
+    socket.once("error",error=>reject(signals.aborted?new Error("PUBLIC_PAGE_TIMEOUT"):error));
     socket.end();
   });
 }
@@ -140,7 +166,7 @@ export function publicPageReader() {
     const at=Math.max(Date.now(),nextRequest.get(url.hostname)??0);
     nextRequest.set(url.hostname,at+1100);
     if(at>Date.now()) await delay(at-Date.now(),undefined,{signal:AbortSignal.timeout(remaining(end))});
-    return get(url,kind==="html"?550_000:96_000,kind,end);
+    return get(url,kind==="html"?900_000:96_000,kind,end);
   }
   return async (initial:string) => {
     let url=publicWebsite(initial);
@@ -156,6 +182,7 @@ export function publicPageReader() {
           robots=target;
           response=await spaced(robots,"robots",end);
         }
+        if(response.status===429||response.status>=500)throw new Error(`PUBLIC_ROBOTS_HTTP_${response.status}`);
         policies.set(url.origin,response.status===200?response.text:[404,410].includes(response.status)?"":null);
       }
       const rules=policies.get(url.origin);

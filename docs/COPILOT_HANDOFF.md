@@ -1,5 +1,7 @@
 # LeadFlow surgical continuation
 
+**Latest operational checkpoint.** Read [PIPELINE_OPERATIONS.md](PIPELINE_OPERATIONS.md) first. It contains the live evidence pilot, current backlog and pause/resume behavior, exact producer branch hash, source access and cooldown constraints, and verification steps. The historical checklist below documents the earlier foundation.
+
 ## Checklist
 
 - [x] Reviewed and pushed prior source and documentation changes. LeadFlow AI main advanced from `13c78daa5599addf9ac2de8d4ba217ad302fa168` to `52275b08acf85665eadb034cf88c39a677955aed`. LeadFlow Leads feature-new-sources-aa advanced from `12b987a84e6792132dbcb7a5927d76c31ca8bb4b` to `839ab73852792a4ea23200a2ba6949b09244d834`. Both verified via `git ls-remote`. Local AGENTS.md and private artifacts remain unstaged.

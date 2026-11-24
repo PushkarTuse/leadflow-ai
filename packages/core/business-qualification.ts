@@ -49,6 +49,7 @@ const chains: [RegExp, string][] = [
   [/\b(?:apollo (?:clinic|dental|hospital|pharmacy)|clove dental|dr lal pathlabs|metropolis healthcare|fortis hospital|vlcc|lakme salon)\b/, "Healthcare or beauty chain"],
   [/\b(?:hdfc|icici|axis bank|state bank of india|lic of india|tata motors|maruti suzuki|hyundai motor|toyota dealer)\b/, "Corporate brand"],
   [/\b(?:marriott|hilton|holiday inn|radisson|oyo rooms|novotel|ibis hotel)\b/, "Hotel chain"],
+  [/\b(?:world gym|golds gym|anytime fitness)\b/, "Fitness franchise"],
 ];
 
 const corporateDomains = [
@@ -56,6 +57,7 @@ const corporateDomains = [
   "mcdindia.com", "kfc.com", "kfc.co.in", "starbucks.com", "starbucks.in", "burgerking.in", "bk.com",
   "subway.com", "pizzahut.com", "pizzahut.co.in", "lenskart.com", "clovedental.in", "apolloclinic.com",
   "apollopharmacy.in", "marriott.com", "hilton.com", "ihg.com", "decathlon.in", "ikea.com",
+  "worldgym.com", "goldsgym.in", "goldsgym.com", "anytimefitness.com",
 ];
 
 export function normalizedBusinessName(name: string): string {

@@ -27,7 +27,7 @@ describe("business evidence gates",()=>{
   it("uses public ownership and booking evidence, retaining quotes and source URLs",async()=>{
     const result=await evaluate(base+"<p>Independently owned dental practice.</p><p>Call our team to book an appointment.</p><a href='mailto:office@northlane-dental.com'>Email</a>");
     expect(result).toMatchObject({status:"qualified",evidence:{contactKind:"email",websiteStatus:"official_site"}});
-    expect(result.observations.map(f=>f.field)).toEqual(["identity","ownership","contact","digital"]);
+    expect(result.observations.map(f=>f.field)).toEqual(["identity","location","ownership","contact","digital"]);
   });
   it("holds wrong identity, hidden claims, unknown ownership and empty digital proof",async()=>{
     expect((await evaluate("<title>Other Dentist</title><p>North Lane Dental, Pune</p>")).status).toBe("review");
@@ -42,5 +42,21 @@ describe("business evidence gates",()=>{
   it("keeps a matching branch with a declared parent in review",async()=>{
     const schema='<script type="application/ld+json">{"name":"North Lane Dental","branchOf":{"name":"Parent operator"}}</script>';
     expect((await evaluate(base+schema+"<p>Family-run dental practice.</p><p>Call our team to book an appointment.</p>"))).toMatchObject({status:"review"});
+  });
+  it("uses structured identity, a postal match and a named founder without accepting unrelated testimonials",async()=>{
+    const html=`<script type="application/ld+json">{"@graph":[{"name":"North Lane Dental","address":{"postalCode":"411009"},"founder":{"name":"Dr Nirmala Patel"}}]}</script>
+      <blockquote>My own practice is located across Pune.</blockquote>
+      <p>Call to book your appointment.</p>`;
+    const result=await evaluateBusiness({...row,address:"44 Lane Road, 411009"},async url=>({url,html}));
+    expect(result).toMatchObject({status:"qualified",websiteObservation:"official_site"});
+    expect(result.observations.find(item=>item.field==="location")?.value).toContain("postal code");
+  });
+  it("checks contact independently and holds an already available digital booking flow",async()=>{
+    const contact="<a href='mailto:office@northlane-dental.com'>Email</a>";
+    const review=await evaluate(base+contact);
+    expect(review.status).toBe("review");
+    expect(review.observations.some(item=>item.field==="contact")).toBe(true);
+    const result=await evaluate(base+"<p>Family-run practice. Call us to book your appointment.</p><a href='https://practo.com/clinic'>Book appointment</a>"+contact);
+    expect(result).toMatchObject({status:"review",reason:"Local control documented; no supported digital opportunity was observed"});
   });
 });

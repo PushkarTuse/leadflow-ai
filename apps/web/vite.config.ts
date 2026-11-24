@@ -3,22 +3,35 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
 import { readFile, writeFile, rename, stat } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import { stateDirectory } from "../../scripts/external-local-config.mjs";
-import { enrichBusinessScan, makeBusinessDraft, readBusinessScan, recordBusinessEvidence, reviewBusinessScan, reviewLocalDraft, runBusinessScan } from "../../scripts/local-business";
+import { enrichBusinessScan, localLeadWorker, makeBusinessDraft, pauseBusinessEnrichment, readBusinessScan, recordBusinessEvidence, reviewBusinessScan, reviewLocalDraft, runBusinessScan } from "../../scripts/local-business";
 import { FREELANCE_BUYER_SOURCES } from "../../packages/core/qualification";
+import { parseCsv } from "../../packages/core/csv";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const envFile = path.join(repoRoot, ".env.external");
 const stateNames = ["external-pipeline.json", "external-gemini.json", "external-openai.json"];
-const profile = process.env.LEADFLOW_LOCAL_PROFILE || "";
+const profile = process.env.LEADFLOW_LOCAL_PROFILE ?? process.env.EXTERNAL_LOCAL_PROFILE ?? (()=>{
+  try {
+    return readFileSync(envFile,"utf8").match(/^\s*EXTERNAL_LOCAL_PROFILE\s*=([^\r\n]*)/m)?.[1].trim().replace(/^(["'])(.*)\1$/,"$2")??"";
+  }catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return "";throw error;}
+})();
 const emptyState = {
   offset: 0,
   store: { rows: [], events: [], draftRows: [], requestRows: [] },
   emailTest: null,
 };
+
+function parseBusinessTarget(value:unknown) {
+  if(value===undefined)return;
+  if(typeof value!=="number" || !Number.isInteger(value) || value<1 || value>400)
+    throw new Error("Qualified target must be a whole number from 1 to 400");
+  return value;
+}
 
 /**
  * Reads only the EXTERNAL_LEADS_ENABLED line. The rest of .env.external is
@@ -57,16 +70,15 @@ async function writeEnabled(value: boolean): Promise<void> {
   await rename(tmp, envFile);
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve) => {
-    let data = "";
-    req.on("data", (chunk) => {
-      data += chunk;
-      if (data.length > 10000) data = data.slice(0, 10000);
-    });
-    req.on("end", () => resolve(data));
-    req.on("error", () => resolve(""));
-  });
+async function readBody(req: IncomingMessage, maxBytes=10_000): Promise<string> {
+  const chunks:Buffer[]=[];
+  let bytes=0;
+  for await(const chunk of req){
+    bytes+=chunk.length;
+    if(bytes<=maxBytes)chunks.push(chunk);
+  }
+  if(bytes>maxBytes)throw new Error("Request body exceeds the limit");
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 async function readLatestState() {
@@ -140,6 +152,23 @@ function localPipeline(): Plugin {
 
         void (async () => {
           try {
+            if(pathname === "/api/local/pipeline/sources" && req.method === "GET") {
+              const api=await localLeadWorker();
+              const [sources,diagnostics]=await Promise.all([api("/sources"),api("/diagnostics")]);
+              return json(200,{sources,diagnostics});
+            }
+            if(pathname === "/api/local/pipeline/import" && req.method === "POST") {
+              try{
+                const body=JSON.parse(await readBody(req,500_000));
+                if(typeof body.text!=="string" || body.permissionConfirmed!==true || !["csv","json"].includes(body.format))
+                  return json(400,{error:"Provide CSV or JSON and confirm authorization to import it."});
+                const projects=body.format==="csv"?parseCsv(body.text):JSON.parse(body.text.replace(/^\uFEFF/,""));
+                if(!Array.isArray(projects) || projects.length<1 || projects.length>100)
+                  return json(400,{error:"Provide 1–100 projects as CSV rows or a JSON array."});
+                const api=await localLeadWorker();
+                return json(200,await api("/import/authorized-projects",{permission_confirmed:true,preview:body.preview===true,projects}));
+              }catch(error){return json(400,{error:(error as Error).message.slice(0,170)});}
+            }
             if (pathname === "/api/local/pipeline/business" && req.method === "GET") {
               const metros = new URL(req.url ?? "", "http://localhost").searchParams.get("metros") === "1";
               return json(200, { scan: await readBusinessScan(metros), scanning: businessScanning });
@@ -150,7 +179,10 @@ function localPipeline(): Plugin {
               try {
                 const data = JSON.parse(await readBody(req));
                 if (typeof data.location !== "string") return json(400, { error: "Enter a city or country" });
-                return json(200, { scan: await runBusinessScan(data.location, undefined, data.budget ?? 250) });
+                const target=parseBusinessTarget(data.target);
+                const scan=await runBusinessScan(data.location, undefined, data.budget ?? 250);
+                if(data.complete!==true)return json(200,{scan});
+                return json(200,await enrichBusinessScan(scan.query==="india-metros",5000,false,{backlog:true,target}));
               } catch (error) {
                 return json(400, { error: (error as Error).message.slice(0, 170) });
               } finally { businessScanning = false; }
@@ -186,10 +218,17 @@ function localPipeline(): Plugin {
               businessScanning = true;
               try {
                 const body=JSON.parse(await readBody(req));
-                return json(200,await enrichBusinessScan(body.metros===true,12));
-              }catch{
-                return json(400,{error:"Enrichment could not start. Check the saved scan and running job."});
+                const backlog=body.mode==="backlog";
+                return json(200,await enrichBusinessScan(body.metros===true,backlog?5000:300,false,{backlog:true,
+                  cities:typeof body.city==="string"?[body.city]:undefined,
+                  updatedRules:body.mode==="updated-rules",retriesOnly:body.mode==="retries",target:parseBusinessTarget(body.target)}));
+              }catch(error){
+                return json(400,{error:(error as Error).message.slice(0,170)});
               }finally{businessScanning=false;}
+            }
+            if(pathname === "/api/local/pipeline/business/pause" && req.method === "POST") {
+              await pauseBusinessEnrichment();
+              return json(200,{status:"pausing"});
             }
             if (pathname === "/api/local/pipeline/business/review" && req.method === "POST") {
               if (businessScanning) return json(409, { error: "A business scan or review is already running" });
@@ -252,7 +291,7 @@ function localPipeline(): Plugin {
               return json(405, { error: "Method not allowed" });
             }
 
-            if ((pathname === "/api/local/pipeline/run" || pathname === "/api/local/pipeline/collect") &&
+            if ((pathname === "/api/local/pipeline/run" || pathname === "/api/local/pipeline/collect" || pathname === "/api/local/pipeline/complete" || pathname === "/api/local/pipeline/retry") &&
               req.method === "POST") {
               if ((await readEnabled()) !== true) {
                 return json(409, {
@@ -267,8 +306,10 @@ function localPipeline(): Plugin {
                 });
               }
 
-              const collecting = pathname.endsWith("/collect");
-              const requested = collecting ? JSON.parse(await readBody(req) || "{}") : {};
+              const complete=pathname.endsWith("/complete");
+              const collecting = complete || pathname.endsWith("/collect");
+              const reclassify=pathname.endsWith("/retry");
+              const requested = JSON.parse(await readBody(req) || "{}");
               const selected = requested.sources;
               if (selected !== undefined && (!Array.isArray(selected) || !selected.length ||
                 selected.some(source => !FREELANCE_BUYER_SOURCES.includes(source)))) {
@@ -287,10 +328,12 @@ function localPipeline(): Plugin {
                 json(code, body);
               };
 
-              const args = collecting ? ["--collect", "--limit=100", `--max-candidates=${target}`] : [];
+              const args = collecting ? [complete?"--complete":"--collect", "--limit=100", `--max-candidates=${target}`] : [];
+              if(reclassify)args.push("--retry-discovery-ai");
+              if(complete || requested.drain===true)args.push("--drain");
               const child = spawn(process.execPath, ["--import", "tsx", "scripts/external-pipeline.ts", ...args], {
                 cwd: repoRoot,
-                env: { ...process.env, EXTERNAL_LOCAL_PROFILE: profile,
+                env: { ...process.env, TELEGRAM_ENABLED:"false", SAFE_OWNER_EMAIL_TEST:"false", EXTERNAL_LOCAL_PROFILE: profile,
                   ...(selected ? { EXTERNAL_LEADS_SOURCES: selected.join(",") } : {}) },
               });
 
@@ -307,7 +350,7 @@ function localPipeline(): Plugin {
               child.stderr?.on("data", collect);
 
               // Five rows can each try four providers twice, with a 27-second transport deadline.
-              const timer = setTimeout(() => child.kill(), 5 * 4 * 2 * 27000 + 60000);
+              const timer = setTimeout(() => child.kill(), complete ? 20*60_000 : 5 * 4 * 2 * 27000 + 60000);
               child.on("close", (code) => {
                 clearTimeout(timer);
                 if (code === 0 || collecting) {
