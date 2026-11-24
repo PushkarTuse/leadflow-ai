@@ -19,18 +19,19 @@ export type BusinessEvidence = {
   serviceIdea?: string;
   subjectIdea?: string;
   contactUrl?: string;
+  contactKind?: "email"|"phone";
   verifiedAt: string;
 };
 
 export function businessOutreachGate(listing: BusinessQualification, evidence?: BusinessEvidence, now = Date.now()) {
   if (listing.status === "excluded" || evidence?.ownership === "corporate")
-    return { status: "excluded", reason: listing.status === "excluded" ? listing.reason : "Corporate control confirmed", score: 0, contactable: false } as const;
+    return { status: "excluded", reason: listing.status === "excluded" ? listing.reason : "Corporate control confirmed", score: 0, contactable: false, draftReady:false } as const;
   if (!evidence || !Number.isFinite(Date.parse(evidence.verifiedAt)) ||
     now - Date.parse(evidence.verifiedAt) > 30 * 86400000 || evidence.websiteStatus === "parent_site" ||
     evidence.websiteStatus === "unknown" || evidence.websiteStatus === "not_listed" || !evidence.opportunity.trim())
-    return { status: "review", reason: listing.status === "review" ? listing.reason : "Verify local control and a specific digital opportunity", score: 0, contactable: false } as const;
-  return { status: "qualified", reason: "Reviewed local ownership and digital opportunity", score: evidence.contactUrl ? 90 : 70,
-    contactable: Boolean(evidence.contactUrl) } as const;
+    return { status: "review", reason: listing.status === "review" ? listing.reason : "Verify local control and a specific digital opportunity", score: 0, contactable: false, draftReady:false } as const;
+  return { status: "qualified", reason: "Evidence supports local ownership and a digital opportunity", score: evidence.contactUrl ? 90 : 70,
+    contactable: Boolean(evidence.contactUrl),draftReady:Boolean(evidence.contactUrl) && evidence.contactKind!=="phone" } as const;
 }
 
 const chains: [RegExp, string][] = [

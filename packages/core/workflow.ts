@@ -1,3 +1,4 @@
+import { discoveryState } from "./discovery-state";
 import {
   defaults,
   canContact,
@@ -49,6 +50,7 @@ export function canRouteDiscoveryLead(
   if (!isDiscoveryCandidate(lead)) return true;
   if (lead.qualification?.operator_decision !== "ACCEPTED") return false;
   const audit = lead.qualification_audit;
+  if (audit?.operational_state && audit.operational_state !== "QUALIFIED") return false;
   return (audit?.decision_source === "MODEL" && audit.discovery_semantics?.decision === "ACCEPT") ||
     (audit?.decision_source === "RULES_FALLBACK" && lead.qualification.is_valid_freelance_lead &&
       lead.qualification.eligibility_state === "ELIGIBLE");
@@ -428,9 +430,13 @@ export class Engine {
     );
     const modelVerdict = audit.discovery_semantics?.decision;
     const guarded = !prefilterResult.pass || injectionPattern.test(canonical);
-    const accepted = !guarded && (modelVerdict ? modelVerdict === "ACCEPT" : record.eligibility_state === "ELIGIBLE");
+    const proposed = !guarded && (modelVerdict ? modelVerdict === "ACCEPT" : record.eligibility_state === "ELIGIBLE");
     audit.advisory_state = record.eligibility_state;
     audit.decision_source = guarded ? "SOURCE_GUARD" : modelVerdict ? "MODEL" : "RULES_FALLBACK";
+    audit.operational_state=discoveryState({provider:context.provider,decision:proposed?"ACCEPTED":"REJECTED",
+      reason:record.rejection_reason,source:audit.decision_source,boundary:audit.project_boundary,
+      warning:extractorWarning||(!modelVerdict?"No validated AI verdict":"")});
+    const accepted = proposed && audit.operational_state === "QUALIFIED";
     if (modelVerdict && !guarded) {
       audit.method = extractionMethod;
       if (discoveryProvider) audit.discovery_provider = discoveryProvider;

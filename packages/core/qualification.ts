@@ -798,6 +798,7 @@ export const qualificationAuditSchema = z
     // Older records predate the model's explicit decision fields.
     discovery_semantics: discoverySemanticsSchema.partial({decision:true,decision_reason:true}).optional(),
     decision_source: z.enum(["MODEL", "RULES_FALLBACK", "NO_MODEL", "SOURCE_GUARD"]).optional(),
+    operational_state: z.enum(["QUALIFIED","REJECTED","REVIEW","RETRY_CLASSIFICATION","AWAITING_ENRICHMENT"]).optional(),
     advisory_state: z.enum(eligibilityStates).optional(),
     project_boundary: z.enum(["BOUNDED", "ONGOING_SEAT", "UNVERIFIED"]).optional(),
   })
@@ -813,7 +814,7 @@ export type QualificationAudit = z.infer<typeof qualificationAuditSchema>;
  * Sources that supply original listing evidence for discovery classification.
  */
 export const FREELANCE_BUYER_SOURCES = [
-  "hackernews", "wordpress_jobs_rss", "freelancer_rss", "himalayas", "jobicy_rss", "remotive", "uk_tender",
+  "hackernews", "wordpress_jobs_rss", "freelancer_rss", "himalayas", "jobicy_rss", "remotive", "uk_tender", "authorized_projects",
 ] as const;
 const ALLOWED_SOURCES = new Set<string>(FREELANCE_BUYER_SOURCES);
 

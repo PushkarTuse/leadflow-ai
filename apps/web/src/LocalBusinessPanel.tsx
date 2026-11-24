@@ -107,6 +107,15 @@ export function LocalBusinessPanel() {
   const city = scan?.cities.find(item => item.city === activeCity) ?? scan?.cities[0];
   const rows = city?.rows.filter(row => (showScreened || row.outreach?.status === "qualified") &&
     (!withEmailOnly || Boolean(row.outreach?.contactable))) ?? [];
+  async function enrich(){
+    setBusy(true);setError("");
+    try{
+      const result=await request<{scan:BusinessScan;evaluated:number;counts:Record<string,number>}>("/enrich",{metros:scan?.query==="india-metros"});
+      setScan(result.scan);
+      setMessage(`${result.evaluated} evaluated · ${result.counts.qualified} qualified · ${result.counts.excluded} excluded · ${result.counts.review} review · ${result.counts.retry} waiting for a source retry`);
+    }catch(error){setError((error as Error).message);}
+    finally{setBusy(false);}
+  }
 
   async function verify(row: Business, data: FormData) {
     setBusy(true); setError("");
@@ -143,7 +152,7 @@ export function LocalBusinessPanel() {
         <p>Last updated <time dateTime={scan.updatedAt}>{new Date(scan.updatedAt).toLocaleString()}</time></p>
         <ul>
           {scan.cities.map(item => <li key={item.city}>
-            <strong>{item.city}</strong> · {item.sources.reduce((total, source) => total + source.fetched, 0)} fetched · {item.rows.length} unique displayed · {item.rows.filter(row => row.outreach?.status === "excluded").length} excluded · {item.rows.filter(row => row.outreach?.status === "review").length} in review · {item.rows.filter(row => row.outreach?.status === "qualified").length} qualified / 50 target · {item.rows.filter(row => row.outreach?.contactable).length} draft-ready
+            <strong>{item.city}</strong> · {item.sources.reduce((total, source) => total + source.fetched, 0)} fetched · {item.rows.length} unique displayed · {item.rows.filter(row => row.outreach?.status === "excluded").length} excluded · {item.rows.filter(row => row.outreach?.status === "review").length} in review · {item.rows.filter(row => row.outreach?.status === "qualified").length} qualified / 50 target · {item.rows.filter(row => row.outreach?.draftReady).length} draft-ready
             <ul>{item.sources.map(source => <li key={source.source}>
               {labels[source.source]} · {source.shown ?? 0} in inventory · {source.fetched} fetched, {source.inserted} added · {source.status}
             </li>)}</ul>
@@ -160,6 +169,7 @@ export function LocalBusinessPanel() {
           <label><input type="checkbox" checked={withEmailOnly} onChange={event => setWithEmailOnly(event.target.checked)} /> Verified contact route only</label>
           <label><input type="checkbox" checked={showScreened} onChange={event => setShowScreened(event.target.checked)} /> Show review and excluded listings</label>
           <button className="button secondary" disabled={busy || draftBusy} onClick={() => void review()}>AI screen priority listings</button>
+          <button className="button secondary" disabled={busy || draftBusy} onClick={() => void enrich()}>Verify public business evidence</button>
         </div>
         {draftBusy && <p role="status">Preparing email draft…</p>}
         {draft && <div className="note-panel" aria-label="Outreach draft" style={{ marginBlock: "1rem" }}>
@@ -191,7 +201,7 @@ export function LocalBusinessPanel() {
               <td>{row.evidence?.websiteStatus.replaceAll("_"," ") ?? (row.website ? "Listed, unverified" : "Unlisted in source")}</td>
               <td>{row.email || "Unlisted"}</td>
               <td>{row.phone || "Unlisted"}</td>
-              <td>{row.outreach?.contactable && <button className="button secondary"
+              <td>{row.outreach?.draftReady && <button className="button secondary"
                 disabled={draftBusy || busy} onClick={() => void prepare(row)}>Draft for {row.name}</button>}
                 {row.outreach?.status !== "excluded" && <details>
                   <summary>Record verified evidence</summary>

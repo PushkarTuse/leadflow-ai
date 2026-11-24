@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import { stateDirectory } from "../../scripts/external-local-config.mjs";
-import { makeBusinessDraft, readBusinessScan, recordBusinessEvidence, reviewBusinessScan, reviewLocalDraft, runBusinessScan } from "../../scripts/local-business";
+import { enrichBusinessScan, makeBusinessDraft, readBusinessScan, recordBusinessEvidence, reviewBusinessScan, reviewLocalDraft, runBusinessScan } from "../../scripts/local-business";
 import { FREELANCE_BUYER_SOURCES } from "../../packages/core/qualification";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -179,6 +179,16 @@ function localPipeline(): Plugin {
               try { return json(200, await reviewLocalDraft(JSON.parse(await readBody(req)))); }
               catch { return json(400, { error: "Could not record the review. Reload the current draft." }); }
               finally { businessScanning = false; }
+            }
+            if (pathname === "/api/local/pipeline/business/enrich" && req.method === "POST") {
+              if (businessScanning) return json(409, { error: "A business operation is already running" });
+              businessScanning = true;
+              try {
+                const body=JSON.parse(await readBody(req));
+                return json(200,await enrichBusinessScan(body.metros===true,12));
+              }catch{
+                return json(400,{error:"Enrichment could not start. Check the saved scan and running job."});
+              }finally{businessScanning=false;}
             }
             if (pathname === "/api/local/pipeline/business/review" && req.method === "POST") {
               if (businessScanning) return json(409, { error: "A business scan or review is already running" });

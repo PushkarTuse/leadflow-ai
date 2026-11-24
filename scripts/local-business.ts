@@ -1,12 +1,14 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseEnv } from "node:util";
 import { businessDraft, validateBusinessCopy } from "../packages/core/business-draft";
 import { businessHost, businessOutreachGate, digitalStatuses, normalizedBusinessName, qualifyBusiness, type BusinessEvidence, type BusinessQualification } from "../packages/core/business-qualification";
 import { localOwnershipScreen } from "./ollama-local";
+import { evaluateBusiness, websiteGuesses, type EvaluatedBusiness } from "./business-evidence";
+import { publicPageReader } from "./business-web";
 import { z } from "zod";
 import { discoveryBackupBaseUrls, loopbackOrigin } from "./external-local-config.mjs";
 
@@ -25,6 +27,7 @@ export type Business = {
   tags?: string[]; qualification?: BusinessQualification;
   status?: string; found_at?: string;
   evidence?: BusinessEvidence; outreach?: ReturnType<typeof businessOutreachGate>;
+  enrichment?: EvaluatedBusiness & {nextAt:string; fingerprint:string};
 };
 type SourceResult = { source: Source; status: string; fetched: number; inserted: number; shown?: number };
 export interface BusinessScan {
@@ -81,13 +84,22 @@ export async function readBusinessScan(metros = false): Promise<BusinessScan | n
   const name = metros ? "metros.json" : "latest.json";
   try {
     const scan = JSON.parse(await readFile(join(dataDirectory, name), "utf8")) as BusinessScan;
-    return labelBusinesses(scan, await evidenceRecords());
+    return labelBusinesses(scan, await evidenceRecords(),await enrichmentRecords());
   }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 }
 
 const evidencePath = join(dataDirectory, "evidence.json");
+const enrichmentPath = join(dataDirectory,"enrichment-v1.json");
 const recordKey = (row: Pick<Business,"source"|"source_id">) => JSON.stringify([row.source, row.source_id]);
+const fingerprintBusiness=(row:Business)=>createHash("sha256").update(JSON.stringify([
+  row.name,row.title,row.city,row.country,row.website,row.email,row.phone,row.tags,
+])).digest("hex");
+type EnrichmentRecords=Record<string,NonNullable<Business["enrichment"]>>;
+async function enrichmentRecords():Promise<EnrichmentRecords>{
+  try {return JSON.parse(await readFile(enrichmentPath,"utf8"));}
+  catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return {};throw error;}
+}
 async function evidenceRecords(): Promise<Record<string, BusinessEvidence>> {
   try { return JSON.parse(await readFile(evidencePath, "utf8")); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; }
@@ -135,7 +147,7 @@ export async function recordBusinessEvidence(input: unknown) {
   return businessOutreachGate(qualifyBusiness(lead), records[recordKey(lead)]);
 }
 
-function labelBusinesses(scan: BusinessScan, evidence: Record<string, BusinessEvidence>): BusinessScan {
+function labelBusinesses(scan: BusinessScan, evidence: Record<string, BusinessEvidence>, enrichment:EnrichmentRecords = {}): BusinessScan {
   const appearances = new Map<string, Set<string>>();
   for (const { city, rows } of scan.cities) for (const row of rows) {
     const name = normalizedBusinessName(row.name);
@@ -143,13 +155,76 @@ function labelBusinesses(scan: BusinessScan, evidence: Record<string, BusinessEv
     cities.add(city);
     appearances.set(name, cities);
   }
-  for (const { rows } of scan.cities) for (const row of rows) {
+  const represented = new Set<string>();
+  const sorted=scan.cities.flatMap(city=>city.rows).sort((a,b)=>a.id-b.id);
+  for (const row of sorted) {
     const rules = qualifyBusiness(row, (appearances.get(normalizedBusinessName(row.name))?.size ?? 0) >= 3);
     if (rules.status !== "prospect" || !row.qualification) row.qualification = rules;
-    row.evidence = evidence[recordKey(row)];
+    const automated=enrichment[recordKey(row)];
+    row.enrichment=automated?.fingerprint===fingerprintBusiness(row)?automated:undefined;
+    row.evidence = evidence[recordKey(row)] ?? row.enrichment?.evidence;
     row.outreach = businessOutreachGate(row.qualification, row.evidence);
+    if(!evidence[recordKey(row)] && row.enrichment && row.outreach.status!=="excluded"){
+      if(row.enrichment.status==="excluded")row.outreach={status:"excluded",reason:row.enrichment.reason,score:0,contactable:false,draftReady:false};
+      if(row.enrichment.status==="retry"||row.enrichment.status==="review")
+        row.outreach={status:"review",reason:row.enrichment.reason,score:0,contactable:false,draftReady:false};
+    }
+    if(row.outreach.status==="qualified" && row.enrichment?.identityHost){
+      const identity=[row.enrichment.identityHost,normalizedBusinessName(row.name),row.country].join("|");
+      if(represented.has(identity))row.outreach={status:"review",reason:"Same verified business name and official host already represented",score:0,contactable:false,draftReady:false};
+      else represented.add(identity);
+    }
   }
   return scan;
+}
+
+export async function enrichBusinessScan(metros = true, maximum = 18) {
+  if(!Number.isInteger(maximum)||maximum<1||maximum>300)throw new Error("Enrichment limit must be 1–300");
+  await mkdir(dataDirectory,{recursive:true});
+  const lock=enrichmentPath+".lock";
+  const lease=await open(lock,"wx");
+  try {
+    const scan=await readBusinessScan(metros);
+    if(!scan)throw new Error("Run a business scan first");
+    const records=await enrichmentRecords();
+    const human=await evidenceRecords();
+    const start=Date.now(), deadline=start+9*60_000;
+    const counts={qualified:0,excluded:0,review:0,retry:0}, reasons:Record<string,number>={};
+    const prospects=scan.cities.map(city=>city.rows
+      .filter(row=>row.outreach?.status!=="excluded"&&!human[recordKey(row)] &&
+        (!row.enrichment||Date.parse(row.enrichment.nextAt)<=start))
+      .sort((a,b)=>priority(b)-priority(a)));
+    function priority(row:Business){
+      return Number(websiteGuesses(row).length>0)*20+Number(Boolean(row.email))*5+
+        Number(/clinic|dent|salon|restaurant|bakery|fitness|studio|services|photo/i.test(row.title??""))*4+
+        Number(Boolean(row.phone));
+    }
+    const picks:Business[]=[];
+    let index=0;
+    while(picks.length<maximum && prospects.some(rows=>index<rows.length)){
+      for(const rows of prospects)if(rows[index]&&picks.length<maximum)picks.push(rows[index]);
+      index++;
+    }
+    const read=publicPageReader();
+    for(let offset=0;offset<picks.length&&Date.now()<deadline;offset+=3){
+      const batch=picks.slice(offset,offset+3);
+      const results=await Promise.all(batch.map(row=>evaluateBusiness(row,read)));
+      for(const [i,result] of results.entries()){
+        const row=batch[i];
+        counts[result.status]++;
+        reasons[result.reason]=(reasons[result.reason]??0)+1;
+        records[recordKey(row)]={...result,fingerprint:fingerprintBusiness(row),
+          nextAt:new Date(Date.now()+(result.status==="retry"?1:result.status==="review"?7:30)*86400000).toISOString()};
+      }
+      const temporary=enrichmentPath+".tmp";
+      await writeFile(temporary,JSON.stringify(records));
+      await rename(temporary,enrichmentPath);
+    }
+    return {counts,reasons,evaluated:Object.values(counts).reduce((a,b)=>a+b,0),selected:picks.length,elapsedMs:Date.now()-start,
+      scan:labelBusinesses(scan,human,records)};
+  }finally{
+    try {await lease.close();}finally{await unlink(lock);}
+  }
 }
 
 async function saveBusinessScan(scan: BusinessScan, name: string) {
@@ -173,21 +248,35 @@ export async function runBusinessScan(term: string, onCity?: (city: BusinessScan
   const { locations, countrySample } = await placeData<{ locations: Location[]; countrySample: boolean }>({ action: "resolve", location: query });
   const scan: BusinessScan = { query, countrySample, updatedAt: new Date().toISOString(), cities: [] };
   const startedAt = scan.updatedAt;
-  const osmEnabled = (await settings()).LOCAL_BUSINESS_OSM_ENABLED !== "false";
+  let osmEnabled = (await settings()).LOCAL_BUSINESS_OSM_ENABLED !== "false";
   const evidence = await evidenceRecords();
   await mkdir(dataDirectory, { recursive: true });
   for (const place of locations) {
     const osm = async () => !osmEnabled ? {fetched:0,inserted:0,state:"OSM paused for this run"} : api<{ fetched: number; inserted: number; state?: string }>("/collect/osm",
       { city: place.city, lat: place.lat, lng: place.lng, radius: 8500, tag: "business", limit: perSource });
+    const [osmResult, prepared] = await Promise.allSettled([osm(),placeData<{rows:object[];manifest:object}>({action:"overture",place,target:budget})]);
+    if(osmResult.status==="rejected" && /HTTP 429|HTTP 50[234]|timed out/i.test(String(osmResult.reason)))osmEnabled=false;
+    const osmCount=osmResult.status==="fulfilled"?osmResult.value.fetched:0;
+    const overtureBudget=Math.max(1,budget-osmCount);
     const overture = async () => {
-      const collected = await placeData<{ rows: object[]; manifest: object }>({ action: "overture", place, target: perSource });
+      if(prepared.status==="rejected")throw prepared.reason;
+      const collected=prepared.value;
       if (!collected.rows.length) return { fetched: 0, inserted: 0, state: "No matching places" };
-      return api<{ fetched: number; inserted: number }>("/import/overture", { leads: collected.rows, manifest: collected.manifest });
+      return api<{ fetched: number; inserted: number }>("/import/overture", { leads: collected.rows.slice(0,overtureBudget), manifest: collected.manifest });
     };
-    const polled = await Promise.allSettled([osm(), overture()]);
-    const batches = await Promise.allSettled(sources.map(source => api<{ leads: Business[]; total: number }>(
-      "/leads?" + new URLSearchParams({ source, category: "local_business", status:"new", verified_prospects: "true", city: place.city, limit: String(perSource),
-        ...(process.env.LEADFLOW_FRESH_ONLY === "true" ? { since:startedAt } : {}) }))));
+    const polled = [osmResult,...await Promise.allSettled([overture()])];
+    const batches = await Promise.allSettled(sources.map(async source=>{
+      const cap=source==="overture"?overtureBudget:perSource;
+      const query=new URLSearchParams({source,category:"local_business",status:"new",verified_prospects:"true",city:place.city,
+        limit:String(Math.min(cap,200)),...(process.env.LEADFLOW_FRESH_ONLY==="true"?{since:startedAt}:{})});
+      const first=await api<{leads:Business[];total:number}>("/leads?"+query);
+      if(cap>200&&first.total>200){
+        query.set("offset","200");query.set("limit",String(cap-200));
+        const second=await api<{leads:Business[]}>("/leads?"+query);
+        return {...first,leads:[...first.leads,...second.leads]};
+      }
+      return first;
+    }));
     const rows: Business[] = [];
     const reports = sources.map((source, index): SourceResult => {
       const result = polled[index];
@@ -340,9 +429,11 @@ export async function makeBusinessDraft(id: number, source: string, sourceId: st
   const identity = (row: Business) => row.id === id && row.source_id === sourceId && row.source === source;
   const saved = scans.flatMap(scan => scan?.cities.flatMap(city => city.rows.filter(identity)) ?? []);
   const eligibility = saved.find(row => row.qualification?.status !== "prospect")?.qualification ?? qualifyBusiness(lead);
-  const evidence = (await evidenceRecords())[recordKey(lead)];
+  const reviewed=saved.find(row=>row.evidence);
+  if(reviewed?.outreach?.status==="review")throw new Error(reviewed.outreach.reason);
+  const evidence = (await evidenceRecords())[recordKey(lead)] ?? reviewed?.evidence;
   const gate = businessOutreachGate(eligibility, evidence);
-  if (gate.status !== "qualified" || !gate.contactable || lead.status !== "new") throw new Error("Draft requires verified local ownership, an opportunity, a public business contact route and new status");
+  if (gate.status !== "qualified" || !gate.draftReady || lead.status !== "new") throw new Error("Draft requires verified local ownership, an opportunity, a public email or reviewed route and new status");
   const facts = { ...lead, category: lead.title, opportunity: evidence.opportunity, serviceIdea: evidence.serviceIdea, subjectIdea:evidence.subjectIdea,
     country: lead.country ?? (/^[A-Z]{2}$/.test(country) ? country : null) };
   const tailored = useAi ? await askBusinessAi(
@@ -386,7 +477,9 @@ export async function makeBusinessDraft(id: number, source: string, sourceId: st
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const run = process.argv.includes("--rebuild-metros") ? rebuildMetroSnapshot() :
+  const run = process.argv.includes("--enrich-metros") ? enrichBusinessScan(true,Number(process.argv.find(arg=>arg.startsWith("--limit="))?.slice(8)??18))
+    .then(({scan:_,...summary})=>console.log(JSON.stringify(summary))) :
+    process.argv.includes("--rebuild-metros") ? rebuildMetroSnapshot() :
     process.argv.includes("--review-metros") ? reviewBusinessScan(true).then(result => {
     console.log(JSON.stringify({ checked: result.checked, usage: result.usage, cities: result.scan.cities.map(city => ({
       city: city.city, inventory: city.rows.length, prospects: city.rows.filter(row => row.qualification?.status === "prospect").length,

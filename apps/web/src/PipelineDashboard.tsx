@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { LocalBusinessPanel } from "./LocalBusinessPanel";
+import { discoveryState, type DiscoveryState } from "../../../packages/core/discovery-state";
 import { discoveryAiBanner, providerHealthLine, type DiscoveryAiHealth } from "../../../packages/core/discovery-ai-health";
 
 export type QualificationState = "ACCEPTED" | "REJECTED" | "REVIEW";
@@ -38,6 +39,7 @@ export interface LeadRow {
     discovery_provider?: "gemini" | "groq" | "cloudflare" | "openrouter" | "openai";
     decision_source?: "MODEL" | "RULES_FALLBACK" | "NO_MODEL" | "SOURCE_GUARD";
     project_boundary?: "BOUNDED" | "ONGOING_SEAT" | "UNVERIFIED";
+    operational_state?: DiscoveryState;
     discovery_semantics?: { lead_kind: string; decision?: "ACCEPT" | "REJECT"; decision_reason?: string };
   };
   extractionWarning: string;
@@ -53,12 +55,13 @@ export function qualificationState(row: LeadRow): QualificationState {
   return "REJECTED";
 }
 
-function localReviewState(row:LeadRow): QualificationState {
-  if (row.discovery_context?.provider === "uk_tender") return "REVIEW";
-  if (qualificationState(row) === "REJECTED" && row.qualification_audit?.project_boundary !== "ONGOING_SEAT" &&
-    /^(?:ENGAGEMENT_UNCLEAR|PAYMENT_UNCLEAR|SCOPE_MISSING|AMBIGUOUS_DIRECTION)$/.test(row.qualification?.rejection_reason ?? "")) return "REVIEW";
-  return qualificationState(row);
+function localReviewState(row:LeadRow): DiscoveryState {
+  return row.qualification_audit?.operational_state ?? discoveryState({provider:row.discovery_context?.provider,
+    decision:row.qualification?.operator_decision,reason:row.qualification?.rejection_reason,source:row.qualification_audit?.decision_source,
+    boundary:row.qualification_audit?.project_boundary,warning:row.extractionWarning});
 }
+const discoveryLabels:Record<DiscoveryState,string>={QUALIFIED:"Accepted",REJECTED:"Rejected",REVIEW:"Review",
+  RETRY_CLASSIFICATION:"Waiting for AI retry",AWAITING_ENRICHMENT:"Waiting for source evidence"};
 
 export function displayPriority(state: QualificationState, priority?: string) {
   return state === "ACCEPTED" ? priority || "—" : "—";
@@ -216,7 +219,7 @@ export function PipelineDashboard() {
   const [runMessage, setRunMessage] = useState("");
   const [collected, setCollected] = useState<{source: string; state: string; raw?: number; fetched?: number; inserted?: number; duplicates?: number}[]>([]);
   const [target, setTarget] = useState(500);
-  const [selected, setSelected] = useState(["hackernews","wordpress_jobs_rss","uk_tender"]);
+  const [selected, setSelected] = useState(["hackernews","wordpress_jobs_rss"]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -292,8 +295,10 @@ export function PipelineDashboard() {
   const emailTest = status?.emailTest ?? null;
   const enabled = toggle?.enabled ?? false;
   const configured = toggle?.configured ?? false;
-  const counts = {raw:rows.length,accepted:rows.filter(row=>localReviewState(row)==="ACCEPTED").length,
-    rejected:rows.filter(row=>localReviewState(row)==="REJECTED").length,review:rows.filter(row=>localReviewState(row)==="REVIEW").length};
+  const counts = {raw:rows.length,accepted:rows.filter(row=>localReviewState(row)==="QUALIFIED").length,
+    rejected:rows.filter(row=>localReviewState(row)==="REJECTED").length,review:rows.filter(row=>localReviewState(row)==="REVIEW").length,
+    retries:rows.filter(row=>localReviewState(row)==="RETRY_CLASSIFICATION").length,
+    enrichment:rows.filter(row=>localReviewState(row)==="AWAITING_ENRICHMENT").length};
   const health = status?.sourceHealth;
   const healthLabel = health ? {
     OK: "Buyer candidates received",
@@ -455,6 +460,8 @@ export function PipelineDashboard() {
             ["Accepted", counts.accepted],
             ["Rejected", counts.rejected],
             ["Review", counts.review],
+            ["AI retry", counts.retries],
+            ["Missing source evidence", counts.enrichment],
           ].map(([label, count]) => (
             <span
               key={label}
@@ -560,7 +567,7 @@ export function PipelineDashboard() {
                         ? <a href={sourceLink} target="_blank" rel="noreferrer">{sourceLabel}</a>
                         : sourceLabel}</td>
                       <td style={cell}>
-                        <strong>{localReviewState(lead) === "REVIEW" ? "Review" : state === "ACCEPTED" ? "Accepted" : "Rejected"}</strong>
+                        <strong>{discoveryLabels[localReviewState(lead)]}</strong>
                       </td>
                       <td style={cell}>
                         {displayPriority(state, qualification?.priority)}

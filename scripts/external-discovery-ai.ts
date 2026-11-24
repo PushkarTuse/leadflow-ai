@@ -1,5 +1,6 @@
 import { classifyDiscoveryAI, type Http } from '../apps/automation/adapters';
-import type { DiscoveryContext } from '../packages/core/qualification';
+import { qualificationVersions, type DiscoveryContext } from '../packages/core/qualification';
+import { createHash } from "node:crypto";
 import type { DiscoveryAiHealth, DiscoveryProviderId, ProviderFailure, ProviderHealth } from '../packages/core/discovery-ai-health';
 import { discoveryBackupBaseUrls } from './external-local-config.mjs';
 
@@ -7,6 +8,9 @@ type ProviderOptions = Parameters<typeof classifyDiscoveryAI>[2];
 type ProviderId = DiscoveryProviderId;
 export type DiscoveryProvider = { id: ProviderId; options: ProviderOptions };
 type Cooldown = { until: number; warning: string; reason?: ProviderFailure };
+type CachedVerdict = {discoverySignals:NonNullable<ReturnType<typeof classifyDiscoveryAI>["signals"]>;
+  method:ReturnType<typeof classifyDiscoveryAI>["method"];discoveryProvider:ProviderId;expiry:number};
+export type DiscoveryCache=Record<string,CachedVerdict>;
 
 function failureReason(message: string): ProviderFailure {
   if (/\bHTTP 402\b|\bbilling\b|\bcredit balance\b|\binsufficient.credits\b|credits exhausted/i.test(message)) return 'credits';
@@ -34,8 +38,8 @@ export function freeDiscoveryBackups(get: (name: string) => string): DiscoveryPr
 }
 
 export function discoveryAiChain(providers: DiscoveryProvider[], transport: Http, limit: number,
-  cooldowns: Partial<Record<ProviderId, Cooldown>>, now = Date.now) {
-  const coverage = { requests: 0, attempted: 0, succeeded: 0, failed: 0 };
+  cooldowns: Partial<Record<ProviderId, Cooldown>>, now = Date.now, cache:DiscoveryCache={}) {
+  const coverage = { requests: 0, attempted: 0, succeeded: 0, failed: 0, cacheHits:0 };
   const callsByProvider: Partial<Record<ProviderId, number>> = {};
   const verdictsByProvider: Partial<Record<ProviderId, number>> = {};
   const failures: Record<string, number> = {};
@@ -45,6 +49,13 @@ export function discoveryAiChain(providers: DiscoveryProvider[], transport: Http
   const exhausted = () => coverage.requests >= limit;
 
   function classify(context: DiscoveryContext) {
+    const key=createHash("sha256").update(JSON.stringify([qualificationVersions,context.provider,context.source_hash,
+      context.original_title,context.decoded_text,providers.map(p=>[p.id,p.options.model])])).digest("hex");
+    const cached=cache[key];
+    if(cached?.expiry>now()&&providers.some(p=>p.id===cached.discoveryProvider)){
+      coverage.cacheHits++;
+      return {discoverySignals:cached.discoverySignals,method:cached.method,discoveryProvider:cached.discoveryProvider};
+    }
     const before = coverage.requests;
     const warnings: string[] = [];
     const retry = new Set<ProviderId>();
@@ -56,7 +67,7 @@ export function discoveryAiChain(providers: DiscoveryProvider[], transport: Http
           break;
         }
         const cooldown = cooldowns[id];
-        if (pass === 1 && cooldown && cooldown.until > now()) {
+        if (cooldown && cooldown.until > now()) {
           warnings.push(cooldown.warning);
           continue;
         }
@@ -79,6 +90,8 @@ export function discoveryAiChain(providers: DiscoveryProvider[], transport: Http
           coverage.succeeded++;
           verdictsByProvider[id] = (verdictsByProvider[id] ?? 0) + 1;
           lastStatus.set(id, 'ok');
+          if(Object.keys(cache).length>=512)delete cache[Object.keys(cache)[0]];
+          cache[key]={discoverySignals:result.signals,method:result.method,discoveryProvider:id,expiry:now()+30*86400_000};
           return { discoverySignals: result.signals, method: result.method, discoveryProvider: id };
         }
         const warning = `${id}: ${(result.warning ?? 'No validated decision').replace(/; (?:deterministic )?(?:local )?rules used$/i, '')}`;
@@ -105,7 +118,7 @@ export function discoveryAiChain(providers: DiscoveryProvider[], transport: Http
       coverage.attempted++;
       coverage.failed++;
     }
-    return { warning: `Rules fallback. No AI verdict: ${[...new Set(warnings)].join('; ') || 'no approved classifier configured'}`.slice(0, 240) };
+    return { warning: `No AI verdict: ${[...new Set(warnings)].join('; ') || 'no approved classifier configured'}`.slice(0, 240) };
   }
 
   function health(finalizedBy: DiscoveryAiHealth['finalizedBy']): DiscoveryAiHealth {

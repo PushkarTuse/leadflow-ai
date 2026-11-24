@@ -11,6 +11,7 @@ const listingHosts: Record<(typeof FREELANCE_BUYER_SOURCES)[number],readonly str
   freelancer_rss:['www.freelancer.com','freelancer.com'], himalayas:['himalayas.app'],
   jobicy_rss:['jobicy.com'],remotive:['remotive.com'],
   uk_tender:['www.find-tender.service.gov.uk'],
+  authorized_projects:[],
 };
 const listingEvidenceSchema=z.object({
   version:z.literal(1),
@@ -156,8 +157,13 @@ export function externalToLead(raw:unknown, hnItem?:unknown, hnThread?:unknown):
     if(evidence.original_url!==row.url || !evidence.original_url.startsWith('https://')) throw new Error('Listing URL mismatch');
     const listingUrl = new URL(evidence.original_url);
     const allowedHosts = listingHosts[row.source as keyof typeof listingHosts];
-    if (!allowedHosts.includes(listingUrl.hostname) || listingUrl.port || listingUrl.username || listingUrl.password)
+    const permittedHost=row.source==="authorized_projects"
+      ? /\.[a-z]{2,}$/i.test(listingUrl.hostname)&&!/\.(?:localhost|local|internal|test|example|invalid|onion)$/i.test(listingUrl.hostname)
+      : allowedHosts.includes(listingUrl.hostname);
+    if (!permittedHost || listingUrl.port || listingUrl.username || listingUrl.password)
       throw new Error('Unapproved listing host');
+    if(row.source==="authorized_projects"&&(!evidence.expires_at||evidence.application_url!==row.url||!evidence.link_targets.includes(row.url)))
+      throw new Error('Authorized project deadline or response path missing');
     if (row.source==='himalayas' && (!evidence.expires_at || !evidence.application_url ||
       !/^https:\/\/himalayas\.app\//.test(evidence.application_url) || !evidence.link_targets.includes(evidence.application_url)))
       throw new Error('Himalayas expiry or application link missing');

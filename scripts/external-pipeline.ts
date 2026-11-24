@@ -9,7 +9,7 @@ import {discoveryAiBanner,providerHealthLine,type DiscoveryAiHealth} from '../pa
 import {classifyGemini,openAICompletionEndpoint,type Http} from '../apps/automation/adapters';
 import {pullExternalLeads,type ExternalCursor} from '../apps/automation/external-leads';
 import {loopbackOrigin,stateDirectory} from './external-local-config.mjs';
-import {discoveryAiChain,freeDiscoveryBackups,type DiscoveryProvider} from './external-discovery-ai';
+import {discoveryAiChain,freeDiscoveryBackups,type DiscoveryProvider,type DiscoveryCache} from './external-discovery-ai';
 
 interface EmailTestState{status:string;at:string;to:string;messageId:string;error:string}
 const emptyEmailTest:EmailTestState={status:'DISABLED',at:'',to:'',messageId:'',error:''};
@@ -176,7 +176,7 @@ async function main(){
   // Intentionally local-only. Hosted APIs use the existing Apps Script connector.
   const upstream=loopbackOrigin(get('EXTERNAL_LEADS_API_ORIGIN','http://127.0.0.1:8787'));
   process.env.EXTERNAL_LEADS_API_ORIGIN=upstream;
-  const allowedSources=[...new Set(get('EXTERNAL_LEADS_SOURCES','hackernews').split(',').map(s=>s.trim()))].sort();
+  const allowedSources=[...new Set(get('EXTERNAL_LEADS_SOURCES','hackernews,wordpress_jobs_rss,authorized_projects').split(',').map(s=>s.trim()))].sort();
   const buyerSources=new Set<string>(FREELANCE_BUYER_SOURCES);
   if(allowedSources.some(source=>!buyerSources.has(source)))throw new Error('Invalid external source allowlist');
   let token=get('EXTERNAL_LEADS_API_TOKEN');
@@ -197,6 +197,10 @@ async function main(){
     const deadline=Date.now()+option('max-seconds',240,5,600)*1000;
     let unique=0;
     for(const source of allowedSources){
+      if(source==='authorized_projects'){
+        console.log(JSON.stringify({source,state:'IMPORT_ONLY',raw:0,fetched:0,inserted:0,duplicates:0}));
+        continue;
+      }
       if(unique>=target||Date.now()>=deadline){
         console.log(JSON.stringify({source,state:'BUDGET_REACHED',raw:0,fetched:0,inserted:0,duplicates:0}));
         continue;
@@ -271,7 +275,8 @@ async function main(){
     let sourceHealth:unknown=null;
     let previousAiHealth:DiscoveryAiHealth|undefined;
     let cooldowns:Parameters<typeof discoveryAiChain>[3]={};
-    try{const old=JSON.parse(await readFile(file,'utf8'));Object.assign(store,old.store);if(replayStored&&old.checkpointKey)checkpointKey=old.checkpointKey;if(old.checkpointKey===checkpointKey&&old.cursor)cursor=old.cursor;if(old.emailTest)emailTest=old.emailTest as EmailTestState;sourceHealth=old.sourceHealth??null;cooldowns=old.cooldowns??{};previousAiHealth=old.aiHealth;}
+    let modelCache:DiscoveryCache={};
+    try{const old=JSON.parse(await readFile(file,'utf8'));Object.assign(store,old.store);if(replayStored&&old.checkpointKey)checkpointKey=old.checkpointKey;if(old.checkpointKey===checkpointKey&&old.cursor)cursor=old.cursor;if(old.emailTest)emailTest=old.emailTest as EmailTestState;sourceHealth=old.sourceHealth??null;cooldowns=old.cooldowns??{};previousAiHealth=old.aiHealth;modelCache=old.modelCache??{};}
     catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('Unreadable local state; restore before retrying');}
     if(requalifyMissing&&!replayStored)cursor={after:0};
     let httpCount=0;
@@ -298,7 +303,7 @@ async function main(){
       if(request?.headers)throw new Error('No token may be sent to HN');return network.json(url);
     }};
     const config=configSchema.parse({ownerUserId:get('TELEGRAM_OWNER_USER_ID','local-owner'),ownerChatId:get('TELEGRAM_OWNER_CHAT_ID','local-owner')});
-    const chain=discoveryAiChain(providers,{json:requestJson},discoveryAiLimit,cooldowns);
+    const chain=discoveryAiChain(providers,{json:requestJson},discoveryAiLimit,cooldowns,Date.now,modelCache);
     const finalizedBy={ai:0,rules:0,sourceGuard:0};
     const recordFinalization=(lead:ReturnType<typeof store.leads>[number])=>{
       const source=lead.qualification_audit?.decision_source;
@@ -309,7 +314,7 @@ async function main(){
     const save=async()=>{
       const health=chain.health(finalizedBy);
       const aiHealth=Object.values(finalizedBy).some(Boolean)||health.allUnavailable ? health : previousAiHealth??health;
-      await writeFile(file+'.tmp',JSON.stringify({offset:0,checkpointKey,cursor,store,emailTest,sourceHealth,cooldowns,aiHealth},null,2));
+      await writeFile(file+'.tmp',JSON.stringify({offset:0,checkpointKey,cursor,store,emailTest,sourceHealth,cooldowns,aiHealth,modelCache},null,2));
       await rename(file+'.tmp',file);
     };
     const engine=new Engine(store,config,undefined,aiRequested?input=>{

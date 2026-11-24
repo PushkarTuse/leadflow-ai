@@ -118,12 +118,12 @@ describe("local discovery AI failover", () => {
 
   it("reports no AI verdict when the available providers fail", () => {
     const chain = discoveryAiChain(backups, { json() { throw new Error("HTTP 503"); } }, 10, {});
-    expect(chain.classify(context)).toEqual({ warning: expect.stringMatching(/^Rules fallback\. No AI verdict:/) });
-    expect(chain.coverage).toEqual({ requests: 6, attempted: 1, succeeded: 0, failed: 1 });
+    expect(chain.classify(context)).toEqual({ warning: expect.stringMatching(/^No AI verdict:/) });
+    expect(chain.coverage).toEqual({ requests: 3, attempted: 1, succeeded: 0, failed: 1, cacheHits: 0 });
     expect(chain.available()).toBe(false);
     expect(chain.health({ ai: 0, rules: 1, sourceGuard: 0 })).toMatchObject({
       allUnavailable: true, allQuotaExhausted: false,
-      providers: backups.map(({ id }) => ({ id, status: "unavailable", failures: { unavailable: 2 } })),
+      providers: backups.map(({ id }) => ({ id, status: "unavailable", failures: { unavailable: 1 } })),
     });
   });
 
@@ -139,7 +139,7 @@ describe("local discovery AI failover", () => {
       providers: providers.map(p => ({ id: p.id, status: p.id === "groq" ? "credits" : "quota", requests: 1 })),
     });
     const next = discoveryAiChain(providers, transport, 10, cooldowns, () => 2_000);
-    expect(next.classify(context).warning).toContain("Rules fallback");
+    expect(next.classify(context).warning).toContain("No AI verdict");
     expect(next.coverage.requests).toBe(0);
     expect(next.health(counts).allQuotaExhausted).toBe(true);
   });
