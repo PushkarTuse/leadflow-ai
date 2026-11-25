@@ -1,5 +1,7 @@
 # Operational verification ledger
 
+The [25 November Marketplace Control Centre checkpoint](MARKETPLACE_CONTROL_CENTER.md) has the latest source, qualification, and draft results.
+
 ## 25 November 2026, source recovery and outreach revision
 
 ### Verified live source and AI runs

@@ -1,5 +1,7 @@
 # Handoff — LeadFlow AI
 
+**Latest local checkpoint, 25 November.** See [the marketplace control centre report](docs/MARKETPLACE_CONTROL_CENTER.md) for live source outcomes, provider validation, the targeted Foursquare pilot and exact dashboard workflows. Both local services continue on ports 5174 and 8787.
+
 This is the entry point for any AI (or human) picking up this repository. Read this file first, then open the latest capsule.
 
 The latest [source activation checkpoint](docs/PIPELINE_OPERATIONS.md#source-activation--25-november-2026) records authenticated Upwork owner review, a verified Foursquare Iceberg import in all seven metros, the latest freelance decisions and the unsent draft review workflow. The dashboard and Worker remain on ports 5174 and 8787. Existing databases and drafts were preserved. Use Windows PowerShell `codex mcp list` in a new window if a pre-install session still has the old PATH.

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { LocalBusinessPanel, type BusinessPipelineControls } from "./LocalBusinessPanel";
 import { AuthorizedProjectImport } from "./AuthorizedProjectImport";
+import { MarketplaceDiscovery, OutreachLibrary, PipelineOverview, useOutreachLibrary } from "./PipelineSections";
+import "./PipelineSections.css";
 import { discoveryState, type DiscoveryState } from "../../../packages/core/discovery-state";
 import { discoveryAiBanner, providerHealthLine, type DiscoveryAiHealth } from "../../../packages/core/discovery-ai-health";
 
@@ -120,6 +122,7 @@ interface StatusPayload {
   stateFile?: string | null;
   directory?: string;
   aiHealth?: DiscoveryAiHealth;
+  recentAi?: { at: string; providers: DiscoveryAiHealth["providers"] };
   sourceHealth?: {
     origin: string;
     state: "OK" | "NO_NEW_BUYERS" | "NO_BUYER_CANDIDATES" | "UPSTREAM_ERROR";
@@ -232,10 +235,15 @@ export function PipelineDashboard() {
   const [collected, setCollected] = useState<{source: string; state: string; raw?: number; filtered?:number; fetched?: number;
     inserted?: number; duplicates?: number;filterReasons?:Record<string,number>}[]>([]);
   const [target, setTarget] = useState(500);
-  const [resultFilter,setResultFilter]=useState("all");
+  const [resultFilter,setResultFilter]=useState("QUALIFIED");
+  const [resultSource,setResultSource]=useState("");
+  const [keyword,setKeyword]=useState("");
+  const [requestedPage,setPage]=useState(1);
+  const [refreshVersion,setRefreshVersion]=useState(0);
   const [selected, setSelected] = useState(["hackernews","wordpress_jobs_rss","uk_tender","uk_contracts_finder"]);
   const businessControls=useRef<BusinessPipelineControls>(null);
   const [businessBusy,setBusinessBusy]=useState(false);
+  const library=useOutreachLibrary(refreshVersion,businessBusy);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -251,6 +259,7 @@ export function PipelineDashboard() {
       setStatus((await statusRes.json()) as StatusPayload);
       setLiveSources(workers?.ok?await workers.json():null);
       setSourceConnection(workers?.ok?"":"Could not reach the local lead API. Saved run results are shown below.");
+      setRefreshVersion(version=>version+1);
     } catch {
       setError(
         "The local pipeline API is not available. Start the dashboard with npm run dev.",
@@ -327,9 +336,28 @@ export function PipelineDashboard() {
   }[health.state] : "Run the pipeline to check the upstream connection";
   const canRunFreelance=Boolean(enabled&&runState!=="running"&&selected.length&&target>=1&&target<=500);
   const processing=runState==="running"||businessBusy;
+  const filteredRows=rows.filter(lead=>
+    (resultFilter==="all"||localReviewState(lead)===resultFilter)
+    && (!resultSource||lead.discovery_context?.provider===resultSource)
+    && (!keyword.trim()||[lead.title, lead.client_name_if_public].some(value=>value?.toLowerCase().includes(keyword.trim().toLowerCase()))));
+  const resultSources=[...new Set(rows.flatMap(row=>row.discovery_context?.provider??[]))].sort();
+  const pageSize=15;
+  const pageCount=Math.max(1,Math.ceil(filteredRows.length/pageSize));
+  const page=Math.min(requestedPage,pageCount);
+  const visibleRows=filteredRows.slice((page-1)*pageSize,page*pageSize);
+  const chooseDecision=(decision:string)=>{
+    setResultFilter(decision);
+    setResultSource("");
+    setKeyword("");
+    setPage(1);
+  };
+  const sections=[
+    ["overview","Overview"],["opportunities","Persistent freelance"],["marketplace","Marketplace discovery"],
+    ["businesses","Local businesses"],["drafts","Outreach drafts"],["providers","Sources and AI"],["queues","Review and retry"],
+  ];
 
   return (
-    <div className="container page">
+    <div className="container page pipeline-center">
       <div className="page-intro">
         <p className="eyebrow">LOCAL ONLY · DEVELOPMENT DASHBOARD</p>
         <h1>Pipeline control</h1>
@@ -338,9 +366,12 @@ export function PipelineDashboard() {
           only while the Vite development server is running and never reach
           production.
         </p>
-        <nav aria-label="Pipeline sections"><a href="#freelance">Freelance leads</a>{" · "}<a href="#businesses">Local businesses</a></nav>
+        <nav className="pipeline-navigation" aria-label="Pipeline sections">
+          {sections.map(([id,label])=><a key={id} href={`#${id}`}>{label}</a>)}
+        </nav>
       </div>
 
+      <PipelineOverview counts={counts} business={library.data} />
       <section className="note-panel" aria-label="Pipeline actions">
         <h2>Run a pipeline</h2>
         <div style={{display:"flex",flexWrap:"wrap",gap:"0.6rem"}}>
@@ -353,8 +384,6 @@ export function PipelineDashboard() {
         </div>
         {processing && <p role="status"><progress aria-label="Pipeline processing" /> {runState==="running"&&businessBusy?"Both pipelines running":businessBusy?"Business evidence processing":"Freelance acquisition or qualification running"}</p>}
       </section>
-
-      <LocalBusinessPanel controlsRef={businessControls} onBusy={setBusinessBusy} />
 
       <section id="freelance" className="note-panel">
         <h2>Freelance ingestion</h2>
@@ -430,7 +459,13 @@ export function PipelineDashboard() {
         )}
       </section>
 
+      <div id="providers">
       {status?.aiHealth && <PipelineAiHealth health={status.aiHealth} />}
+      {status?.recentAi && !status.aiHealth?.providers.some(provider=>provider.requests>0) &&
+        <details className="note-panel"><summary>Last run that contacted AI providers</summary>
+          <p><time dateTime={status.recentAi.at}>{new Date(status.recentAi.at).toLocaleString()}</time></p>
+          <ul>{status.recentAi.providers.map(provider=><li key={provider.id}>{providerHealthLine(provider)}</li>)}</ul>
+        </details>}
 
       <section className="note-panel" aria-label="Source health">
         <h2>Source health</h2>
@@ -495,15 +530,24 @@ export function PipelineDashboard() {
         </ol>
       </section>
 
-      <section>
-        <h2>Latest local results</h2>
+      </div>
+
+      <section id="opportunities">
+        <h2>Persistent freelance opportunities</h2>
         {status?.freshSince && <p>Fresh run since <time dateTime={status.freshSince}>{new Date(status.freshSince).toLocaleString()}</time>
           {" · "}{rows.filter(row=>row.created_at && row.created_at>=status.freshSince!).length} fresh
           {" · "}{rows.filter(row=>!row.created_at || row.created_at<status.freshSince!).length} earlier records</p>}
-        <label>Show decisions <select value={resultFilter} onChange={event=>setResultFilter(event.target.value)}>
+        <div className="pipeline-filters">
+        <label>Show decisions <select value={resultFilter} onChange={event=>{setResultFilter(event.target.value);setPage(1);}}>
           <option value="all">All decisions</option>
           {Object.entries(discoveryLabels).map(([key,label])=><option key={key} value={key}>{label}</option>)}
         </select></label>
+        <label>Source <select aria-label="Source" value={resultSource} onChange={event=>{setResultSource(event.target.value);setPage(1);}}>
+          <option value="">All sources</option>
+          {resultSources.map(source=><option key={source} value={source}>{attribution[source]??source}</option>)}
+        </select></label>
+        <label>Search title or company <input type="search" value={keyword} onChange={event=>{setKeyword(event.target.value);setPage(1);}} /></label>
+        </div>
         <div
           aria-label="Qualification counts"
           style={{
@@ -550,7 +594,10 @@ export function PipelineDashboard() {
         {!loading && !error && status?.stateFile && (
           <p>Latest state <code>{status.directory || "data"}/{status.stateFile}</code></p>
         )}
-        {!loading && !error && rows.length > 0 && (
+        {!loading && !error && rows.length > 0 && filteredRows.length === 0 && (
+          <p role="status">No records match these filters. <button type="button" onClick={()=>chooseDecision("all")}>Show all decisions</button></p>
+        )}
+        {!loading && !error && visibleRows.length > 0 && (
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <caption
@@ -592,7 +639,7 @@ export function PipelineDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {rows.filter(lead=>resultFilter==="all"||localReviewState(lead)===resultFilter).map((lead) => {
+                {visibleRows.map((lead) => {
                   const request = requests.find(
                     (r) => r.lead_id === lead.lead_id,
                   );
@@ -708,6 +755,24 @@ export function PipelineDashboard() {
             </table>
           </div>
         )}
+        {filteredRows.length>0 && <div className="pipeline-pagination" aria-label="Opportunity pagination">
+          <button type="button" disabled={page===1} onClick={()=>setPage(page-1)}>Previous page</button>
+          <span aria-live="polite">{(page-1)*pageSize+1}–{Math.min(page*pageSize,filteredRows.length)} of {filteredRows.length}</span>
+          <button type="button" disabled={page===pageCount} onClick={()=>setPage(page+1)}>Next page</button>
+        </div>}
+      </section>
+      <MarketplaceDiscovery />
+      <LocalBusinessPanel controlsRef={businessControls} onBusy={setBusinessBusy} />
+      <OutreachLibrary library={library} />
+      <section id="queues" className="note-panel">
+        <h2>Review and retry queues</h2>
+        <ul>
+          <li><a href="#opportunities" onClick={()=>chooseDecision("REVIEW")}>Freelance evidence review</a> · {counts.review}</li>
+          <li><a href="#opportunities" onClick={()=>chooseDecision("RETRY_CLASSIFICATION")}>Freelance classification retries</a> · {counts.retries}</li>
+          <li><a href="#opportunities" onClick={()=>chooseDecision("AWAITING_ENRICHMENT")}>Freelance awaiting enrichment</a> · {counts.enrichment}</li>
+          <li><a href="#businesses">Business evidence and retries</a> · {library.data ? `${library.data.review} in evidence review · ${library.data.retry} retries` : "Loading business counts"}
+            {library.data?.nextRetryAt && <> · Next scheduled <time dateTime={library.data.nextRetryAt}>{new Date(library.data.nextRetryAt).toLocaleString()}</time></>}</li>
+        </ul>
       </section>
     </div>
   );

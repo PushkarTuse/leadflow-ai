@@ -25,6 +25,12 @@ METROS = {
     "Chennai": (80.13, 12.97, 80.34, 13.18),
 }
 CATEGORY = r"\b(dentist|dental clinic|clinic|restaurant|cafe|bakery|salon|barber|spa|boutique|gym|fitness|law firm|accountant|veterinarian|interior designer|auto repair|photography)\b"
+FOCUS = {
+    "general": CATEGORY,
+    "clinics": r"\b(dentist|dental clinic|clinic|veterinarian)\b",
+    "appointments": r"\b(salon|barber|spa|gym|fitness|photography)\b",
+    "hospitality": r"\b(restaurant|cafe|bakery)\b",
+}
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -71,7 +77,7 @@ def normalize(record, city):
             "location": {"lat": record["latitude"], "lng": record["longitude"]}}
 
 
-def query_metro(db, city, limit):
+def query_metro(db, city, limit, focus="general", offset=0):
     west, south, east, north = METROS[city]
     cursor = db.execute("""
         SELECT fsq_place_id, name, latitude, longitude, address, website, email, tel, fsq_category_labels,
@@ -81,10 +87,12 @@ def query_metro(db, city, limit):
           AND NULLIF(TRIM(date_closed), '') IS NULL AND TRY_CAST(date_refreshed AS DATE) >= CURRENT_DATE - INTERVAL '365 days'
           AND name IS NOT NULL
           AND regexp_matches(array_to_string(fsq_category_labels, ' '), ?, 'i')
-        ORDER BY ((website IS NOT NULL)::INT + (email IS NOT NULL)::INT + (tel IS NOT NULL)::INT) DESC,
+        ORDER BY CASE WHEN ? THEN (NULLIF(TRIM(website), '') IS NOT NULL)::INT ELSE 0 END DESC,
+                 ((NULLIF(TRIM(website), '') IS NOT NULL)::INT + (NULLIF(TRIM(email), '') IS NOT NULL)::INT
+                   + (NULLIF(TRIM(tel), '') IS NOT NULL)::INT) DESC,
                  date_refreshed DESC, fsq_place_id
-        LIMIT ?
-    """, [south, north, west, east, CATEGORY, limit])
+        LIMIT ? OFFSET ?
+    """, [south, north, west, east, FOCUS[focus], focus != "general", limit, offset])
     names = [item[0] for item in cursor.description]
     return [dict(zip(names, row)) for row in cursor.fetchall()]
 
@@ -112,6 +120,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("city", nargs="+", choices=[*METROS, "all"])
     parser.add_argument("--limit", type=int, default=50, choices=range(1, 151), metavar="1-150")
+    parser.add_argument("--focus", choices=FOCUS, default="general")
+    parser.add_argument("--offset", type=int, default=0, choices=range(0, 501), metavar="0-500")
     parser.add_argument("--repeat-check", action="store_true", help="verify local import idempotence without querying again")
     args = parser.parse_args()
     portal_key = setting("FOURSQUARE_ICEBERG_TOKEN")
@@ -132,8 +142,9 @@ def main():
             db.execute("DESCRIBE places.datasets.places_os")
             print(json.dumps({"catalog": "authenticated", "dataset": "places.datasets.places_os"}), flush=True)
             for city in METROS if "all" in args.city else dict.fromkeys(args.city):
-                records = query_metro(db, city, args.limit)
+                records = query_metro(db, city, args.limit, args.focus, args.offset)
                 result = import_metro(opener, worker, worker_key, city, records)
+                result = {**result, "focus": args.focus, "offset": args.offset}
                 receipts[city] = {**result, "imported_at": datetime.now(timezone.utc).isoformat()}
                 RECEIPTS.parent.mkdir(parents=True, exist_ok=True)
                 temporary = RECEIPTS.with_suffix(f".{os.getpid()}.tmp")

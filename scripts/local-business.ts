@@ -200,7 +200,7 @@ function labelBusinesses(scan: BusinessScan, evidence: Record<string, BusinessEv
 
 const evidenceRulesVersion=5;
 type EnrichmentOptions = {backlog?:boolean; cities?:string[]; updatedRules?:boolean; retriesOnly?:boolean; recheckFoursquareQualified?:boolean;target?:number; discover?:boolean;
-  operatorSearchHints?:Record<number,BusinessSearchHint[]>};
+  operatorSearchHints?:Record<number,BusinessSearchHint[]>; source?:Source; unevaluatedOnly?:boolean};
 export async function pauseBusinessEnrichment(){ await writeFile(pausePath,"Pause after the current three records.\n"); }
 
 export async function enrichBusinessScan(metros = true, maximum = 18, recheck = false, options:EnrichmentOptions = {}) {
@@ -252,6 +252,7 @@ export async function enrichBusinessScan(metros = true, maximum = 18, recheck = 
     const qualifiedByCity=new Map(scan.cities.map(city=>[city.city,city.rows.filter(row=>row.outreach?.status==="qualified").length]));
     const due=(row:Business)=>{
       const previous=row.enrichment;
+      if(options.unevaluatedOnly&&previous)return false;
       if(options.recheckFoursquareQualified)return row.source==='fsq_os'&&previous?.status==='qualified'&&(previous.rulesVersion??0)<evidenceRulesVersion;
       if(options.operatorSearchHints)return Object.hasOwn(options.operatorSearchHints,row.id)&&row.outreach?.status!=="qualified";
       if(discover)return row.outreach?.status!=="qualified" && !websiteGuesses(row).length && !previous?.discoveryHints?.length &&
@@ -263,7 +264,7 @@ export async function enrichBusinessScan(metros = true, maximum = 18, recheck = 
       return previous.status!=="excluded"&&Date.parse(previous.nextAt)<=start;
     };
     const prospects=scan.cities.filter(city=>!selectedCities.size||selectedCities.has(city.city.toLowerCase())).map(city=>city.rows
-      .filter(row=>row.outreach?.status!=="excluded"&&(!human[recordKey(row)]||scan.freshSince&&human[recordKey(row)].verifiedAt<scan.freshSince) &&
+      .filter(row=>(!options.source||row.source===options.source)&&row.outreach?.status!=="excluded"&&(!human[recordKey(row)]||scan.freshSince&&human[recordKey(row)].verifiedAt<scan.freshSince) &&
         (recheck ? Boolean(hint(row)) : due(row)))
       .sort((a,b)=>priority(b)-priority(a)));
     function priority(row:Business){
@@ -640,7 +641,11 @@ export async function makeBusinessDraft(id: number, source: string, sourceId: st
   const htmlPath=join(draftDirectory,`draft-${id}.html`);
   const previousHtml=await readFile(htmlPath,"utf8").catch(error=>{if(error.code==="ENOENT")return null;throw error;});
   if(previousHtml!==html)await writeFile(htmlPath,html);
-  return { id, reused, fingerprint:createHash("sha256").update(eml).digest("hex"), subject: draft.subject, alternatives: draft.alternatives,
+  const fingerprint = createHash("sha256").update(eml).digest("hex");
+  const metadataPath = join(draftDirectory, `draft-${id}.json`);
+  await writeFile(metadataPath + ".tmp", JSON.stringify({ fingerprint, alternatives: draft.alternatives }));
+  await rename(metadataPath + ".tmp", metadataPath);
+  return { id, reused, fingerprint, subject: draft.subject, alternatives: draft.alternatives,
     body: draft.body, method: tailored?.method ?? "Rules", eml,html,artifacts:{eml:currentPath,html:htmlPath} };
 }
 
@@ -648,11 +653,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const backlog=process.argv.includes("--backlog");
   const offlineCity=process.argv.find(item=>item.startsWith("--sync-osm="))?.slice(11);
   const foursquareCity=process.argv.find(item=>item.startsWith("--sync-foursquare="))?.slice("--sync-foursquare=".length);
+  const enrichmentSource=process.argv.find(item=>item.startsWith("--source="))?.slice("--source=".length);
+  if(enrichmentSource&&!sources.some(source=>source===enrichmentSource))throw new Error("Invalid business enrichment source");
   const run = process.argv.includes("--pause-enrichment") ? pauseBusinessEnrichment() :
     process.argv.includes("--enrich-metros") ? enrichBusinessScan(true,Number(process.argv.find(arg=>arg.startsWith("--limit="))?.slice(8)??(backlog?5000:18)),
     process.argv.includes("--recheck-official-hints"), {backlog,cities:process.argv.find(arg=>arg.startsWith("--cities="))?.slice(9).split(","),
       updatedRules:process.argv.includes("--updated-rules"),retriesOnly:process.argv.includes("--retry-eligible"),
-      recheckFoursquareQualified:process.argv.includes("--recheck-foursquare-qualified"),discover:process.argv.includes("--discover-evidence")})
+      recheckFoursquareQualified:process.argv.includes("--recheck-foursquare-qualified"),discover:process.argv.includes("--discover-evidence"),
+      source:enrichmentSource as Source|undefined,unevaluatedOnly:process.argv.includes("--unevaluated-only")})
     .then(({scan:_,...summary})=>console.log(JSON.stringify(summary))) :
     foursquareCity ? rebuildMetroSnapshot(foursquareCity,"fsq_os") :
     (offlineCity||process.argv.includes("--rebuild-metros")) ? rebuildMetroSnapshot(offlineCity) :

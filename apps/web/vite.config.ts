@@ -10,6 +10,7 @@ import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import { stateDirectory } from "../../scripts/external-local-config.mjs";
 import { enrichBusinessScan, localLeadWorker, makeBusinessDraft, pauseBusinessEnrichment, readBusinessScan, recordBusinessEvidence, reviewBusinessScan, reviewLocalDraft, runBusinessScan } from "../../scripts/local-business";
+import { draftLibrary, readReviewArchive, readSavedDraft } from "../../scripts/local-draft-library";
 import { FREELANCE_BUYER_SOURCES } from "../../packages/core/qualification";
 import { parseCsv } from "../../packages/core/csv";
 
@@ -99,7 +100,7 @@ async function readLatestState() {
     .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
     .sort((a, b) => b.modified - a.modified)[0];
   if (!latest) return { ...emptyState, stateFile: null, directory };
-  const { offset = 0, store = emptyState.store, emailTest, sourceHealth, aiHealth } = JSON.parse(await readFile(latest.file, "utf8"));
+  const { offset = 0, store = emptyState.store, emailTest, sourceHealth, aiHealth, recentAi } = JSON.parse(await readFile(latest.file, "utf8"));
   const visibleRows = store.rows.filter((row: {discovery_context?: {expires_at?: string}}) => {
     const expires = row.discovery_context?.expires_at;
     return !expires || Date.parse(expires) > Date.now();
@@ -110,6 +111,7 @@ async function readLatestState() {
     emailTest,
     sourceHealth,
     aiHealth,
+    recentAi,
     freshSince: process.env.LEADFLOW_FRESH_SINCE || null,
     directory,
     stateFile: path.basename(latest.file),
@@ -146,6 +148,12 @@ function localPipeline(): Plugin {
         if (!/^(127\.0\.0\.1|localhost|\[::1\]):\d{1,5}$/.test(req.headers.host || "")) {
           return json(403, { error: "Loopback host required" });
         }
+        if (pathname.startsWith("/api/local/pipeline/outreach") && (
+          (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) ||
+          ["cross-site", "same-site"].includes(String(req.headers["sec-fetch-site"]))
+        )) {
+          return json(403, { error: "Same-origin dashboard request required" });
+        }
         if (req.method === "POST" && (req.headers.origin !== `http://${req.headers.host}`
           || req.headers["x-leadflow-local"] !== "1")) {
           return json(403, { error: "Same-origin dashboard request required" });
@@ -153,6 +161,24 @@ function localPipeline(): Plugin {
 
         void (async () => {
           try {
+            if (req.method === "GET" && pathname === "/api/local/pipeline/outreach") {
+              return json(200, await draftLibrary());
+            }
+            const draft = pathname.match(/^\/api\/local\/pipeline\/outreach\/([1-9]\d{0,9})$/);
+            if (req.method === "GET" && draft) {
+              const saved = await readSavedDraft(Number(draft[1]));
+              return saved ? json(200, saved) : json(404, { error: "No eligible unsent draft was found." });
+            }
+            if (req.method === "GET" && ["/api/local/pipeline/outreach/package.pdf", "/api/local/pipeline/outreach/package.zip"].includes(pathname)) {
+              const pdf = pathname.endsWith(".pdf");
+              const archive = await readReviewArchive(pdf ? "pdf" : "zip");
+              if (!archive) return json(404, { error: "The saved review package is unavailable." });
+              res.setHeader("Content-Type", pdf ? "application/pdf" : "application/zip");
+              res.setHeader("Content-Disposition", `${pdf ? "inline" : "attachment"}; filename="${archive.file}"`);
+              res.setHeader("X-Content-Type-Options", "nosniff");
+              res.setHeader("Cache-Control", "no-store");
+              return res.end(archive.bytes);
+            }
             if(pathname === "/api/local/pipeline/sources" && req.method === "GET") {
               const api=await localLeadWorker();
               const [sources,diagnostics]=await Promise.all([api("/sources"),api("/diagnostics")]);

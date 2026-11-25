@@ -13,6 +13,8 @@ import {discoveryAiChain,freeDiscoveryBackups,type DiscoveryProvider,type Discov
 
 interface EmailTestState{status:string;at:string;to:string;messageId:string;error:string}
 const emptyEmailTest:EmailTestState={status:'DISABLED',at:'',to:'',messageId:'',error:''};
+const projectSources = ["wordpress_jobs_rss","hackernews","freelancer_rss","authorized_projects","uk_tender","uk_contracts_finder"];
+const prioritySource = (source:string) => projectSources.includes(source);
 
 /**
  * Validates the URL shape only. The host, port and TLS mode are provider-neutral;
@@ -181,7 +183,7 @@ async function main(){
   // Intentionally local-only. Hosted APIs use the existing Apps Script connector.
   const upstream=loopbackOrigin(get('EXTERNAL_LEADS_API_ORIGIN','http://127.0.0.1:8787'));
   process.env.EXTERNAL_LEADS_API_ORIGIN=upstream;
-  const allowedSources=[...new Set(get('EXTERNAL_LEADS_SOURCES','hackernews,wordpress_jobs_rss,authorized_projects').split(',').map(s=>s.trim()))].sort();
+  const allowedSources=[...new Set(get('EXTERNAL_LEADS_SOURCES','hackernews,wordpress_jobs_rss,authorized_projects,uk_tender,uk_contracts_finder').split(',').map(s=>s.trim()))].sort();
   const buyerSources=new Set<string>(FREELANCE_BUYER_SOURCES);
   if(allowedSources.some(source=>!buyerSources.has(source)))throw new Error('Invalid external source allowlist');
   if(refreshAuthorizedImports && (allowedSources.length!==1||allowedSources[0]!=='authorized_projects'||replayStored||preview))
@@ -203,7 +205,9 @@ async function main(){
     const pages=option('pages',5,1,7);
     const deadline=Date.now()+option('max-seconds',240,5,600)*1000;
     let unique=0;
-    for(const source of allowedSources){
+    const mixedSources=allowedSources.some(prioritySource);
+    const collectionOrder=[...allowedSources].sort((left,right)=>Number(prioritySource(right))-Number(prioritySource(left)));
+    for(const source of collectionOrder){
       if(source==='authorized_projects'){
         console.log(JSON.stringify({source,state:'IMPORT_ONLY',raw:0,fetched:0,inserted:0,duplicates:0}));
         continue;
@@ -213,7 +217,8 @@ async function main(){
         continue;
       }
       try{
-        const response=await fetch(`${upstream}/collect/${source}?limit=${Math.min(collectLimit,target-unique)}&freshDays=${days}&pages=${pages}`,{
+        const sourceLimit=mixedSources&&!prioritySource(source)?Math.min(10,collectLimit):collectLimit;
+        const response=await fetch(`${upstream}/collect/${source}?limit=${Math.min(sourceLimit,target-unique)}&freshDays=${days}&pages=${pages}`,{
           method:'POST',headers:{Authorization:`Bearer ${token}`},redirect:'error',signal:AbortSignal.timeout(Math.min(115000,Math.max(1,deadline-Date.now()))),
         });
         const {state,fetched,inserted,duplicates,raw,filtered,accepted,error,filterReasons}=await response.json();
@@ -312,7 +317,6 @@ async function main(){
     const config=configSchema.parse({ownerUserId:get('TELEGRAM_OWNER_USER_ID','local-owner'),ownerChatId:get('TELEGRAM_OWNER_CHAT_ID','local-owner')});
     const recent = automatic && recentAi && Date.now()-Date.parse(recentAi.at)<12*3600_000 ? recentAi.providers : [];
     const chain=discoveryAiChain(providers,{json:requestJson},discoveryAiLimit,cooldowns,Date.now,modelCache,recent);
-    const prioritySource=(source:string)=>["wordpress_jobs_rss","hackernews","freelancer_rss","authorized_projects","uk_tender","uk_contracts_finder"].includes(source);
     const preserveBuyerBudget=allowedSources.some(prioritySource)&&allowedSources.some(source=>!prioritySource(source));
     const diagnosticBudget=Math.floor(discoveryAiLimit*0.8);
     let diagnosticRequests=0;
