@@ -46,6 +46,12 @@ export async function draftLibrary() {
   const reviewRows = entries.filter(row => row.outreach?.status === "review" && (row.enrichment || row.evidence));
   const retryRows = reviewRows.filter(row => row.enrichment?.status === "retry");
   const nextRetryAt = retryRows.flatMap(row => row.enrichment?.nextAt ?? []).sort().at(0);
+  const evidenceReasons = new Map<string, number>();
+  for (const row of reviewRows) {
+    if (row.enrichment?.status === "retry" || !row.outreach?.reason) continue;
+    const reason = row.outreach.reason;
+    evidenceReasons.set(reason, (evidenceReasons.get(reason) ?? 0) + 1);
+  }
   return {
     inventory: entries.length,
     qualified: entries.filter(row => row.outreach?.status === "qualified").length,
@@ -54,6 +60,7 @@ export async function draftLibrary() {
     review: reviewRows.length - retryRows.length,
     retry: retryRows.length,
     nextRetryAt,
+    evidenceHolds: [...evidenceReasons.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5),
     draftReady: eligible.length,
     reviewPackage: Boolean(review),
     drafts: eligible.filter(row => names.has(`draft-${row.id}.eml`) && names.has(`draft-${row.id}.html`))

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { access, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { setTimeout as wait } from "node:timers/promises";
 import { parseEnv } from "node:util";
 import { businessDraft, initialOutreachPolicy, validateBusinessCopy } from "../packages/core/business-draft";
 import { businessHost, businessOutreachGate, digitalStatuses, normalizedBusinessName, qualifyBusiness, type BusinessEvidence, type BusinessQualification } from "../packages/core/business-qualification";
@@ -109,6 +110,16 @@ const evidencePath = join(dataDirectory, "evidence.json");
 const enrichmentPath = join(dataDirectory,"enrichment-v1.json");
 const batchPath=join(dataDirectory,"enrichment-batch.json");
 const pausePath=join(dataDirectory,"enrichment.pause");
+async function replaceEnrichmentCheckpoint(temporary:string, destination:string) {
+  for (let attempt = 0; ; attempt++) {
+    try { await rename(temporary, destination); return; }
+    catch (error) {
+      if (process.platform !== "win32" || attempt >= 6
+        || !["EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      await wait(40 * 2 ** attempt);
+    }
+  }
+}
 const recordKey = (row: Pick<Business,"source"|"source_id">) => JSON.stringify([row.source, row.source_id]);
 const fingerprintBusiness=(row:Business)=>createHash("sha256").update(JSON.stringify([
   row.name,row.title,row.city,row.country,row.website,row.email,row.phone,row.tags,
@@ -286,7 +297,7 @@ export async function enrichBusinessScan(metros = true, maximum = 18, recheck = 
       if(!batch.length)continue;
       const batchTemporary=batchPath+".tmp";
       await writeFile(batchTemporary,JSON.stringify({pid:process.pid,keys:batch.map(recordKey)}));
-      await rename(batchTemporary,batchPath);
+      await replaceEnrichmentCheckpoint(batchTemporary,batchPath);
       const results=await Promise.all(batch.map(async row=>{
         const supplied=options.operatorSearchHints?.[row.id];
         const hints=supplied??(discover?await discover(row):row.enrichment?.discoveryHints??[]);
@@ -313,7 +324,7 @@ export async function enrichBusinessScan(metros = true, maximum = 18, recheck = 
       }
       const temporary=enrichmentPath+".tmp";
       await writeFile(temporary,JSON.stringify(records));
-      await rename(temporary,enrichmentPath);
+      await replaceEnrichmentCheckpoint(temporary,enrichmentPath);
     }
     return {counts,reasons,evaluated:Object.values(counts).reduce((a,b)=>a+b,0),selected:picks.length,preservedTransient,
       paused:await access(pausePath).then(()=>true,()=>false),elapsedMs:Date.now()-start,

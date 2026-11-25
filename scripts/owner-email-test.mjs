@@ -86,7 +86,12 @@ const guard=setTimeout(()=>{
 },25000);
 
 try{
-  const {smtpUrl,from,to,subject,text}=JSON.parse(input);
+  const {smtpUrl,from,to,subject,text,html,replyTo,displayName}=JSON.parse(input);
+  const mailbox=/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/;
+  if(!mailbox.test(from)||!mailbox.test(to)||(replyTo&&!mailbox.test(replyTo))
+    ||typeof subject!=='string'||/[\r\n]/.test(subject)||typeof text!=='string'
+    ||(displayName&&(typeof displayName!=='string'||/[\r\n]/.test(displayName)))
+    ||(html!=null&&typeof html!=='string'))throw fail('config',0,'invalid message fields');
   const url=new URL(smtpUrl);
   if(url.protocol!=='smtp:'&&url.protocol!=='smtps:')throw fail('config',0,'unsupported protocol');
   const host=url.hostname;
@@ -106,7 +111,8 @@ try{
   if(response.code!==250)throw fail('ehlo',response.code,'EHLO rejected');
   let ehlo=response.text;
 
-  if(!secure&&/STARTTLS/i.test(ehlo)){
+  if(!secure){
+    if(!/STARTTLS/i.test(ehlo))throw fail('starttls',0,'SMTP server did not advertise STARTTLS');
     response=await command('STARTTLS');
     if(response.code!==220)throw fail('starttls',response.code,'STARTTLS rejected');
     const upgraded=tls.connect({socket:base,servername:host});
@@ -146,16 +152,20 @@ try{
   if(response.code!==354)throw fail('data',response.code,'DATA rejected');
 
   const messageId=`<${randomUUID()}@leadflow.local>`;
+  const encode=value=>`=?UTF-8?B?${Buffer.from(value).toString('base64')}?=`;
+  const boundary=`leadflow-${randomUUID()}`;
+  const part=(value,type)=>[`Content-Type: text/${type}; charset=utf-8`,'Content-Transfer-Encoding: base64','',
+    Buffer.from(value).toString('base64').match(/.{1,76}/g)?.join('\r\n')??''];
   const body=[
-    `From: ${from}`,
+    `From: ${displayName?encode(displayName)+' ':''}<${from}>`,
     `To: ${to}`,
-    `Subject: ${subject}`,
+    ...(replyTo?[`Reply-To: ${replyTo}`]:[]),
+    `Subject: ${encode(subject)}`,
     `Date: ${new Date().toUTCString()}`,
     `Message-ID: ${messageId}`,
     'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=utf-8',
-    '',
-    text,
+    ...(html?[`Content-Type: multipart/alternative; boundary="${boundary}"`,'',`--${boundary}`,
+      ...part(text,'plain'),`--${boundary}`,...part(html,'html'),`--${boundary}--`]:part(text,'plain')),
   ].join('\r\n');
   socket.write(body.split('\r\n').map((line)=>line.startsWith('.')?'.'+line:line).join('\r\n')+'\r\n.\r\n');
 

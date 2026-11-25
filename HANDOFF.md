@@ -1,5 +1,7 @@
 # Handoff — LeadFlow AI
 
+**Commercial checkpoint, 26 November 2026.** See [COMMERCIAL_READINESS.md](docs/COMMERCIAL_READINESS.md). RSL's active listing and email route were verified and the exact local draft awaits explicit owner approval. No prospect communication occurred.
+
 **Latest local checkpoint, 25 November.** See [the marketplace control centre report](docs/MARKETPLACE_CONTROL_CENTER.md) for live source outcomes, provider validation, the targeted Foursquare pilot and exact dashboard workflows. Both local services continue on ports 5174 and 8787.
 
 This is the entry point for any AI (or human) picking up this repository. Read this file first, then open the latest capsule.

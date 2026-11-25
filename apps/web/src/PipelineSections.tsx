@@ -4,6 +4,7 @@ const outreachPath = "/api/local/pipeline/outreach";
 type BusinessSummary = {
   inventory: number; qualified: number; contactable: number; awaiting: number; review: number; retry: number;
   nextRetryAt?: string; draftReady: number; reviewPackage: boolean;
+  evidenceHolds: [string, number][];
   drafts: { id: number; name: string; city: string | null }[];
 };
 type SavedDraft = { subject: string; body: string; alternatives: string[]; eml: string; html: string };

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import { LocalBusinessPanel, type BusinessPipelineControls } from "./LocalBusinessPanel";
 import { AuthorizedProjectImport } from "./AuthorizedProjectImport";
 import { MarketplaceDiscovery, OutreachLibrary, PipelineOverview, useOutreachLibrary } from "./PipelineSections";
+import { CommercialPipeline } from "./CommercialPipeline";
 import "./PipelineSections.css";
 import { discoveryState, type DiscoveryState } from "../../../packages/core/discovery-state";
 import { discoveryAiBanner, providerHealthLine, type DiscoveryAiHealth } from "../../../packages/core/discovery-ai-health";
@@ -353,7 +354,7 @@ export function PipelineDashboard() {
   };
   const sections=[
     ["overview","Overview"],["opportunities","Persistent freelance"],["marketplace","Marketplace discovery"],
-    ["businesses","Local businesses"],["drafts","Outreach drafts"],["providers","Sources and AI"],["queues","Review and retry"],
+    ["businesses","Local businesses"],["drafts","Outreach drafts"],["commercial","Sales activity"],["providers","Sources and AI"],["queues","Review and retry"],
   ];
 
   return (
@@ -372,6 +373,7 @@ export function PipelineDashboard() {
       </div>
 
       <PipelineOverview counts={counts} business={library.data} />
+      <CommercialPipeline />
       <section className="note-panel" aria-label="Pipeline actions">
         <h2>Run a pipeline</h2>
         <div style={{display:"flex",flexWrap:"wrap",gap:"0.6rem"}}>
@@ -773,6 +775,10 @@ export function PipelineDashboard() {
           <li><a href="#businesses">Business evidence and retries</a> · {library.data ? `${library.data.review} in evidence review · ${library.data.retry} retries` : "Loading business counts"}
             {library.data?.nextRetryAt && <> · Next scheduled <time dateTime={library.data.nextRetryAt}>{new Date(library.data.nextRetryAt).toLocaleString()}</time></>}</li>
         </ul>
+        {!!library.data?.evidenceHolds.length && <details>
+          <summary>Most common missing business evidence</summary>
+          <ul>{library.data.evidenceHolds.map(([reason,count])=><li key={reason}>{reason} · {count}</li>)}</ul>
+        </details>}
       </section>
     </div>
   );

@@ -11,6 +11,7 @@ import path from "node:path";
 import { stateDirectory } from "../../scripts/external-local-config.mjs";
 import { enrichBusinessScan, localLeadWorker, makeBusinessDraft, pauseBusinessEnrichment, readBusinessScan, recordBusinessEvidence, reviewBusinessScan, reviewLocalDraft, runBusinessScan } from "../../scripts/local-business";
 import { draftLibrary, readReviewArchive, readSavedDraft } from "../../scripts/local-draft-library";
+import { readCommercialLedger } from "../../scripts/commercial-ledger";
 import { FREELANCE_BUYER_SOURCES } from "../../packages/core/qualification";
 import { parseCsv } from "../../packages/core/csv";
 
@@ -148,7 +149,7 @@ function localPipeline(): Plugin {
         if (!/^(127\.0\.0\.1|localhost|\[::1\]):\d{1,5}$/.test(req.headers.host || "")) {
           return json(403, { error: "Loopback host required" });
         }
-        if (pathname.startsWith("/api/local/pipeline/outreach") && (
+        if ((pathname.startsWith("/api/local/pipeline/outreach") || pathname === "/api/local/pipeline/commercial") && (
           (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) ||
           ["cross-site", "same-site"].includes(String(req.headers["sec-fetch-site"]))
         )) {
@@ -161,6 +162,11 @@ function localPipeline(): Plugin {
 
         void (async () => {
           try {
+            if (req.method === "GET" && pathname === "/api/local/pipeline/commercial") {
+              const ownerCheck = await readFile(path.join(repoRoot, "data/commercial/owner-check-20261126.json"), "utf8")
+                .then(raw => JSON.parse(raw)).catch(() => null);
+              return json(200, { applications: await readCommercialLedger(), ownerCheck });
+            }
             if (req.method === "GET" && pathname === "/api/local/pipeline/outreach") {
               return json(200, await draftLibrary());
             }

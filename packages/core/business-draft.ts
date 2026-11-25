@@ -23,7 +23,7 @@ const safeOutreachLine = (value: string | undefined, maximum: number) => value &
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
 
-function calendlyEventUrl(value?: string): string | undefined {
+export function calendlyEventUrl(value?: string): string | undefined {
   const configured = value?.trim();
   if (!configured || configured.length > 2048 || !/^https:\/\//i.test(configured) || /\s/.test(configured)) return;
   try {
