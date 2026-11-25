@@ -4,7 +4,7 @@ import {randomBytes} from 'node:crypto';
 import {Engine,canRouteDiscoveryLead,isDiscoveryCandidate,notification} from '../packages/core/workflow';
 import {MemoryStore} from '../packages/core/memory-store';
 import {configSchema} from '../packages/core/model';
-import {defaultQualificationPolicy,FREELANCE_BUYER_SOURCES,prefilterDiscovery} from '../packages/core/qualification';
+import {canonicalEvidence,defaultQualificationPolicy,extractRuleEvidence,FREELANCE_BUYER_SOURCES,prefilterDiscovery,qualificationVersions,scoreFreelanceQualification} from '../packages/core/qualification';
 import {discoveryAiBanner,providerHealthLine,type DiscoveryAiHealth} from '../packages/core/discovery-ai-health';
 import {classifyGemini,openAICompletionEndpoint,type Http} from '../apps/automation/adapters';
 import {pullExternalLeads,type ExternalCursor} from '../apps/automation/external-leads';
@@ -169,8 +169,9 @@ async function main(){
   const retryDiscoveryAi=process.argv.includes('--retry-discovery-ai');
   const recheckAccepted=process.argv.includes('--recheck-accepted');
   const reviewSourceGuards=process.argv.includes('--review-source-guards');
+  const reconsiderScoped=process.argv.includes('--reconsider-scoped');
   const refreshAuthorizedImports=process.argv.includes('--refresh-authorized-imports');
-  const replayStored=requalifyAll||retryDiscoveryAi||recheckAccepted||reviewSourceGuards;
+  const replayStored=requalifyAll||retryDiscoveryAi||recheckAccepted||reviewSourceGuards||reconsiderScoped;
   const requalificationRun=requalifyMissing||replayStored;
   const qualificationMode=get('FREELANCE_QUALIFICATION_MODE','shadow');
   if(qualificationMode!=='shadow'&&qualificationMode!=='enforce')
@@ -351,6 +352,14 @@ async function main(){
         if(!lead.discovery_context){requalificationSkipped++;continue;}
         if(reviewSourceGuards&&(lead.qualification_audit?.operational_state==='REJECTED'||prefilterDiscovery(
           lead.discovery_context,new Date().toISOString(),{...defaultQualificationPolicy,max_age_days:config.maxAgeDays}).pass))continue;
+        if(reconsiderScoped){
+          const state=lead.qualification_audit?.operational_state;
+          const context=lead.discovery_context;
+          if((state!=='REVIEW'&&state!=='AWAITING_ENRICHMENT')||context.truncated||!context.complete||
+            lead.qualification_audit?.prompt_version===qualificationVersions.prompt_version||!chain.available()||chain.exhausted())continue;
+          const rules=scoreFreelanceQualification(extractRuleEvidence(canonicalEvidence(context),context),context,new Date().toISOString());
+          if(rules.audit.project_boundary!=='BOUNDED'||!rules.record.evidence_quotes.some(item=>item.field==='scope'))continue;
+        }
         const decisionSource=lead.qualification_audit?.decision_source;
         const retryable=lead.qualification_audit?.operational_state==='RETRY_CLASSIFICATION';
         if(!replayStored&&decisionSource!=='NO_MODEL'&&!retryable&&lead.qualification?.operator_decision)continue;

@@ -378,7 +378,7 @@ describe("Stage E qualification routing and persistence", () => {
     expect(lead.qualification_audit).toMatchObject({
       schema_version: "freelance.v2",
       rules_version: "rules.v6",
-      prompt_version: "prompt.v4",
+      prompt_version: "prompt.v5",
       policy_version: "policy.v4",
       source_hash: lead.discovery_context?.source_hash,
       method: "gemini",

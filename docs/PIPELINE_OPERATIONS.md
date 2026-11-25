@@ -225,3 +225,28 @@ Run `npm run test`, `npm run typecheck` and `npm run build` in LeadFlow AI, and 
 Current unsent review package is under `outputs/cofounder-review/`. The earlier package was copied to `outputs/cofounder-review-before-cta-20261125-020044/`. All three new CTA drafts were verified with Chromium copy, HTML and logo previews and matching EML/HTML downloads. An optional valid HTTPS `LEADFLOW_CALENDLY_URL` appends a booking link. The current package uses the call invitation because no URL is configured. Revised body fingerprints invalidate any older draft approval.
 
 Verification checkpoint: 261 LeadFlow AI tests and 49 LeadFlow Leads tests passed with both typechecks and the local build. Chromium verified the Contracts Finder source toggle, empty authorized-import gate, state reload and Mumbai/Delhi filters. Producer remote verified at `0620dd1c8485ad94366c5a0c9ed12ab52141a227` on `feature-new-sources-aa`. Both Graphify indexes were refreshed. No external deployment was performed.
+
+## Source activation — 25 November 2026
+
+- [x] Verified `codex --version` in a fresh Windows PowerShell 5.1 process and authenticated the official Upwork MCP via the local CLI. LeadFlow AI has a freelancer account. Marketplace searches and detail reads were owner-requested and read-only. The local database, email pipeline, and external classifiers received no Upwork records.
+- [x] Authenticated the Places Portal Iceberg catalog with `FOURSQUARE_ICEBERG_TOKEN` from the ignored `.env.external`. `places.datasets.places_os` provides the official schema. The direct query encountered a string `date_refreshed` field and now applies `TRY_CAST` before checking freshness. Use the Open Source Places token, rather than a Places REST API key.
+- [x] Imported 50 Mumbai results. Reimporting the exact same in-memory batch returned zero inserted, 50 duplicates and zero rejected. The other six metros each returned 50 eligible source rows. In total, 350 normalized and 347 inserted, with three cross-source matches and zero rejected. The importer uses Apache-2.0 attribution, bounded metro coordinates, open/recent categories, local-only intake and a reproducible slice hash. Fields remain directory hints until verified.
+- [x] Synced all seven metros into the dashboard. A fresh Overture acquisition returned existing inventory. Offline OSM was reused. The Foursquare counts now use successful import receipts without reloading historical city-specific outputs or exposing tokens.
+- [x] Ran the configured freelance sources in shadow mode. HN screened 51 posts (39 seller offers, 11 with no explicit buyer request and one unmatched monthly comment). Other configured sources had active leases. The old WordPress publisher page still included its original application route. No new rows entered the persistent freelance queue.
+- [x] Used explicit publisher text to move nine unsupported freelance entries to `OUT_OF_SERVICE_SCOPE`. The saved ledger currently shows 230 rows, one qualified, 148 rejected, 80 review and one awaiting evidence. The selective scoped replay found no remaining complete held briefs with grounded project boundaries. Historical outreach and model decisions remain in local state.
+- [x] Added numbered evidence spans for compact backup models. Responses still resolve to actual source substrings and invalid IDs fail validation. A bounded live check on the public WordPress project got one valid verdict each from Groq and Cloudflare. Each returned three span identifiers, with no quote failures in that check. Gemini returned 503 and OpenRouter 429. Ollama passed local diagnostic JSON.
+- [ ] Finish the new business evidence backlog and verify the resulting city counts and all eligible unsent drafts.
+
+For a future authorized metro refresh, run from LeadFlow AI on Windows after `pip install duckdb` in the existing `.venv/local-business` environment:
+
+```powershell
+& .venv/local-business/Scripts/python.exe scripts/import-foursquare-iceberg.py Mumbai --limit 50 --repeat-check
+& .venv/local-business/Scripts/python.exe scripts/import-foursquare-iceberg.py Pune Bengaluru Hyderabad Kolkata Delhi Chennai --limit 50
+npm run business:scan -- --sync-foursquare=all
+$env:LOCAL_BUSINESS_OSM_ENABLED = 'false'
+npm run business:scan -- india-metros
+npm run business:scan -- --enrich-metros --backlog
+npm run business:review-package
+```
+
+The Foursquare runtime keeps the free Iceberg token transient and never invokes Places REST. Foursquare and Overture records with the same verified publisher lineage are not independent corroboration. Tavily has a key but prospect discovery remains blocked on provider permission and confirmed Researcher access. Freelancer remains intentionally deferred at the owner's request. No publication, marketplace write or messaging action is required for these runs.

@@ -192,6 +192,23 @@ describe("local discovery AI failover", () => {
       discoverySignals: { decision: "ACCEPT", engagement_evidence: "We're hiring an independent contractor" },
     });
   });
+
+  it("grounds compact evidence identifiers and fails closed on a made-up identifier", () => {
+    const provider = backups[1];
+    const sample = { ...context, source_hash:"model-evidence-numbered-test" };
+    const chain = discoveryAiChain([provider], { json(_url, request) {
+      const body = request?.body as {messages:Array<{content:string}>};
+      const text = JSON.parse(body.messages[1].content).DATA as Record<string,string>;
+      const match = Object.entries(text).find(([,value])=>value.includes("build a React checkout"));
+      expect(match).toBeTruthy();
+      return {choices:[{message:{content:JSON.stringify({...compactRejection, scope_evidence:match![0]})}}]};
+    } },1,{});
+    expect(chain.classify(sample).discoverySignals?.scope_evidence).toContain("build a React checkout");
+    const ungrounded = discoveryAiChain([provider], {json:()=>({choices:[{message:{content:JSON.stringify({
+      ...compactRejection,scope_evidence:"[S9999]",
+    })}}]})},1,{});
+    expect(ungrounded.classify({...sample,source_hash:"model-evidence-missing-test"}).warning).toContain("unsupported evidence quote");
+  });
 });
 
 describe("Gemini discovery adapter", () => {

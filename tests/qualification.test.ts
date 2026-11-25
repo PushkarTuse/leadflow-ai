@@ -880,6 +880,8 @@ describe("Stage C: mandatory gate invariants", () => {
     expect(prefilterDiscovery(expired,NOW)).toMatchObject({reason:'STALE_OR_CLOSED',evidence:'complete testing by January 1, 2024'});
     const engineering = makeCtx('Build an annotation platform','Develop and deploy a web dashboard for transcription data.');
     expect(prefilterDiscovery(engineering,NOW).pass).toBe(true);
+    const rater = makeCtx('Maps Personalization Relevance Rater','This role involves rating the relevance and usefulness of suggested places.');
+    expect(prefilterDiscovery(rater,NOW)).toMatchObject({reason:'OUT_OF_SERVICE_SCOPE',evidence:'Maps Personalization Relevance Rater'});
   });
 
   it("clause-level: No unpaid work seeking a paid contractor is eligible", () => {

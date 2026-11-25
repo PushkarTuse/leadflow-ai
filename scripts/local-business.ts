@@ -328,6 +328,21 @@ function isBusiness(row: Business): boolean {
   return row.category === "local_business" && sources.includes(row.source) && Boolean(row.name?.trim());
 }
 
+async function foursquareReceipts():Promise<Record<string,{raw:number;inserted:number;duplicates:number}>> {
+  const receipt=await readFile(join(dataDirectory,"foursquare-latest.json"),"utf8").catch(error=>{
+    if(error.code!=="ENOENT")throw error;
+    return "{}";
+  });
+  return JSON.parse(receipt);
+}
+
+function applyFoursquareReceipt(report:SourceResult,receipt:{raw:number;inserted:number;duplicates:number}|undefined) {
+  if(!receipt)return;
+  report.fetched=receipt.raw;
+  report.inserted=receipt.inserted;
+  report.status=receipt.raw?`Open data import verified · ${receipt.duplicates} matched existing records`:"No matching open places in last import";
+}
+
 export async function runBusinessScan(term: string, onCity?: (city: BusinessScan["cities"][number]) => void, budget = 250): Promise<BusinessScan> {
   const query = term.trim();
   if (!Number.isInteger(budget) || budget < 20 || budget > 400) throw new Error("Business budget must be 20–400 per city");
@@ -344,6 +359,7 @@ export async function runBusinessScan(term: string, onCity?: (city: BusinessScan
   let osmEnabled = (await settings()).LOCAL_BUSINESS_OSM_ENABLED !== "false";
   const evidence = await evidenceRecords();
   const enrichment = await enrichmentRecords();
+  const receipts=await foursquareReceipts();
   await mkdir(dataDirectory, { recursive: true });
   for (const place of locations) {
     const osm = async () => !osmEnabled ? {fetched:0,inserted:0,state:"Using saved OSM inventory"} : api<{ fetched: number; inserted: number; state?: string }>("/collect/osm",
@@ -382,9 +398,11 @@ export async function runBusinessScan(term: string, onCity?: (city: BusinessScan
       const status = result?.status === "rejected" ? (result.reason as Error).message.slice(0, 170)
         : result?.status === "fulfilled" ? ("state" in result.value && result.value.state) || "OK"
         : matching.length ? "Imported inventory" : "No open-data import for this city";
-      return { source, status: batch.status === "rejected" ? status + " · inventory unavailable" : status,
+      const report = { source, status: batch.status === "rejected" ? status + " · inventory unavailable" : status,
         fetched: result?.status === "fulfilled" ? result.value.fetched : 0,
         inserted: result?.status === "fulfilled" ? result.value.inserted : 0, shown: matching.length };
+      if(source==="fsq_os" && batch.status==="fulfilled" && place.country==="IN")applyFoursquareReceipt(report,receipts[place.city]);
+      return report;
     });
     // A capped or partially unavailable acquisition must keep previous metro observations visible.
     const existingIndex = scan.cities.findIndex(city => city.city === place.city && city.country === place.country);
@@ -407,10 +425,11 @@ export async function runBusinessScan(term: string, onCity?: (city: BusinessScan
   return scan;
 }
 
-async function rebuildMetroSnapshot(offlineCity?:string) {
+async function rebuildMetroSnapshot(offlineCity?:string, offlineSource:"osm"|"fsq_os"="osm") {
   const scan = await readBusinessScan(true);
   if (!scan) throw new Error("No metro snapshot to rebuild");
   const api = await worker();
+  const receipts=offlineSource==="fsq_os"?await foursquareReceipts():{};
   const selectedCities = offlineCity && offlineCity.toLowerCase() !== "all"
     ? scan.cities.filter(city => city.city.toLowerCase() === offlineCity.toLowerCase()) : scan.cities;
   if (!selectedCities.length) throw new Error("City not found in the metro snapshot");
@@ -418,7 +437,7 @@ async function rebuildMetroSnapshot(offlineCity?:string) {
     const times = city.rows.flatMap(row=>row.found_at?[row.found_at]:[]).sort();
     if (!offlineCity && !times.length) continue;
     const saved = new Map(city.rows.map(row=>[row.id,row]));
-    for (const report of city.sources.filter(source=>offlineCity?source.source==="osm":source.fetched>0)) {
+    for (const report of city.sources.filter(source=>offlineCity?source.source===offlineSource:source.fetched>0)) {
       const query = new URLSearchParams({source:report.source, category:"local_business", status:"new",
         verified_prospects:"true", city:city.city, ...(offlineCity?{}:{since:times[0]}), limit:"200"});
       let offset = 0;
@@ -435,7 +454,8 @@ async function rebuildMetroSnapshot(offlineCity?:string) {
         if (!leads.length || offset >= total) break;
       }
       report.shown = [...saved.values()].filter(row => row.source === report.source).length;
-      if (offlineCity) report.status = report.shown ? "Local OSM inventory synced" : "No saved OSM inventory";
+      if (offlineCity) report.status = report.shown ? "Saved open-data inventory synced" : "No separate records in the saved inventory";
+      if(report.source==="fsq_os")applyFoursquareReceipt(report,receipts[city.city]);
     }
     city.rows = [...saved.values()];
   }
@@ -601,27 +621,33 @@ export async function makeBusinessDraft(id: number, source: string, sourceId: st
   await mkdir(draftDirectory, { recursive: true });
   const currentPath=join(draftDirectory,`draft-${id}.eml`);
   const previous=await readFile(currentPath).catch(error=>{if(error.code==="ENOENT")return null;throw error;});
-  if(previous&&!previous.equals(Buffer.from(eml))){
+  const reused=Boolean(previous?.equals(Buffer.from(eml)));
+  if(previous&&!reused){
     const key=createHash("sha256").update(previous).digest("hex").slice(0,16);
     await writeFile(join(draftDirectory,`draft-${id}-${key}.eml`),previous);
   }
-  const temp=currentPath+".tmp";
-  await writeFile(temp,eml);
-  await rename(temp,currentPath);
+  if(!reused){
+    const temp=currentPath+".tmp";
+    await writeFile(temp,eml);
+    await rename(temp,currentPath);
+  }
   const htmlPath=join(draftDirectory,`draft-${id}.html`);
-  await writeFile(htmlPath,html);
-  return { id, fingerprint:createHash("sha256").update(eml).digest("hex"), subject: draft.subject, alternatives: draft.alternatives,
+  const previousHtml=await readFile(htmlPath,"utf8").catch(error=>{if(error.code==="ENOENT")return null;throw error;});
+  if(previousHtml!==html)await writeFile(htmlPath,html);
+  return { id, reused, fingerprint:createHash("sha256").update(eml).digest("hex"), subject: draft.subject, alternatives: draft.alternatives,
     body: draft.body, method: tailored?.method ?? "Rules", eml,html,artifacts:{eml:currentPath,html:htmlPath} };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const backlog=process.argv.includes("--backlog");
   const offlineCity=process.argv.find(item=>item.startsWith("--sync-osm="))?.slice(11);
+  const foursquareCity=process.argv.find(item=>item.startsWith("--sync-foursquare="))?.slice("--sync-foursquare=".length);
   const run = process.argv.includes("--pause-enrichment") ? pauseBusinessEnrichment() :
     process.argv.includes("--enrich-metros") ? enrichBusinessScan(true,Number(process.argv.find(arg=>arg.startsWith("--limit="))?.slice(8)??(backlog?5000:18)),
     process.argv.includes("--recheck-official-hints"), {backlog,cities:process.argv.find(arg=>arg.startsWith("--cities="))?.slice(9).split(","),
       updatedRules:process.argv.includes("--updated-rules"),retriesOnly:process.argv.includes("--retry-eligible"),discover:process.argv.includes("--discover-evidence")})
     .then(({scan:_,...summary})=>console.log(JSON.stringify(summary))) :
+    foursquareCity ? rebuildMetroSnapshot(foursquareCity,"fsq_os") :
     (offlineCity||process.argv.includes("--rebuild-metros")) ? rebuildMetroSnapshot(offlineCity) :
     process.argv.includes("--review-metros") ? reviewBusinessScan(true).then(result => {
     console.log(JSON.stringify({ checked: result.checked, usage: result.usage, cities: result.scan.cities.map(city => ({

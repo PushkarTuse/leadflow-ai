@@ -7,7 +7,7 @@ import { z } from "zod";
 
 export const QUALIFICATION_SCHEMA_VERSION = "freelance.v2";
 export const QUALIFICATION_RULES_VERSION = "rules.v6";
-export const QUALIFICATION_PROMPT_VERSION = "prompt.v4";
+export const QUALIFICATION_PROMPT_VERSION = "prompt.v5";
 export const CAPABILITY_LIST_VERSION = "capabilities.v1";
 export const QUALIFICATION_POLICY_VERSION = "policy.v4";
 
@@ -1041,6 +1041,10 @@ export function prefilterDiscovery(
   const annotationRole = context.original_title.match(/\b(?:audio transcription adjudicator|(?:search|ads|internet|ai|language) (?:quality )?rater|(?:audio|linguistic|data) annotator)\b/i);
   if (annotationRole && /\b(?:review (?:annotations|transcriptions)|word-level transcription|label (?:the )?data|rate (?:search results|model responses))\b/i.test(context.decoded_text)) {
     return {pass:false,reason:'OUT_OF_SERVICE_SCOPE',evidence:annotationRole[0]};
+  }
+  const manualWork = context.original_title.match(/^(?:maps personalization (?:relevance rater|quality reviewer)|content reviewer\b|(?:online )?adjunct instructor\b)/i);
+  if (manualWork && /\b(?:evaluate search queries|rating search results|rating the relevance|review rater worksheets|responsible for teaching contracted course)/i.test(context.decoded_text)) {
+    return {pass:false,reason:'OUT_OF_SERVICE_SCOPE',evidence:manualWork[0]};
   }
 
   // Truncated / incomplete: hold, don't reject

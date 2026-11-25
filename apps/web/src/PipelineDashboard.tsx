@@ -171,7 +171,7 @@ export function PipelineAiHealth({ health }: { health: DiscoveryAiHealth }) {
 }
 const attribution: Record<string,string> = {
   authorized_projects:"Authorized buyer briefs",
-  hackernews:"Hacker News", wordpress_jobs_rss:"WordPress Jobs", freelancer_rss:"Freelancer",
+  hackernews:"Hacker News", wordpress_jobs_rss:"WordPress Jobs", freelancer_rss:"Freelancer RSS",
   himalayas:"Himalayas", jobicy_rss:"Jobicy", remotive:"Remotive",
   uk_tender:"UK Find a Tender",
   uk_contracts_finder:"UK Contracts Finder",
@@ -370,6 +370,7 @@ export function PipelineDashboard() {
         </p>
         <details><summary>Advanced freelance controls and source selection</summary>
         <p>The default polls Hacker News buyer requests, WordPress projects and eligible UK tenders. Enable employment-oriented boards for diagnostics. Active source cooldowns are respected.</p>
+        <p>Upwork sessions use owner-reviewed MCP search separately. Freelancer native discovery is deferred.</p>
         <fieldset><legend>Sources for the next poll</legend><div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(175px,1fr))",gap:"0.5rem"}}>
           {Object.entries(attribution).map(([source,label]) => <label key={source} style={{display:"flex",alignItems:"baseline",gap:"0.45rem"}}>
             <input type="checkbox" disabled={liveSources?.sources.sources.find(item=>item.id===source)?.ready===false} checked={selected.includes(source)} onChange={event => setSelected(current =>

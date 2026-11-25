@@ -142,6 +142,21 @@ import {
 export const discoverySignalsSchema = extractionSchema;
 export type DiscoverySignals = Extraction;
 
+export function discoveryEvidenceSpans(source: string): string[] {
+  const spans: string[] = [];
+  for (const line of source.split(/\r?\n/)) {
+    let rest = line.trim();
+    while (rest.length > 260) {
+      const boundary = rest.lastIndexOf(" ", 260);
+      const cut = boundary >= 120 ? boundary : 260;
+      spans.push(rest.slice(0, cut));
+      rest = rest.slice(cut).trimStart();
+    }
+    if (rest) spans.push(rest);
+  }
+  return spans;
+}
+
 function groundDiscoveryQuote(source: string, quote: string | null): string | null {
   if (quote === null || source.includes(quote)) return quote;
   const variants = ["'‘’", '"“”', "-‐‑–—"];
@@ -187,11 +202,21 @@ export function validateDiscoveryExtraction(
     evidence_quotes: [],
   } : payload);
   const canonical = canonicalEvidence(context);
+  const spans = compact ? discoveryEvidenceSpans(canonical) : [];
+  const ground = (quote: string | null) => {
+    const reference = quote?.match(/^\[S([1-9]\d{0,3})\]$/);
+    if (compact && reference) {
+      const value = spans[Number(reference[1]) - 1];
+      if (!value) throw new Error("Evidence quote not found for supplied span identifier");
+      return value;
+    }
+    return groundDiscoveryQuote(canonical, quote);
+  };
   return extractionSchema.parse({
     ...parsed,
-    engagement_evidence: groundDiscoveryQuote(canonical, parsed.engagement_evidence),
-    paid_evidence: groundDiscoveryQuote(canonical, parsed.paid_evidence),
-    scope_evidence: groundDiscoveryQuote(canonical, parsed.scope_evidence),
+    engagement_evidence: ground(parsed.engagement_evidence),
+    paid_evidence: ground(parsed.paid_evidence),
+    scope_evidence: ground(parsed.scope_evidence),
     evidence_quotes: parsed.evidence_quotes.map(item => ({
       ...item, quote: groundDiscoveryQuote(canonical, item.quote),
     })),
@@ -318,7 +343,7 @@ export const discoveryVerdictPrompt =
   "ACCEPT a credible paid client project with a defined software deliverable and completion boundary. " +
   "An undisclosed budget is fine if paid intent is clear. REJECT employment, medical or language rating tasks, staff seats, seller posts and unclear projects. " +
   "Use one short sentence for decision_reason and UNKNOWN for unverified categories. " +
-  "Use short contiguous quotes copied from DATA, with null if absent. ACCEPT requires engagement and scope quotes. " +
+  "DATA is keyed by span identifiers like [S1]. For engagement_evidence, paid_evidence and scope_evidence, return exactly one supplied span identifier or null if absent. Use a payment span only when it states payment. ACCEPT requires engagement and scope evidence. " +
   "Return only JSON in the requested shape.";
 
 export function assess(

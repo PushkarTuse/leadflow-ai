@@ -8,6 +8,7 @@ import {
   validateExtraction,
   discoveryExtractionJsonSchema,
   discoveryExtractionPrompt,
+  discoveryEvidenceSpans,
   discoveryVerdictJsonSchema,
   discoveryVerdictPrompt,
   validateDiscoveryExtraction,
@@ -378,7 +379,8 @@ export function classifyOpenAICompatibleDiscovery(
           {
             role: "user",
             content: JSON.stringify({ source: context.provider, thread_context: threadContext,
-              publisher_engagement_hint: context.provider_verified_engagement?.value ?? null, DATA: canonical }),
+              publisher_engagement_hint: context.provider_verified_engagement?.value ?? null,
+              DATA: options.compactVerdict ? Object.fromEntries(discoveryEvidenceSpans(canonical).map((span,index)=>[`[S${index+1}]`,span])) : canonical }),
           },
         ],
         temperature: 0,

@@ -17,6 +17,7 @@
     "external:run": "tsx scripts/external-pipeline.ts",
     "external:collect": "tsx scripts/external-pipeline.ts --collect",
     "business:scan": "tsx scripts/local-business.ts",
+    "business:review-package": "tsx scripts/business-review-package.ts",
     "dev:marketing": "vite --config apps/marketing/vite.config.ts",
     "build:marketing": "vite build --config apps/marketing/vite.config.ts",
     "preview:marketing": "vite preview --config apps/marketing/vite.config.ts --host 127.0.0.1 --port 4175",

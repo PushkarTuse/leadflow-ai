@@ -199,12 +199,12 @@ export function LocalBusinessPanel({controlsRef,onBusy}:{controlsRef?:Ref<Busine
           {scan.cities.map(item => <li key={item.city}>
             <strong>{item.city}</strong> · {item.rows.length} publisher records · {item.rows.filter(row=>row.enrichment).length} evaluated · {(["Awaiting enrichment","Processing","Excluded","Evidence review","Source retry","Qualified"] as const).map(state=>`${item.rows.filter(row=>businessState(row)===state).length} ${state.toLowerCase()}`).join(" · ")} · {item.rows.filter(publicContact).length} verified contact routes · {item.rows.filter(row=>row.outreach?.draftReady).length} draft-ready
             <ul>{item.sources.map(source => <li key={source.source}>
-              {labels[source.source]} · {source.shown ?? 0} in inventory · {source.fetched} fetched, {source.inserted} added · {source.source==="fsq_os"&&!source.shown?"Unconfigured for this city. An authorized Foursquare Places export is required.":source.status}
+              {labels[source.source]} · {source.shown ?? 0} in inventory · {source.fetched} fetched, {source.inserted} added · {source.status}
             </li>)}</ul>
           </li>)}
         </ul>
         <p style={{ fontSize: "0.9rem" }}>Data from <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>,{" "}
-          <a href="https://docs.overturemaps.org/attribution/">Overture Maps</a>, and <a href="https://www.geonames.org/export/">GeoNames</a> for locations.</p>
+          <a href="https://docs.overturemaps.org/attribution/">Overture Maps</a>,{" "}<a href="https://docs.foursquare.com/data-products/docs/fsq-places-open-source">Foursquare OS Places</a>, and <a href="https://www.geonames.org/export/">GeoNames</a> for locations.</p>
         <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem", marginBlock: "1rem" }}>
           <label>Show city{" "}
             <select value={city?.city ?? ""} onChange={event => {setActiveCity(event.target.value);setPage(0);}}>
