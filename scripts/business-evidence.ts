@@ -14,7 +14,7 @@ export type EvaluatedBusiness = {
   discoveryHints?:BusinessSearchHint[];
   discoveryCheckedAt?:string;
 };
-type Page = {url:URL;headings:string[];lines:string[];links:{label:string;href:string}[];entities:Record<string,unknown>[]};
+type Page = {url:URL;headings:string[];lines:string[];links:{label:string;href:string}[];entities:Record<string,unknown>[];contactForm:boolean};
 const hidden = new Set(["script","style","noscript","template","svg","blockquote"]);
 const block = new Set(["p","li","div","section","article","td","h1","h2","h3","title","br","footer"]);
 const within = (value:string,size=450) => value.replace(/\s+/g," ").trim().slice(0,size);
@@ -35,12 +35,14 @@ function parsePage(input:HtmlPage):Page {
   const queue:{node:Node;close?:boolean}[]=[{node:tree}];
   let current="", anchor:{node:Node;href:string;text:string}|undefined;
   let heading:{node:Node;text:string}|undefined;
+  let formNode:Node|undefined,contactForm=false;
   for(let steps=0;queue.length&&steps<25000;steps++){
     const {node,close}=queue.pop()!;
     const tag="tagName" in node?node.tagName:"";
     if(close){
       if(anchor?.node===node){links.push({href:anchor.href,label:within(anchor.text,120)});anchor=undefined;}
       if(heading?.node===node){headings.push(within(heading.text,180));heading=undefined;}
+      if(formNode===node)formNode=undefined;
       if(block.has(tag)&&current){lines.push(within(current));current="";}
       continue;
     }
@@ -76,6 +78,10 @@ function parsePage(input:HtmlPage):Page {
       const href=node.attrs.find(attr=>attr.name==="href")?.value;
       if(href)anchor={node,href:href.slice(0,1600),text:""};
     }
+    if(tag==="form"&&"attrs" in node&& !node.attrs.some(attr=>attr.name==="role"&&attr.value==="search"||
+      ["id","class","name"].includes(attr.name)&&/newsletter|subscribe|search/i.test(attr.value)))formNode=node;
+    if(formNode&&["input","select"].includes(tag)&&"attrs" in node&&node.attrs.some(attr=>
+      attr.name==="type"&&/^(?:tel|date|time)$/i.test(attr.value)||attr.name==="name"&&/\b(?:phone|tel|date|time|slot|appointment|mobile)\b/i.test(attr.value)))contactForm=true;
     if(tag==="img"&&links.length<250&&"attrs" in node){
       const meta=Object.fromEntries(node.attrs.map(attr=>[attr.name,attr.value]));
       if(meta.src&&/\bmenu\b/i.test(meta.alt??""))links.push({label:within(meta.alt,120),href:meta.src.slice(0,1600)});
@@ -84,7 +90,7 @@ function parsePage(input:HtmlPage):Page {
     queue.push({node,close:true});
     for(let index=node.childNodes.length-1;index>=0;index--)queue.push({node:node.childNodes[index]});
   }
-  return {url:new URL(input.url),headings:headings.filter(Boolean),lines:lines.filter(Boolean).slice(0,1400),links,entities};
+  return {url:new URL(input.url),headings:headings.filter(Boolean),lines:lines.filter(Boolean).slice(0,1400),links,entities,contactForm};
 }
 
 const directoryOrSocial = /(?:^|\.)(?:google\.[a-z.]+|goo\.gl|business\.site|facebook\.com|instagram\.com|linkedin\.com|linktr\.ee|youtube\.com|wa\.me|whatsapp\.com|zomato\.com|swiggy\.com|justdial\.com|practo\.com|tripadvisor\.[a-z.]+|wikipedia\.org|openstreetmap\.org|whatclinic\.com|healthfinder\.in|doczone\.in|lybrate\.com|magicpin\.in|dnb\.com|findglocal\.com|opendi\.in|medtrick\.com|yellowpages\.net|indiadentalclinic\.com|lyfskills\.com)$/i;
@@ -135,7 +141,7 @@ function schemaAddress(entity:Record<string,unknown>):string {
 }
 const namedOperator=/\b(?:owner|proprietor|practice principal|managing partner|chef-owner|founder(?: & director)?)\s*[:–-]\s*[^\W\d_][\p{L}.' ]{3,60}|\b(?:founded|established|started)\s+(?:(?:in|in the year) \d{4}\s+)?by\b/iu;
 const localOperator=/\b(?:I (?:have been running|run|started|opened|founded)|we (?:opened|founded|started))\b.{0,90}\b(?:practice|classes|restaurant|clinic|business|studio|showroom|salon|boutique|gym|bakery)\b/i;
-const owned = /\b(?:independently (?:owned|operated|run)|(?:family|owner|founder)[ -](?:owned|operated|run|led)|(?:founded|established|run|operated|owned|taken over) by|our (?:founder|owner)\b|founder (?:and|&) (?:owner|director))\b/i;
+const owned = /\b(?:independently (?:owned|operated|run)|(?:family|owner|founder)[ -](?:owned|operated|run|led)|(?:founded|established)(?: in (?:18|19|20)\d{2})? by|(?:run|operated|owned|taken over) by|our (?:founder|owner)\b|founder (?:and|&) (?:owner|director))\b/i;
 const corporate = /\b(?:become (?:our |a )?franchisee|franchise opportunities|franchise locations|franchise enquiry|nationwide chain|global chain|part of (?:the )?.{2,55} (?:group|holdings)|operated by .{2,55} franchis(?:ee|or))\b/i;
 const organizationFootprint = /\b(?:our (?:own )?(?:brand|group|company|chain|network)|(?:brand|company|group)['’]s)\s+(?:locations?|portfolio|footprint|venues?|branches|stores?|restaurants?)\b/i;
 const physicalOutlets = /\b(?:outlets?|branches|stores?|restaurants?|venues?|caf[eé]s?|clinics?|hotels?|gyms?|showrooms?|salons?|locations?)\b/i;
@@ -146,6 +152,9 @@ const multiMetroGroup = (line:string) => organizationFootprint.test(line) && phy
   (widespreadFootprint.test(line) || /\b(?:across|throughout)\b/i.test(line) &&
     metroAliases.filter(aliases => aliases.some(city => matchesText(line, city))).length >= 3);
 const actionPaths = /\b(?:about|contact|book(?:ing)?|appointments?|menu|visit|services|reservations?|locations?|branches|directions|enquir(?:e|ies)|our[- ](?:story|team)|know[- ]us|meet[- ](?:the[- ])?team|why[- ]we[- ]started|co[- ]?founders?)\b/i;
+const onlineBookingText = /\b(?:fill (?:out|in) (?:the |this )?(?:online )?(?:(?:enquiry|inquiry|booking|appointment|reservation|contact) )?form|choose (?:a|your) (?:date|time|slot)|online (?:enquiry|inquiry|bookings?|reservations?|appointment (?:request|form))|(?:book|reserve|request|schedule) (?:an? |your )?(?:appointment|table|slot) online)\b/i;
+const bookingAction = /\b(?:book|reserve|request|schedule)(?:\s+(?:a|an|your|free))?\s+(?:appointment|reservation|table|slot|site visit)\b/i;
+const bookingDestination = /(?:^|[\/#_-])(?:book(?:ing)?|reservations?|(?:request|schedule)[_-](?:an?[_-])?appointments?|appointment[_-]form)(?:[\/#_-]|$)/i;
 const signals=[
   {pattern:/\b(?:call|phone|telephone)\b.{0,65}\b(?:book|reserv|appointment|enquir)|\b(?:booking|reservations?|appointments?)\b.{0,55}\b(?:call|phone|telephone)\b/i,
     fact:"Your site gives customers a phone route for bookings or enquiries.",
@@ -213,7 +222,7 @@ export async function evaluateBusiness(row:EvidenceInput, read:(url:string)=>Pro
       identityHost:host(home.url.hostname), observations:[...observations,evidence("corporate",corp.line,corp.page.url)]};
     const owner=pages.flatMap(page=>page.lines.filter(line=>owned.test(line)||namedOperator.test(line)||
       localOperator.test(line)&&!(/(?:review|testimonial)/i.test(page.url.pathname))&&(!city||matchesText(line,city)||Boolean(phonePage)) ||
-      /\b(?:co[\s‐‑-]*)?founder of |\bfounded\s|\b(?:co[\s‐‑-]*)?founder (?:and|&) (?:chief|principal)\b/i.test(line)&&
+      /\b(?:co[\s‐‑-]*)?founder of |\bfounded\s+(?!on\b)|\b(?:co[\s‐‑-]*)?founder (?:and|&) (?:chief|principal)\b/i.test(line)&&
       (identityMatch(name,line,false)||/\/about-(?:dr|founder)/i.test(page.url.pathname)&&/\bfounder (?:and|&) (?:chief|principal)\b/i.test(line)))
       .map(line=>({line,page}))).at(0)
       ??pages.flatMap(page=>page.entities.filter(entity=>identityMatch(name,String(entity.name),false))
@@ -263,18 +272,29 @@ export async function evaluateBusiness(row:EvidenceInput, read:(url:string)=>Pro
     const emailBooking=pages.flatMap(page=>page.lines.filter(line=>/\b(?:e-?mail|write to)\b.{0,55}\b(?:book|appointment|reservation|quote|enquir)/i.test(line))
       .map(line=>({page,line,fact:"Your site gives customers an email route for enquiries or bookings.",
         idea:"We could add a short enquiry form that lets customers send the details your team needs in one step."}))).at(0);
-    const hasBookingFlow=pages.some(page=>page.links.some(link=>/\b(?:book(?:ing)?|reserv(?:e|ation)|appointment)\b/i.test(link.label)&&
-      /(?:calendly\.com|practo\.com|mydigitalclinic\.net|resy\.com|opentable\.|fresha\.com|mindbodyonline\.com)/i.test(link.href))||
-      page.lines.some(line=>/\b(?:fill (?:out|in) (?:the |this )?form|choose (?:a|your) (?:date|time|slot))\b/i.test(line)));
+    const existingBooking=pages.flatMap(page=>{
+      const text=page.lines.find(line=>onlineBookingText.test(line)||page.contactForm&&bookingAction.test(line));
+      if(text)return [evidence("digital",text,page.url)];
+      const action=page.links.find(link=>{
+        try{
+          const target=publicWebsite(link.href,page.url);
+          if (host(target.hostname)===host(page.url.hostname) && bookingAction.test(link.label) &&
+            (bookingDestination.test(target.pathname+target.hash)||page.contactForm&&/\bcontact(?:-us)?\b/i.test(target.pathname)))return true;
+          return /\b(?:book(?:ing)?|reserv(?:e|ation)|appointment)\b/i.test(link.label)&&
+            /(?:^|\.)(?:calendly\.com|practo\.com|mydigitalclinic\.net|resy\.com|opentable\.com|fresha\.com|mindbodyonline\.com)$/i.test(target.hostname);
+        }catch{return false;}
+      });
+      return action?[evidence("digital",`Existing online booking link: ${action.label}`,page.url)]:[];
+    }).at(0);
     const chatOpportunity=chat&&/salon|fitness|gym|sport|studio|beauty|workshop|training|boutique|yoga/i.test(row.title??"")&&pages.some(page=>page.lines.some(line=>/\b(?:classes|memberships?|lessons|workshops?|private sessions|courses)\b/i.test(line)))
       ? {page:chat.page,line:chat.label,fact:"Your site sends customers to WhatsApp for enquiries.",
         idea:"We could build a short class enquiry that collects the class, location and preferred time before opening WhatsApp."}:undefined;
     const accommodationChat=chat&&/hotel|resort|lodging/i.test(row.title??"")&&pages.some(page=>page.lines.some(line=>/\b(?:rooms|cottages|stays|villa)\b/i.test(line)))
       ? {page:chat.page,line:chat.label,fact:"Your site links visitors to WhatsApp for enquiries.",
         idea:"We could give guests a short enquiry where they can share their dates, group size and preferred room before your team replies."}:undefined;
-    const opportunity=menu??(hasBookingFlow?undefined:idea??phoneBooking??emailBooking??chatOpportunity??accommodationChat);
-    if(!opportunity) return {status:"review",reason:"Local control documented; no supported digital opportunity was observed",
-      identityHost:host(home.url.hostname),websiteObservation:"official_site",observations};
+    const opportunity=menu??(existingBooking?undefined:idea??phoneBooking??emailBooking??chatOpportunity??accommodationChat);
+    if(!opportunity) return {status:"review",reason:existingBooking?"Existing online booking or enquiry flow observed":"Local control documented; no supported digital opportunity was observed",
+      identityHost:host(home.url.hostname),websiteObservation:"official_site",observations:existingBooking?[...observations,existingBooking]:observations};
     observations.push(evidence("digital",opportunity.line,opportunity.page.url));
     return {status:"qualified",reason:contact?"Official evidence and public contact path verified":"Ownership and opportunity verified; no accepted contact path",
       identityHost:host(home.url.hostname),websiteObservation:"official_site",observations,evidence:{

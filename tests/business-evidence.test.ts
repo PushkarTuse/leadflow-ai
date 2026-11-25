@@ -69,6 +69,16 @@ describe("business evidence gates",()=>{
     expect(review.status).toBe("review");
     expect(review.observations.some(item=>item.field==="contact")).toBe(true);
     const result=await evaluate(base+"<p>Family-run practice. Call us to book your appointment.</p><a href='https://practo.com/clinic'>Book appointment</a>"+contact);
-    expect(result).toMatchObject({status:"review",reason:"Local control documented; no supported digital opportunity was observed"});
+    expect(result).toMatchObject({status:"review",reason:"Existing online booking or enquiry flow observed"});
+  });
+  it("holds first-party booking links and explicit online forms without discarding a phone-only lead",async()=>{
+    const opener=base+"<p>Founded in 2003 by Meera Shah. Call us to book an appointment.</p>";
+    expect(await evaluate(opener)).toMatchObject({status:"qualified"});
+    for(const evidence of ["<p>Fill out the online appointment form to request an appointment.</p>","<a href='/request-an-appointment'>Request an appointment</a>",
+      "<h3>Schedule appointment</h3><form><input name='phone'><button>Submit</button></form>"]){
+      expect(await evaluate(opener+evidence)).toMatchObject({status:"review",reason:"Existing online booking or enquiry flow observed"});
+    }
+    expect(await evaluate(base+"<p>North Lane Dental builds relationships founded on trust. Call us to book an appointment.</p>"))
+      .toMatchObject({status:"review",reason:"Official domain matched; local ownership is not documented"});
   });
 });

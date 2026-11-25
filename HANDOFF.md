@@ -2,7 +2,7 @@
 
 This is the entry point for any AI (or human) picking up this repository. Read this file first, then open the latest capsule.
 
-The latest [operations ledger checkpoint](docs/PIPELINE_OPERATIONS.md#source-expansion-and-seven-metro-verification--25-november-2026) records live Contracts Finder and Find a Tender runs, the replay of 104 unresolved freelance records, offline OSM imports for all seven metros and the revised unsent draft package. Dashboard and Worker remain on ports 5174 and 8787. Prior local data and original drafts are preserved.
+The latest [source activation checkpoint](docs/PIPELINE_OPERATIONS.md#source-activation--25-november-2026) records authenticated Upwork owner review, a verified Foursquare Iceberg import in all seven metros, the latest freelance decisions and the unsent draft review workflow. The dashboard and Worker remain on ports 5174 and 8787. Existing databases and drafts were preserved. Use Windows PowerShell `codex mcp list` in a new window if a pre-install session still has the old PATH.
 
 See [the operational verification ledger](docs/PIPELINE_OPERATIONS.md) for the latest real Mumbai/Pune pilot, enrichment controls, source permissions and remaining verification. Dashboard `http://127.0.0.1:5174/pipeline`, producer `http://127.0.0.1:8787`, Ollama `http://127.0.0.1:11434`.
 

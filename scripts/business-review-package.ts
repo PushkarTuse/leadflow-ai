@@ -1,5 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { chromium } from "@playwright/test";
 import { makeBusinessDraft, readBusinessScan } from "./local-business";
 
@@ -54,5 +55,9 @@ try {
   await page.setContent(`<!doctype html><html lang="en"><meta charset="utf-8"><title>LeadFlow AI draft review</title><style>@page{size:A4;margin:17mm 19mm}body{font:14px/1.5 system-ui,sans-serif;color:#14201b;margin:0}section{break-after:page}section:last-child{break-after:auto}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #bfcbc2;padding-bottom:14px;color:#476154;font:600 12px system-ui;letter-spacing:.09em}img{width:140px;height:auto}h1{font-size:28px;line-height:1.2;margin:24px 0 14px}aside{background:#edf4ef;border:1px solid #d6e2d9;border-radius:5px;padding:10px 15px}ul{margin:5px 0 0;padding-left:18px}article{margin-top:18px}article p{margin:0 0 12px}</style><body>${sections}</body></html>`);
   await page.pdf({path:join(folder,"cofounder-email-review.pdf"),preferCSSPageSize:true,printBackground:true,tagged:true});
 } finally {await browser.close();}
-console.log(JSON.stringify({folder,eligible:rows.size,exported:results.length,reused:results.filter(item=>item.reused).length,skipped}));
+const files=await readdir(folder);
+const archive=resolve(folder,"cofounder-review.zip");
+if(process.platform==="win32")execFileSync("tar.exe",["-a","-cf",archive,"-C",resolve(folder),...files]);
+else execFileSync("zip",["-q",archive,...files],{cwd:folder});
+console.log(JSON.stringify({folder,eligible:rows.size,exported:results.length,reused:results.filter(item=>item.reused).length,archived:files.length,skipped}));
 if(skipped.length)process.exitCode=1;

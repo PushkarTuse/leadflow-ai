@@ -233,9 +233,10 @@ Verification checkpoint: 261 LeadFlow AI tests and 49 LeadFlow Leads tests passe
 - [x] Imported 50 Mumbai results. Reimporting the exact same in-memory batch returned zero inserted, 50 duplicates and zero rejected. The other six metros each returned 50 eligible source rows. In total, 350 normalized and 347 inserted, with three cross-source matches and zero rejected. The importer uses Apache-2.0 attribution, bounded metro coordinates, open/recent categories, local-only intake and a reproducible slice hash. Fields remain directory hints until verified.
 - [x] Synced all seven metros into the dashboard. A fresh Overture acquisition returned existing inventory. Offline OSM was reused. The Foursquare counts now use successful import receipts without reloading historical city-specific outputs or exposing tokens.
 - [x] Ran the configured freelance sources in shadow mode. HN screened 51 posts (39 seller offers, 11 with no explicit buyer request and one unmatched monthly comment). Other configured sources had active leases. The old WordPress publisher page still included its original application route. No new rows entered the persistent freelance queue.
-- [x] Used explicit publisher text to move nine unsupported freelance entries to `OUT_OF_SERVICE_SCOPE`. The saved ledger currently shows 230 rows, one qualified, 148 rejected, 80 review and one awaiting evidence. The selective scoped replay found no remaining complete held briefs with grounded project boundaries. Historical outreach and model decisions remain in local state.
+- [x] Used explicit publisher text to move nine unsupported freelance entries to `OUT_OF_SERVICE_SCOPE`. The only remaining incomplete listing contained a direct instruction to an LLM in the publisher description and is now quarantined before inference. The saved ledger shows 230 rows, one qualified, 149 rejected, 80 review, zero awaiting evidence and zero provider retries. The selective scoped replay found no remaining complete held briefs with grounded project boundaries. Historical outreach and model decisions remain in local state.
 - [x] Added numbered evidence spans for compact backup models. Responses still resolve to actual source substrings and invalid IDs fail validation. A bounded live check on the public WordPress project got one valid verdict each from Groq and Cloudflare. Each returned three span identifiers, with no quote failures in that check. Gemini returned 503 and OpenRouter 429. Ollama passed local diagnostic JSON.
-- [ ] Finish the new business evidence backlog and verify the resulting city counts and all eligible unsent drafts.
+- [x] Finished the business backlog with 336 evaluations, after 25 eligible retries were processed separately. Seven Foursquare rows initially qualified. Two targeted readbacks of the official sites moved five back to review for insufficient operator evidence or an existing form, including site-owned appointment modals. Two new Foursquare businesses remained qualified. The booking-flow guard now recognizes explicit online appointment/enquiry text, relevant first-party links and forms with contact or scheduling fields. Existing qualification survives a transient failure during this focused recheck.
+- [x] Exported all 15 draft-ready businesses into `outputs/cofounder-review/20261125165647/`. Three EMLs from earlier work matched byte for byte. Twelve surviving drafts were created during this execution, and the final export reused all 15. The superseded first audit snapshot remains available with a marker. The final ZIP contains 48 verified files, the PDF has 15 A4 pages, and each EML has an empty recipient and the unsent header. Chromium verified the new Kolkata prospect's preview, clipboard copy, visible logo and both binary downloads against the package.
 
 For a future authorized metro refresh, run from LeadFlow AI on Windows after `pip install duckdb` in the existing `.venv/local-business` environment:
 
@@ -250,3 +251,22 @@ npm run business:review-package
 ```
 
 The Foursquare runtime keeps the free Iceberg token transient and never invokes Places REST. Foursquare and Overture records with the same verified publisher lineage are not independent corroboration. Tavily has a key but prospect discovery remains blocked on provider permission and confirmed Researcher access. Freelancer remains intentionally deferred at the owner's request. No publication, marketplace write or messaging action is required for these runs.
+
+Next retained Worker polls are 17:28 IST on 25 November for Jobicy, Remotive, WordPress Jobs and both UK tender sources, and 00:47 IST on 26 November for Himalayas. Check `/diagnostics` before polling. The next time the authorized brief importer receives a file, preserve its provenance and review evidence before allowing any communication.
+
+### Final metro snapshot
+
+Overture returned 1,722 observations already in inventory. Offline OSM was reused. The Foursquare query supplied 350 rows, 347 net additions. The dashboard counted 23 qualified, with 22 verified qualified contact routes and 15 email drafts. Zero records await a first evaluation. Cities and verified public contacts are displayed separately in the live dashboard.
+
+| City | Saved | FSQ new | Evaluated | Excluded | Qualified | Public contacts | Draft-ready | Review | Retry |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Mumbai | 468 | 50 | 442 | 30 | 7 | 42 | 4 | 396 | 35 |
+| Pune | 395 | 49 | 371 | 24 | 3 | 29 | 2 | 313 | 55 |
+| Bengaluru | 399 | 50 | 365 | 36 | 3 | 49 | 3 | 329 | 31 |
+| Hyderabad | 391 | 50 | 366 | 28 | 1 | 37 | 1 | 338 | 24 |
+| Kolkata | 397 | 50 | 368 | 30 | 4 | 30 | 1 | 328 | 35 |
+| Delhi | 392 | 48 | 370 | 25 | 4 | 30 | 3 | 328 | 35 |
+| Chennai | 396 | 50 | 368 | 29 | 1 | 35 | 1 | 332 | 34 |
+| Total | 2,838 | 347 | 2,650 | 202 | 23 | 252 | 15 | 2,364 | 249 |
+
+End-of-run checks passed with 264 LeadFlow AI tests, 49 LeadFlow Leads tests, both typechecks, and the LeadFlow AI build. Chromium verified the main dashboard controls, Foursquare import counts, separate Upwork status, city and contact filters, and draft preview/copy/download. Source and provider results remain in ignored local diagnostics; Upwork records are kept outside that storage. No outreach or deployments occurred.

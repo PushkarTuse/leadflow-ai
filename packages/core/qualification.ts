@@ -1016,6 +1016,9 @@ export function prefilterDiscovery(
     return { pass: false, reason: "SOURCE_UNAVAILABLE", evidence: context.dead ? "dead=true" : "deleted=true" };
   }
 
+  const modelInstruction=context.decoded_text.match(/\bif\s+you(?:['’]re|\s+are)\s+(?:an?\s+)?(?:LLM|AI\s+(?:model|assistant|agent))[,\s]+(?:include|output|write|send)\b[^\r\n]{0,155}\b(?:subject line|message body|email body|subject line or body)\b/i);
+  if(modelInstruction)return {pass:false,reason:'UNSAFE_CONTENT',evidence:modelInstruction[0]};
+
   // Staleness
   if (context.expires_at && Date.parse(context.expires_at) <= Date.parse(now)) {
     return { pass:false, reason:"STALE_OR_CLOSED", evidence:"Publisher expiry has passed" };
@@ -1871,7 +1874,7 @@ export function scoreFreelanceQualification(
     // Prefilter reasons take precedence
     allReasons = [prefilter.reason, ...allReasons];
     primaryReason = prefilter.reason;
-    if(["OUT_OF_SERVICE_SCOPE","STALE_OR_CLOSED"].includes(prefilter.reason??"")&&prefilter.evidence&&canonical.includes(prefilter.evidence)&&
+    if(["OUT_OF_SERVICE_SCOPE","STALE_OR_CLOSED","UNSAFE_CONTENT"].includes(prefilter.reason??"")&&prefilter.evidence&&canonical.includes(prefilter.evidence)&&
       !locatedQuotes.some(item=>item.field==="exclusion"&&item.quote===prefilter.evidence)){
       locatedQuotes.unshift({field:"exclusion",quote:prefilter.evidence,...locateEvidence(canonical,prefilter.evidence)});
     }

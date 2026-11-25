@@ -198,8 +198,8 @@ function labelBusinesses(scan: BusinessScan, evidence: Record<string, BusinessEv
   return scan;
 }
 
-const evidenceRulesVersion=3;
-type EnrichmentOptions = {backlog?:boolean; cities?:string[]; updatedRules?:boolean; retriesOnly?:boolean; target?:number; discover?:boolean;
+const evidenceRulesVersion=5;
+type EnrichmentOptions = {backlog?:boolean; cities?:string[]; updatedRules?:boolean; retriesOnly?:boolean; recheckFoursquareQualified?:boolean;target?:number; discover?:boolean;
   operatorSearchHints?:Record<number,BusinessSearchHint[]>};
 export async function pauseBusinessEnrichment(){ await writeFile(pausePath,"Pause after the current three records.\n"); }
 
@@ -239,6 +239,7 @@ export async function enrichBusinessScan(metros = true, maximum = 18, recheck = 
     const human=await evidenceRecords();
     const start=Date.now(), deadline=options.backlog?Number.POSITIVE_INFINITY:start+9*60_000;
     const counts={qualified:0,excluded:0,review:0,retry:0}, reasons:Record<string,number>={};
+    let preservedTransient=0;
     const hint=(row:Business)=>{
       if(!recheck || !scan.freshSince)return;
       const prior=human[recordKey(row)];
@@ -251,6 +252,7 @@ export async function enrichBusinessScan(metros = true, maximum = 18, recheck = 
     const qualifiedByCity=new Map(scan.cities.map(city=>[city.city,city.rows.filter(row=>row.outreach?.status==="qualified").length]));
     const due=(row:Business)=>{
       const previous=row.enrichment;
+      if(options.recheckFoursquareQualified)return row.source==='fsq_os'&&previous?.status==='qualified'&&(previous.rulesVersion??0)<evidenceRulesVersion;
       if(options.operatorSearchHints)return Object.hasOwn(options.operatorSearchHints,row.id)&&row.outreach?.status!=="qualified";
       if(discover)return row.outreach?.status!=="qualified" && !websiteGuesses(row).length && !previous?.discoveryHints?.length &&
         Boolean(row.email||row.phone) && (!previous||/no corroborated first-party domain/.test(previous.reason));
@@ -294,6 +296,10 @@ export async function enrichBusinessScan(metros = true, maximum = 18, recheck = 
       }));
       for(const [i,result] of results.entries()){
         const row=batch[i];
+        if(options.recheckFoursquareQualified&&(result.status==='retry'||!result.identityHost)){
+          preservedTransient++;
+          continue;
+        }
         counts[result.status]++;
         if(result.status==="qualified"&&row.outreach?.status!=="qualified"&&row.city){
           qualifiedByCity.set(row.city,(qualifiedByCity.get(row.city)??0)+1);
@@ -308,7 +314,7 @@ export async function enrichBusinessScan(metros = true, maximum = 18, recheck = 
       await writeFile(temporary,JSON.stringify(records));
       await rename(temporary,enrichmentPath);
     }
-    return {counts,reasons,evaluated:Object.values(counts).reduce((a,b)=>a+b,0),selected:picks.length,
+    return {counts,reasons,evaluated:Object.values(counts).reduce((a,b)=>a+b,0),selected:picks.length,preservedTransient,
       paused:await access(pausePath).then(()=>true,()=>false),elapsedMs:Date.now()-start,
       scan:labelBusinesses(scan,human,records)};
   }finally{
@@ -645,7 +651,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const run = process.argv.includes("--pause-enrichment") ? pauseBusinessEnrichment() :
     process.argv.includes("--enrich-metros") ? enrichBusinessScan(true,Number(process.argv.find(arg=>arg.startsWith("--limit="))?.slice(8)??(backlog?5000:18)),
     process.argv.includes("--recheck-official-hints"), {backlog,cities:process.argv.find(arg=>arg.startsWith("--cities="))?.slice(9).split(","),
-      updatedRules:process.argv.includes("--updated-rules"),retriesOnly:process.argv.includes("--retry-eligible"),discover:process.argv.includes("--discover-evidence")})
+      updatedRules:process.argv.includes("--updated-rules"),retriesOnly:process.argv.includes("--retry-eligible"),
+      recheckFoursquareQualified:process.argv.includes("--recheck-foursquare-qualified"),discover:process.argv.includes("--discover-evidence")})
     .then(({scan:_,...summary})=>console.log(JSON.stringify(summary))) :
     foursquareCity ? rebuildMetroSnapshot(foursquareCity,"fsq_os") :
     (offlineCity||process.argv.includes("--rebuild-metros")) ? rebuildMetroSnapshot(offlineCity) :
