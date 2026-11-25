@@ -28,6 +28,14 @@ The Windows enrichment checkpoint initially stopped on a transient rename error.
 
 ## Local sales lifecycle and approvals
 
+### Owner Telegram receipts
+
+The direct Gmail application path originally wrote its receipt only to the local sales ledger. Discovery digests come from a separate runner, so a Gmail send did not queue a digest or a bot message. Resend was used for the owner-only SMTP test.
+
+Set `COMMERCIAL_TELEGRAM_RECEIPTS=true` in the ignored `.env.external` to send an owner-only alert when the local `receipt` command records a verified and exactly approved application sent from the venture mailbox. Keep `TELEGRAM_ENABLED` separate for discovery alerts. The bot and private owner chat are reverified before delivery. Sales activity shows the stored Telegram message ID. Changes to a sent receipt do not trigger a second alert.
+
+To backfill an existing known receipt while the separate flag is enabled, run `npx tsx scripts/commercial-ledger.ts notify-owner rsl-wordpress`. An uncertain transport result reserves the attempt for reconciliation and prevents automatic duplicates. RSL's backfill received Telegram message ID 33, and a repeated command returned the same receipt. Automatic reply alerts and unrecorded Gmail sends require continuous mailbox monitoring.
+
 `scripts/commercial-ledger.ts` is a local, ignored JSON ledger with serialized updates. Application channels are direct email, direct form, marketplace native, procurement and business email. Prepare resets any prior approval. Approve requires the complete SHA-256 fingerprint and a live deadline if the listing provides one. Receipt registration requires approval and idempotently records only the same provider receipt. The ledger does not perform external delivery.
 
 ```powershell

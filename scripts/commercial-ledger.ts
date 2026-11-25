@@ -2,7 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parseEnv } from "node:util";
 import { z } from "zod";
+import { verifiedOwnerTelegram } from "./commercial-telegram";
 
 const directory = fileURLToPath(new URL("../data/commercial/", import.meta.url));
 const ledger = join(directory, "applications.json");
@@ -20,12 +22,17 @@ const receipt = z.object({
   provider: z.string().min(1).max(80), messageId: z.string().min(1).max(300),
   threadId: z.string().min(1).max(160), acceptedAt: z.string().datetime(),
 });
+const ownerNotification = z.object({
+  state: z.enum(["SENDING", "SENT", "FAILED", "UNCERTAIN"]), at: z.string().datetime(),
+  messageId: z.number().int().positive().optional(), http: z.number().int().optional(),
+});
 const application = z.object({
   id: z.string().regex(/^[a-z0-9-]{1,100}$/), title: z.string().min(1).max(250), source: z.string().url(),
   channel: z.enum(["DIRECT_EMAIL", "DIRECT_FORM", "MARKETPLACE_NATIVE", "PROCUREMENT", "BUSINESS_EMAIL"]),
   assignedTo: z.string().max(100), state: z.enum(stages), activityAt: z.string().datetime(),
   nextAction: z.string().max(500), deadline: z.string().datetime().nullable(),
   draft: message.optional(), approvedHash: z.string().regex(/^[a-f0-9]{64}$/).optional(), receipt: receipt.optional(),
+  ownerNotification: ownerNotification.optional(),
   milestone: z.object({ state: z.enum(stages), evidence: z.string().trim().min(8).max(500) }).optional(),
   replyIds: z.array(z.string()).default([]),
   lastReplyAssessment: z.enum(["POSITIVE", "NEGATIVE", "CLARIFICATION", "OTHER", "BOUNCED", "OPTED_OUT"]).optional(),
@@ -78,7 +85,8 @@ export function prepareCommercialDraft(raw: unknown) {
   }
   return update(input.id, previous => {
     if (previous?.receipt || (previous && stageAfterReply.test(previous.state))) throw new Error("An existing application has a recorded outcome.");
-    const { approvedHash: _approval, receipt: _receipt, replyIds: _replies, milestone: _milestone, lastReplyAssessment: _assessment, ...draft } = input;
+    const { approvedHash: _approval, receipt: _receipt, ownerNotification: _notification,
+      replyIds: _replies, milestone: _milestone, lastReplyAssessment: _assessment, ...draft } = input;
     return { ...draft, replyIds: [] };
   });
 }
@@ -102,6 +110,38 @@ export function recordCommercialReceipt(id: string, unverified: unknown) {
     return { ...row, receipt: accepted, state: "PROVIDER_ACCEPTED", activityAt: accepted.acceptedAt,
       nextAction: "Review the verified conversation for a reply. Provider acceptance does not establish inbox delivery." };
   });
+}
+
+export function canNotifyCommercialReceipt(row?: Application) {
+  return !!row?.receipt && row.channel === "DIRECT_EMAIL" && row.draft?.from.toLowerCase() === "leadsflowwai@gmail.com"
+    && approvedCommercialContent(row) && (!row.ownerNotification || row.ownerNotification.state === "FAILED");
+}
+
+async function notifyOwnerOfReceipt(id: string, env: Record<string, string | undefined>) {
+  const current = (await readCommercialLedger()).find(row => row.id === id);
+  if (!current?.receipt || !approvedCommercialContent(current)) throw new Error("A verified, approved application receipt is required.");
+  if (!canNotifyCommercialReceipt(current)) return current.ownerNotification;
+  const send = await verifiedOwnerTelegram(env);
+  let reserved = false;
+  const row = await update(id, previous => {
+    if (!previous?.receipt) throw new Error("The application receipt is unavailable.");
+    if (!canNotifyCommercialReceipt(previous)) return previous;
+    reserved = true;
+    return { ...previous, ownerNotification: { state: "SENDING", at: new Date().toISOString() } };
+  });
+  if (!reserved) return row.ownerNotification;
+
+  const localTime = new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata",
+  }).format(new Date(row.receipt!.acceptedAt));
+  const result = await send(`LeadFlow AI · Application sent\n${row.title.replace(/[\r\n]/g, " ")}\nGmail accepted the email at ${localTime} IST.\nOpen Sales activity in LeadFlow for the receipt and reply status.`);
+  const state = result.messageId ? "SENT"
+    : result.http >= 400 && result.http < 500 && result.http !== 408 ? "FAILED" : "UNCERTAIN";
+  const saved = await update(id, previous => {
+    if (!previous?.receipt || previous.ownerNotification?.state !== "SENDING") throw new Error("Owner notification reservation was lost.");
+    return { ...previous, ownerNotification: { state, at: new Date().toISOString(), http: result.http, messageId: result.messageId } };
+  });
+  return saved.ownerNotification;
 }
 
 const reply = z.object({
@@ -161,6 +201,20 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   } else if (action === "receipt") {
     const row = await recordCommercialReceipt(input, JSON.parse(await readFile(extra, "utf8")));
     console.log(JSON.stringify({ id: row.id, state: row.state }));
+    const env = await readFile(join(directory, "..", "..", ".env.external"), "utf8").then(parseEnv).catch(error => {
+      if (error.code === "ENOENT") return {};
+      throw error;
+    });
+    if ("COMMERCIAL_TELEGRAM_RECEIPTS" in env && env.COMMERCIAL_TELEGRAM_RECEIPTS === "true") {
+      try { console.log(JSON.stringify({ ownerNotification: await notifyOwnerOfReceipt(input, env) })); }
+      catch (error) { console.error(`Email receipt recorded. Owner Telegram check failed: ${(error as Error).message}`); }
+    }
+  } else if (action === "notify-owner") {
+    const env = parseEnv(await readFile(join(directory, "..", "..", ".env.external"), "utf8"));
+    if (env.COMMERCIAL_TELEGRAM_RECEIPTS !== "true") throw new Error("Set COMMERCIAL_TELEGRAM_RECEIPTS=true to enable owner application receipts.");
+    const notification = await notifyOwnerOfReceipt(input, env);
+    console.log(JSON.stringify({ ownerNotification: notification ?? null }));
+    if (notification?.state !== "SENT") process.exitCode = 1;
   } else if (action === "reply") {
     const incoming = reply.parse(JSON.parse(await readFile(extra, "utf8")));
     const row = await update(input, previous => {
@@ -175,5 +229,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   } else if (action === "milestone") {
     const row = await recordMilestone(input, JSON.parse(await readFile(extra, "utf8")));
     console.log(JSON.stringify({ id: row.id, state: row.state }));
-  } else throw new Error("Use prepare, approve, receipt, reply or milestone.");
+  } else throw new Error("Use prepare, approve, receipt, notify-owner, reply or milestone.");
 }

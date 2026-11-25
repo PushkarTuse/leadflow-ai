@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { approvedCommercialContent, trackedReplyOutcome } from "../scripts/commercial-ledger";
+import { approvedCommercialContent, canNotifyCommercialReceipt, trackedReplyOutcome } from "../scripts/commercial-ledger";
 import { businessDraft } from "../packages/core/business-draft";
 import { reviseBookingCta } from "../scripts/refresh-business-booking";
 
@@ -18,6 +18,17 @@ const match = {
 };
 
 describe("commercial reply reconciliation", () => {
+  it("permits an owner alert once for an approved venture receipt and holds ambiguous attempts", () => {
+    const draft = { ...tracked.draft!, from: "leadsflowwai@gmail.com" };
+    const row = { ...tracked, draft, approvedHash: createHash("sha256").update(JSON.stringify(draft)).digest("hex") };
+    expect(canNotifyCommercialReceipt(row)).toBe(true);
+    expect(canNotifyCommercialReceipt({ ...row, receipt: undefined })).toBe(false);
+    expect(canNotifyCommercialReceipt({ ...row, approvedHash: undefined })).toBe(false);
+    for (const state of ["SENDING", "SENT", "UNCERTAIN"] as const) {
+      expect(canNotifyCommercialReceipt({ ...row, ownerNotification: { state, at: row.activityAt } })).toBe(false);
+    }
+    expect(canNotifyCommercialReceipt({ ...row, ownerNotification: { state: "FAILED", at: row.activityAt } })).toBe(true);
+  });
   it("does not carry approval across recipient, content, booking or attachment changes", () => {
     const draft = tracked.draft!;
     const approvedHash = createHash("sha256").update(JSON.stringify(draft)).digest("hex");

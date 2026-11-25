@@ -51,6 +51,8 @@ export function CommercialPipeline() {
       <p><strong>{stageName(row.state)}</strong> · {stageName(row.channel)} · {row.assignedTo}</p>
       <p>{row.nextAction}</p>
       {row.receipt && <p>Provider receipt <code>{row.receipt.messageId}</code></p>}
+      {row.receipt && <p>Owner Telegram · {row.ownerNotification ? stageName(row.ownerNotification.state) : "No alert recorded"}
+        {row.ownerNotification?.messageId && <> · message {row.ownerNotification.messageId}</>}</p>}
       {row.lastReplyAssessment && <p>Latest reply · {stageName(row.lastReplyAssessment)} · Review in the original thread</p>}
       {row.draft && <details>
         <summary>Exact application draft</summary>
