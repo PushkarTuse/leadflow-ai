@@ -7,7 +7,7 @@ import { z } from "zod";
 
 export const QUALIFICATION_SCHEMA_VERSION = "freelance.v2";
 export const QUALIFICATION_RULES_VERSION = "rules.v6";
-export const QUALIFICATION_PROMPT_VERSION = "prompt.v3";
+export const QUALIFICATION_PROMPT_VERSION = "prompt.v4";
 export const CAPABILITY_LIST_VERSION = "capabilities.v1";
 export const QUALIFICATION_POLICY_VERSION = "policy.v4";
 
@@ -73,6 +73,18 @@ export function matchProviderEngagement(
   return undefined;
 }
 
+export const projectMetadataSchema = z.object({
+  provenance: z.enum(['buyer_shared','authorized_marketplace_export','authorized_alert']),
+  marketplace_id: z.string().max(160).nullable(),
+  budget_min: z.number().finite().nonnegative().nullable(),
+  budget_max: z.number().finite().nonnegative().nullable(),
+  currency: z.string().max(12).nullable(),
+  engagement: z.string().max(120).nullable(),
+  skills: z.array(z.string().max(80)).max(24),
+  geography: z.string().max(240).nullable(),
+  status: z.string().max(60).nullable(),
+}).strict();
+
 export const discoveryContextSchema = z
   .object({
     provider: z.string().min(1).max(60),
@@ -91,6 +103,7 @@ export const discoveryContextSchema = z
     expires_at: z.string().datetime().optional(),
     source_updated_at: z.string().datetime().optional(),
     application_url: httpsUrl.optional(),
+    project_metadata: projectMetadataSchema.optional(),
     provider_verified_engagement: providerVerifiedEngagementSchema.nullish(),
     collected_at: z.string().datetime(),
     fetched_at: z.string().datetime(),
@@ -814,7 +827,7 @@ export type QualificationAudit = z.infer<typeof qualificationAuditSchema>;
  * Sources that supply original listing evidence for discovery classification.
  */
 export const FREELANCE_BUYER_SOURCES = [
-  "hackernews", "wordpress_jobs_rss", "freelancer_rss", "himalayas", "jobicy_rss", "remotive", "uk_tender", "authorized_projects",
+  "hackernews", "wordpress_jobs_rss", "freelancer_rss", "himalayas", "jobicy_rss", "remotive", "uk_tender", "uk_contracts_finder", "authorized_projects",
 ] as const;
 const ALLOWED_SOURCES = new Set<string>(FREELANCE_BUYER_SOURCES);
 
@@ -1014,10 +1027,21 @@ export function prefilterDiscovery(
     }
   }
 
+  // A required delivery date can close a task even when the board leaves it listed as active.
+  const due = context.decoded_text.match(/\b(?:applications? (?:close|due)|(?:complete|submit|deliver) (?:the )?(?:testing|assignment|project|deliverables?))\s+by\s+((?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, 20\d{2})\b/i);
+  if (due && Date.parse(`${due[1]} 00:00:00 UTC`) + 2 * 86400_000 <= Date.parse(now)) {
+    return {pass:false,reason:'STALE_OR_CLOSED',evidence:due[0]};
+  }
+
   const trainingTasks=context.decoded_text.match(/\b(?:record task execution|annotate (?:each |the )?(?:task|data)|label training data|rate model (?:outputs|responses)|score model (?:outputs|responses))\b/i);
   if(trainingTasks&&/\b(?:SuperAnnotate|AI training|model training data|data annotation)\b/i.test(context.decoded_text)&&
     !/\b(?:build|ship|deploy|implement)\b.{0,45}\b(?:annotation platform|training pipeline|evaluation system|data platform|model monitoring)\b/i.test(context.decoded_text))
     return {pass:false,reason:"OUT_OF_SERVICE_SCOPE",evidence:trainingTasks[0]};
+
+  const annotationRole = context.original_title.match(/\b(?:audio transcription adjudicator|(?:search|ads|internet|ai|language) (?:quality )?rater|(?:audio|linguistic|data) annotator)\b/i);
+  if (annotationRole && /\b(?:review (?:annotations|transcriptions)|word-level transcription|label (?:the )?data|rate (?:search results|model responses))\b/i.test(context.decoded_text)) {
+    return {pass:false,reason:'OUT_OF_SERVICE_SCOPE',evidence:annotationRole[0]};
+  }
 
   // Truncated / incomplete: hold, don't reject
   // (handled downstream as INSUFFICIENT_CONTEXT if remaining gates can't be satisfied)
@@ -1843,7 +1867,7 @@ export function scoreFreelanceQualification(
     // Prefilter reasons take precedence
     allReasons = [prefilter.reason, ...allReasons];
     primaryReason = prefilter.reason;
-    if(prefilter.reason==="OUT_OF_SERVICE_SCOPE"&&prefilter.evidence&&canonical.includes(prefilter.evidence)&&
+    if(["OUT_OF_SERVICE_SCOPE","STALE_OR_CLOSED"].includes(prefilter.reason??"")&&prefilter.evidence&&canonical.includes(prefilter.evidence)&&
       !locatedQuotes.some(item=>item.field==="exclusion"&&item.quote===prefilter.evidence)){
       locatedQuotes.unshift({field:"exclusion",quote:prefilter.evidence,...locateEvidence(canonical,prefilter.evidence)});
     }

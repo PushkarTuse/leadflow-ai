@@ -4,7 +4,7 @@ import {randomBytes} from 'node:crypto';
 import {Engine,canRouteDiscoveryLead,isDiscoveryCandidate,notification} from '../packages/core/workflow';
 import {MemoryStore} from '../packages/core/memory-store';
 import {configSchema} from '../packages/core/model';
-import {FREELANCE_BUYER_SOURCES} from '../packages/core/qualification';
+import {defaultQualificationPolicy,FREELANCE_BUYER_SOURCES,prefilterDiscovery} from '../packages/core/qualification';
 import {discoveryAiBanner,providerHealthLine,type DiscoveryAiHealth} from '../packages/core/discovery-ai-health';
 import {classifyGemini,openAICompletionEndpoint,type Http} from '../apps/automation/adapters';
 import {pullExternalLeads,type ExternalCursor} from '../apps/automation/external-leads';
@@ -168,7 +168,9 @@ async function main(){
     ['1','true'].includes(get('FORCE_REQUALIFY').toLowerCase());
   const retryDiscoveryAi=process.argv.includes('--retry-discovery-ai');
   const recheckAccepted=process.argv.includes('--recheck-accepted');
-  const replayStored=requalifyAll||retryDiscoveryAi||recheckAccepted;
+  const reviewSourceGuards=process.argv.includes('--review-source-guards');
+  const refreshAuthorizedImports=process.argv.includes('--refresh-authorized-imports');
+  const replayStored=requalifyAll||retryDiscoveryAi||recheckAccepted||reviewSourceGuards;
   const requalificationRun=requalifyMissing||replayStored;
   const qualificationMode=get('FREELANCE_QUALIFICATION_MODE','shadow');
   if(qualificationMode!=='shadow'&&qualificationMode!=='enforce')
@@ -181,6 +183,8 @@ async function main(){
   const allowedSources=[...new Set(get('EXTERNAL_LEADS_SOURCES','hackernews,wordpress_jobs_rss,authorized_projects').split(',').map(s=>s.trim()))].sort();
   const buyerSources=new Set<string>(FREELANCE_BUYER_SOURCES);
   if(allowedSources.some(source=>!buyerSources.has(source)))throw new Error('Invalid external source allowlist');
+  if(refreshAuthorizedImports && (allowedSources.length!==1||allowedSources[0]!=='authorized_projects'||replayStored||preview))
+    throw new Error('Authorized import refresh requires an authorized-projects-only run');
   let token=get('EXTERNAL_LEADS_API_TOKEN');
   if(!token&&!replayStored){const vars=await readFile('../leadflow-leads/.dev.vars','utf8');token=vars.split(/\r?\n/).find(l=>l.startsWith('API_TOKEN='))?.slice(10).trim()||'';}
   if(!token&&!replayStored)throw new Error('Local API token missing');
@@ -277,9 +281,10 @@ async function main(){
     let sourceHealth:unknown=null;
     let cooldowns:Parameters<typeof discoveryAiChain>[3]={};
     let modelCache:DiscoveryCache={};
-    try{const old=JSON.parse(await readFile(file,'utf8'));Object.assign(store,old.store);if(replayStored&&old.checkpointKey)checkpointKey=old.checkpointKey;if(old.checkpointKey===checkpointKey&&old.cursor)cursor=old.cursor;if(old.emailTest)emailTest=old.emailTest as EmailTestState;sourceHealth=old.sourceHealth??null;cooldowns=old.cooldowns??{};modelCache=old.modelCache??{};}
+    let recentAi: {at:string;providers:DiscoveryAiHealth['providers']}|undefined;
+    try{const old=JSON.parse(await readFile(file,'utf8'));Object.assign(store,old.store);if(replayStored&&old.checkpointKey)checkpointKey=old.checkpointKey;if(old.checkpointKey===checkpointKey&&old.cursor)cursor=old.cursor;if(old.emailTest)emailTest=old.emailTest as EmailTestState;sourceHealth=old.sourceHealth??null;cooldowns=old.cooldowns??{};modelCache=old.modelCache??{};recentAi=old.recentAi;}
     catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('Unreadable local state; restore before retrying');}
-    if(requalifyMissing&&!replayStored)cursor={after:0};
+    if((requalifyMissing&&!replayStored)||refreshAuthorizedImports)cursor={after:0};
     let httpCount=0;
     function requestJson(url:string,request?:Parameters<Http['json']>[1]){
       const result=spawnSync(process.execPath,['scripts/external-http.mjs'],{input:JSON.stringify({url,request}),encoding:'utf8',timeout:27000,maxBuffer:2000000});
@@ -304,8 +309,9 @@ async function main(){
       if(request?.headers)throw new Error('No token may be sent to HN');return network.json(url);
     }};
     const config=configSchema.parse({ownerUserId:get('TELEGRAM_OWNER_USER_ID','local-owner'),ownerChatId:get('TELEGRAM_OWNER_CHAT_ID','local-owner')});
-    const chain=discoveryAiChain(providers,{json:requestJson},discoveryAiLimit,cooldowns,Date.now,modelCache);
-    const prioritySource=(source:string)=>["wordpress_jobs_rss","hackernews","freelancer_rss","authorized_projects","uk_tender"].includes(source);
+    const recent = automatic && recentAi && Date.now()-Date.parse(recentAi.at)<12*3600_000 ? recentAi.providers : [];
+    const chain=discoveryAiChain(providers,{json:requestJson},discoveryAiLimit,cooldowns,Date.now,modelCache,recent);
+    const prioritySource=(source:string)=>["wordpress_jobs_rss","hackernews","freelancer_rss","authorized_projects","uk_tender","uk_contracts_finder"].includes(source);
     const preserveBuyerBudget=allowedSources.some(prioritySource)&&allowedSources.some(source=>!prioritySource(source));
     const diagnosticBudget=Math.floor(discoveryAiLimit*0.8);
     let diagnosticRequests=0;
@@ -318,7 +324,8 @@ async function main(){
     };
     const save=async()=>{
       const aiHealth=chain.health(finalizedBy);
-      await writeFile(file+'.tmp',JSON.stringify({offset:0,checkpointKey,cursor,store,emailTest,sourceHealth,cooldowns,aiHealth,modelCache},null,2));
+      if(chain.coverage.requests>0)recentAi={at:new Date().toISOString(),providers:aiHealth.providers};
+      await writeFile(file+'.tmp',JSON.stringify({offset:0,checkpointKey,cursor,store,emailTest,sourceHealth,cooldowns,aiHealth,modelCache,recentAi},null,2));
       await rename(file+'.tmp',file);
     };
     const engine=new Engine(store,config,undefined,aiRequested?input=>{
@@ -342,6 +349,8 @@ async function main(){
         if(recheckAccepted&&lead.qualification_audit?.operational_state!=="QUALIFIED"&&
           !(lead.qualification_audit?.operational_state==="RETRY_CLASSIFICATION"&&lead.qualification_audit.decision_source==="SOURCE_GUARD"))continue;
         if(!lead.discovery_context){requalificationSkipped++;continue;}
+        if(reviewSourceGuards&&(lead.qualification_audit?.operational_state==='REJECTED'||prefilterDiscovery(
+          lead.discovery_context,new Date().toISOString(),{...defaultQualificationPolicy,max_age_days:config.maxAgeDays}).pass))continue;
         const decisionSource=lead.qualification_audit?.decision_source;
         const retryable=lead.qualification_audit?.operational_state==='RETRY_CLASSIFICATION';
         if(!replayStored&&decisionSource!=='NO_MODEL'&&!retryable&&lead.qualification?.operator_decision)continue;
@@ -365,6 +374,12 @@ async function main(){
           const pulled=pullExternalLeads(http,{origin,token:transportToken,offset:0,cursor,limit,allowedSources,since:freshSince},lead=>{
             const ingested=engine.ingest(lead);
             if(!ingested.duplicate)recordFinalization(ingested.lead);
+            if(refreshAuthorizedImports&&ingested.duplicate&&lead.discovery_context?.provider==='authorized_projects'&&
+              ingested.lead.discovery_context?.provider==='authorized_projects'&&
+              ingested.lead.discovery_context.source_hash!==lead.discovery_context.source_hash){
+              recordFinalization(engine.requalifyDiscovery(ingested.lead.lead_id,lead,true));
+              requalified++;
+            }
             if(requalifyMissing&&ingested.duplicate&&lead.discovery_context){
               const stored=store.get(ingested.lead.lead_id);
               if(stored?.source==='hn'&&(!stored.qualification||stored.qualification_status==='NEEDS_REQUALIFICATION')){
@@ -433,13 +448,14 @@ async function main(){
     await save();await writeFile(`${output}/review-preview.json`,JSON.stringify(alerts,null,2));
     const discoveryRows=store.leads().filter(isDiscoveryCandidate);
     const accepted=discoveryRows.filter(canRouteDiscoveryLead).length;
-    const rejected=discoveryRows.length-accepted;
+    const qualificationStates={QUALIFIED:0,REJECTED:0,REVIEW:0,RETRY_CLASSIFICATION:0,AWAITING_ENRICHMENT:0};
+    for(const lead of discoveryRows)qualificationStates[lead.qualification_audit?.operational_state??'AWAITING_ENRICHMENT']++;
     const blocked=discoveryRows.filter(lead=>lead.qualification_audit?.decision_source==='SOURCE_GUARD').length;
     const {requests,attempted,succeeded,failed}=chain.coverage;
     const aiHealth=chain.health(finalizedBy);
     console.log(JSON.stringify({mode:preview?'DRY RUN — real reads, local rules, preview only':requalificationRun?'LOCAL REQUALIFICATION — NOTIFICATIONS SUPPRESSED':`LOCAL ONE-SHOT — ${qualificationMode.toUpperCase()}`,...result,requalified,requalification_skipped_missing_context:requalificationSkipped,
       total:store.leads().length,pending:store.leads().filter(l=>l.status==='PENDING_APPROVAL').length,
-      accepted,rejected,aiHealth,ai_health_banner:discoveryAiBanner(aiHealth),ai_provider_status:aiHealth.providers.map(providerHealthLine),
+      accepted,rejected:qualificationStates.REJECTED,qualificationStates,aiHealth,ai_health_banner:discoveryAiBanner(aiHealth),ai_provider_status:aiHealth.providers.map(providerHealthLine),
       blocked_by_source:blocked,ai_attempted:attempted,ai_succeeded:succeeded,ai_failed:failed,
       ai_skipped:Math.max(0,result.imported+requalified-succeeded-failed),
       ai_failure_reasons:chain.failures,ai_provider:providerSetting,gemini_attempted:Boolean(chain.callsByProvider.gemini),

@@ -1,7 +1,7 @@
 import {z} from 'zod';
 import {hash, inputSchema, type LeadInput} from '../../packages/core/model';
 import {cleanText} from '../../packages/core/scoring';
-import {discoveryContextSchema, FREELANCE_BUYER_SOURCES, matchProviderEngagement, providerVerifiedEngagementSchema, type DiscoveryContext} from '../../packages/core/qualification';
+import {discoveryContextSchema, FREELANCE_BUYER_SOURCES, matchProviderEngagement, projectMetadataSchema, providerVerifiedEngagementSchema, type DiscoveryContext} from '../../packages/core/qualification';
 import type {Http} from './adapters';
 
 export const externalSources = [...FREELANCE_BUYER_SOURCES,'osm','remoteok','arbeitnow','jobicy'] as const;
@@ -11,6 +11,7 @@ const listingHosts: Record<(typeof FREELANCE_BUYER_SOURCES)[number],readonly str
   freelancer_rss:['www.freelancer.com','freelancer.com'], himalayas:['himalayas.app'],
   jobicy_rss:['jobicy.com'],remotive:['remotive.com'],
   uk_tender:['www.find-tender.service.gov.uk'],
+  uk_contracts_finder:['www.contractsfinder.service.gov.uk'],
   authorized_projects:[],
 };
 const listingEvidenceSchema=z.object({
@@ -28,6 +29,7 @@ const listingEvidenceSchema=z.object({
   expires_at:z.string().datetime().optional(),
   source_updated_at:z.string().datetime().optional(),
   application_url:z.string().url().max(2000).optional(),
+  project_metadata:projectMetadataSchema.optional(),
   provider_verified_engagement:providerVerifiedEngagementSchema.nullish(),
   hn_item_type:z.literal('story').optional(),
 }).strict();
@@ -173,7 +175,7 @@ export function externalToLead(raw:unknown, hnItem?:unknown, hnThread?:unknown):
       : allowedHosts.includes(listingUrl.hostname);
     if (!permittedHost || listingUrl.port || listingUrl.username || listingUrl.password)
       throw new Error('Unapproved listing host');
-    if(row.source==="authorized_projects"&&(!evidence.expires_at||evidence.application_url!==row.url||!evidence.link_targets.includes(row.url)))
+    if(row.source==="authorized_projects"&&(evidence.application_url!==row.url||!evidence.link_targets.includes(row.url)))
       throw new Error('Authorized project deadline or response path missing');
     if (row.source==='himalayas' && (!evidence.expires_at || !evidence.application_url ||
       !/^https:\/\/himalayas\.app\//.test(evidence.application_url) || !evidence.link_targets.includes(evidence.application_url)))
@@ -207,6 +209,7 @@ export function externalToLead(raw:unknown, hnItem?:unknown, hnThread?:unknown):
       expires_at:evidence.expires_at,
       source_updated_at:evidence.source_updated_at,
       application_url:evidence.application_url,
+      project_metadata:row.source==='authorized_projects'?evidence.project_metadata:undefined,
       provider_verified_engagement:matchProviderEngagement(row.source,evidence.provider_verified_engagement),
       collected_at:row.found_at,
       fetched_at:evidence.observed_at,

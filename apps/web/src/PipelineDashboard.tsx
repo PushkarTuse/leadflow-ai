@@ -174,6 +174,7 @@ const attribution: Record<string,string> = {
   hackernews:"Hacker News", wordpress_jobs_rss:"WordPress Jobs", freelancer_rss:"Freelancer",
   himalayas:"Himalayas", jobicy_rss:"Jobicy", remotive:"Remotive",
   uk_tender:"UK Find a Tender",
+  uk_contracts_finder:"UK Contracts Finder",
 };
 
 const cell: CSSProperties = {
@@ -232,7 +233,7 @@ export function PipelineDashboard() {
     inserted?: number; duplicates?: number;filterReasons?:Record<string,number>}[]>([]);
   const [target, setTarget] = useState(500);
   const [resultFilter,setResultFilter]=useState("all");
-  const [selected, setSelected] = useState(["hackernews","wordpress_jobs_rss","uk_tender"]);
+  const [selected, setSelected] = useState(["hackernews","wordpress_jobs_rss","uk_tender","uk_contracts_finder"]);
   const businessControls=useRef<BusinessPipelineControls>(null);
   const [businessBusy,setBusinessBusy]=useState(false);
 

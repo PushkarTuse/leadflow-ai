@@ -1,5 +1,7 @@
 # External lead integration recovery log
 
+The [25 November source-expansion checkpoint](docs/PIPELINE_OPERATIONS.md#source-expansion-and-seven-metro-verification--25-november-2026) supersedes older local run counts. The saved freelance ledger has 230 discovery rows and one genuine qualified WordPress project. The original 104 unresolved rows were reconciled without clearing either database. The live producer now supports Contracts Finder alongside Find a Tender, authorized brief refreshes and a separate Freelancer native-API review command. Producer remote verified at `0620dd1c8485ad94366c5a0c9ed12ab52141a227` on `feature-new-sources-aa`.
+
 ## Separate local-business route (manual only)
 
 Local businesses are categorized upstream as `local_business`; they never enter the freelance `Leads` sheet. The dedicated **Local Businesses** tab is populated only by the manual menu action **Sync local business prospects**. This action requires `setup()` schema v3, `DRY_RUN=false`, `LOCAL_BUSINESS_SYNC_ENABLED=true`, and the existing API origin/token Script Properties. It reads up to 200 non-Google local-business records from a reachable HTTPS API and does not invoke `Engine`, approval requests, Telegram or Gmail. Re-sync preserves campaign status, contact date and notes in Sheets; the selected row's status/notes can be explicitly pushed back to D1 after verifying the API record category/source. Contact dates remain Sheet-only.

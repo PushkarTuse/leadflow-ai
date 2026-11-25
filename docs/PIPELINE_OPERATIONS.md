@@ -32,7 +32,7 @@ Saved provenance includes older runs. The 25 November main drain used Groq and C
 - The previous Overpass response explicitly said the server was at capacity. A 1.2 km Pune dentist query returned one row in 43 seconds. The same public endpoint was used. Bulk discovery can now reuse an attributed offline extract.
 - A 25 MB [BBBike Bombay PBF](https://download.bbbike.org/osm/bbbike/Bombay/) passed through the new streaming CLI and the Worker importer. It added 70 Mumbai records, and the saved city inventory grew from 249 to 319. The importer writes `ODbL-1.0`, release, source URL, SHA-256 and OpenStreetMap attribution. Use city-sized extracts where available; Geofabrik regional extracts are the broader fallback. The parser streams named business nodes and leaves way/relation support for a later expansion. [OpenStreetMap copyright](https://www.openstreetmap.org/copyright)
 - The additional businesses brought the saved metro inventory to 1,792. Existing qualification and draft-ready counts remain 8 and 6. The offline slice screened out four records before evidence processing; 66 were evaluated, 64 went to evidence review and two to retry. Bounded public search reviewed 11 existing Mumbai/Pune businesses. Nine had no corroborated first-party domain or independent operator source, one failed identity matching, and one search target returned 404. All 11 stayed in evidence review.
-- Tavily documents 1,000 monthly free credits and explicitly allows commercial use on the Researcher plan. After registering at [Tavily](https://app.tavily.com/), create a key and put `TAVILY_API_KEY` and `TAVILY_RESEARCHER_CONFIRMED=true` in the ignored `.env.external`. Leave billing off. **Search for missing evidence** runs a bounded 20-record pilot. The adapter sends public names/categories/cities only, queries at basic depth, and treats URLs as hints for local identity and ownership verification. A Tavily live run requires the key. [Plan and usage rights](https://help.tavily.com/articles/5880393096-permitted-use-customer-applications)
+- Tavily's Researcher plan supports some commercial uses. Its current AUP restricts facilitating unsolicited marketing. LeadFlow prospect search requires specific written permission from Tavily and `TAVILY_OUTREACH_PERMISSION_REFERENCE` in the ignored `.env.external`, in addition to an approved plan and `TAVILY_API_KEY`. A key is present locally and this workflow remains disabled. [Plan and usage rights](https://help.tavily.com/articles/5880393096-permitted-use-customer-applications) · [AUP](https://www.tavily.com/acceptable-use-policy)
 - [Groq browser search](https://console.groq.com/docs/tool-use/built-in-tools/browser-search) is documented for the GPT-OSS family and runs separately from structured output. Zero-cost browser-tool eligibility was not established for the account, so no browser-tool invocation was made. OpenRouter Web Search is billed separately. Cloudflare text inference did not establish an authorized free web-search capability.
 - Foursquare remains unconfigured. Use the [Foursquare Places Portal instructions](https://docs.foursquare.com/data-products/docs/access-fsq-os-places) to create an account, review the terms and generate an Iceberg catalog token. Query a Mumbai bounding box in DuckDB using the portal's snippet, then export active records and supply the release, checksum, license and attribution to `/import/fsq_os`. The [Hugging Face dataset](https://huggingface.co/datasets/foursquare/fsq-os-places) has a separate gated agreement. Give overlapping Overture/Foursquare evidence one provenance lineage where their provider IDs match.
 
@@ -130,7 +130,98 @@ npm run external:run -- --complete --drain --limit=20 --max-candidates=20 --page
 | Foursquare | File import only, with no authorized export in this environment. [Foursquare Places Portal instructions](https://docs.foursquare.com/data-products/docs/access-fsq-os-places) describe registering, generating an Iceberg catalog token, filtering by locality or bounding box in DuckDB, and exporting a city slice. The existing `fsq_os` importer requires a provenance manifest. This is not a live source. |
 | Website discovery | Current candidates come from permitted publisher websites and public business-domain email hints. An independent licensed directory or an approved search integration is needed to corroborate operator evidence for businesses without a discoverable site. Google's [Gemini 3.5 Flash-Lite pricing](https://aistudio.google.com/docs/pricing#gemini-3.5-flash-lite) lists Google Search grounding as unavailable on the free tier for the configured model. The text-only classifier leaves that tool disabled. |
 | Hacker News | The revised bounded search pulls two current/recent monthly threads plus scoped Ask HN phrases. Live result was 51 screened, zero buyer candidates. The local qualification run also pulled zero, so no AI provider was called. |
-| Freelancer | The existing RSS connector requires an authorized feed. Set `FREELANCER_RSS_ENABLED=true` and `FREELANCER_RSS_FEEDS_JSON` to an array such as `[{ "feedId": "...", "url": "https://www.freelancer.com/...", "rightsReference": "..." }]` in the producer's ignored `.dev.vars`. For native API access, register via the [Freelancer Developer portal](https://developer.freelancer.com/) and request read access for active project discovery only. Native OAuth and its vendor-approved scope names still need verification. The authorized file workflow is available now. |
-| Upwork | [Upwork API access instructions](https://support.upwork.com/hc/en-us/articles/115015857647-How-to-request-an-API-key-from-Upwork) describe applying for a key and review. An approved export or alert can be imported now where its use is permitted. |
+| Freelancer | RSS requires a specifically authorized feed in `FREELANCER_RSS_FEEDS_JSON`. The producer also has a separate owner-only terminal search using the official native API and a `basic` personal access token. See the latest checkpoint for setup. |
+| Upwork | Use official MCP for an immediate, owner-requested job search. Results remain separate from local imports and scheduled ingestion. [Upwork MCP](https://www.upwork.com/ai/mcp) |
 | UK Find a Tender | Await the live `/diagnostics` lease. The earlier direct HTTP 200 does not prove Worker recovery. Redirect, scope and deadline fixtures pass. After the retained due time, run one Worker collection and record its actual HTTP outcome before altering transport. Keep geographic and capacity exclusions. |
 | Employment boards | Diagnostics are useful, but enabling them by default did not generate buyer demand. The default dashboard keeps HN and WordPress Jobs selected. A recent public GitHub bounty search also predominantly returned zero-reward, test, repost or non-service listings, so it was not enabled. |
+
+## Offline OpenStreetMap inventory for the Indian metros
+
+Download regional `.osm.pbf` files with their publisher checksums into the ignored `data/local-business/osm-extracts/` directory. The [OpenStreetMap France India catalog](https://download.openstreetmap.fr/extracts/asia/india/) provides smaller state extracts alongside the regional [Geofabrik India catalog](https://download.geofabrik.de/asia/india/index.html). The two catalogs distribute OpenStreetMap data under ODbL. Treat repeated observations from either catalog as the same publisher lineage.
+
+| Metro | State or regional PBF | West, south, east, north |
+| --- | --- | --- |
+| Mumbai | Maharashtra or Geofabrik Western Zone | `72.805 19.00 72.985 19.28` |
+| Pune | Maharashtra or Geofabrik Western Zone | `73.74 18.43 73.99 18.65` |
+| Bengaluru | Karnataka | `77.46 12.84 77.72 13.11` |
+| Hyderabad | Telangana | `78.34 17.30 78.62 17.53` |
+| Kolkata | West Bengal | `88.24 22.45 88.49 22.67` |
+| Delhi | National Capital Territory of Delhi | `77.07 28.51 77.365 28.77` |
+| Chennai | Tamil Nadu | `80.13 12.97 80.34 13.18` |
+
+Use the PBF header's snapshot date in the release ID. After verifying the publisher MD5, import with the existing isolated Python environment and running local Worker. For example, a Delhi snapshot dated 2026-11-23 can be loaded with these commands.
+
+```powershell
+& .venv/local-business/Scripts/python.exe scripts/import-osm-extract.py `
+  data/local-business/osm-extracts/national_capital_territory_of_delhi.osm.pbf `
+  --source-url https://download.openstreetmap.fr/extracts/asia/india/national_capital_territory_of_delhi.osm.pbf `
+  --release osm-france-delhi-2026-11-23 --city Delhi --bbox 77.07 28.51 77.365 28.77 `
+  --limit 100 --prioritize-identifiable
+npm run business:scan -- --sync-osm=Delhi
+```
+
+`--prioritize-identifiable` selects up to the requested cap using public website, phone, email and address hints. The importer streams business nodes and retains a bounded selection in memory. It records source URL, release ID, SHA-256, ODbL and attribution, then posts only to the loopback Worker. Those directory fields still require normal ownership and contact verification.
+
+After importing multiple cities, `npm run business:scan -- --sync-osm=all` refreshes all seven from the saved Worker inventory in one pass.
+
+For an additive Overture refresh using saved OSM while public Overpass is unreliable, run the following in a dedicated local shell. The metro snapshot retains prior observations and verified enrichment.
+
+```powershell
+$env:LOCAL_BUSINESS_OSM_ENABLED = 'false'
+npm run business:scan -- india-metros
+npm run business:scan -- --enrich-metros --backlog
+```
+
+## Source expansion and seven-metro verification — 25 November 2026
+
+- [x] Replayed all 48 retry records and verified the original 104 unresolved IDs against a saved local snapshot. Sixteen now have conclusive rejections, 84 have review decisions and four need better original evidence. None remain in provider retry. Reviews are predominantly unclear engagement or buyer direction. Keep them separate from qualified and rejected counts. A valid prior model decision is preserved through provider failure.
+- [x] Verified source guards against real archived results. A manual audio adjudication listing was outside our services. A device testing listing had a required delivery date in the past. Both moved out of qualified. The sole qualified freelance record remains the previously discovered six-page WordPress build at C$2,000–2,500. The publisher page still showed its application route. The saved LOW/0 advisory score reflects legacy rules missing buyer and project-boundary fields. The recorded Groq verdict contains exact fixed-budget and scope evidence.
+- [x] Ran the complete shadow pipeline after leases expired. The consumer fetched 230 normalized candidates, 217 duplicates and 13 new Jobicy records. Of those 13, 11 were rejected and two went to review. Final ledger totals are 230, with one qualified, 139 rejected, 86 review, four awaiting source evidence and zero provider retry. No email or Telegram was sent.
+
+| Worker source | Latest live result | Raw | Collector passed | New | Qualified new |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Hacker News | HTTP 200, 39 seller offers, nine missing explicit buyer intent, one unmatched monthly comment | 49 | 0 | 0 | 0 |
+| WordPress Jobs | HTTP 200, publisher feed unchanged. One earlier project remains qualified | 0 | 0 | 0 | 0 |
+| Jobicy RSS | HTTP 200, three filtered, 13 new selected beyond cursor | 116 | 113 | 13 | 0 |
+| Remotive | HTTP 200, all 15 applicable records already seen | 15 | 15 | 0 | 0 |
+| UK Find a Tender | HTTP 200 through Worker | 73 | 0 | 0 | 0 |
+| UK Contracts Finder | HTTP 200 through Worker. An earlier run also screened 102 notices | 90 | 0 | 0 | 0 |
+| Himalayas | Deferred. Next eligible at 00:47 IST on 26 November, based on the retained lease | 0 | 0 | 0 | 0 |
+
+EU TED returned HTTP 200 for a bounded recent service-code search with 232 matching notices and 12 sampled. The sample mixed large or restricted tenders with broadly classified procurement, and none established bidder eligibility. It remains a research-only source. [Official API](https://docs.ted.europa.eu/ODS/latest/reuse/search-api.html)
+
+| Marketplace | Status and operator action |
+| --- | --- |
+| Upwork | The operator completed setup. The earlier connected `list_accounts` returned `USER_NOT_LOGGED_IN`, and the MCP tools disappeared from the active session. Start a session with the connected Upwork app, check accounts first, then search scoped projects using an India-eligible freelancer or agency account. Keep results in the immediate owner review. No job data was collected or stored by LeadFlow. [Upwork MCP](https://www.upwork.com/ai/mcp) · [Rate limits](https://support.upwork.com/hc/en-us/articles/56577997707923-Rate-limits-for-Upwork-MCP) |
+| Freelancer | The `freelancer:review` command implements the official active-project route. After reviewing the terms, get a `basic` production personal access token and set `FREELANCER_API_TOKEN` and `FREELANCER_API_REVIEW_APPROVED=true` in the producer's ignored `.dev.vars`. Run `npm run freelancer:review -- "WordPress redesign"` from an interactive terminal. Costs for this account were not verified, and no native live lookup ran without access. Results stay outside the archive and cloud AI. [Token settings](https://accounts.freelancer.com/settings/develop) · [API terms](https://www.freelancer.com/about/apiterms) |
+| PeoplePerHour and Guru | Use native saved searches and alerts. PeoplePerHour supports instant or daily alerts, and Guru's Job Match follows profile skills. The local CSV/JSON importer is ready for briefs the operator has permission to retain and classify. Do not ingest restricted mailbox content. [PeoplePerHour](https://support.peopleperhour.com/hc/en-us/articles/205217987-Saved-Searches) · [Guru](https://www.guru.com/help/freelancer/email-settings-freelancer/) |
+| Jobbers, Workana, Truelancer, WorknHire, Algora | Jobbers and Workana restrict extraction. Truelancer terms returned 429, WorknHire failed DNS, and the proposed Algora endpoint returned 404. Algora's legacy controller returns an empty array. No automated source was enabled. [Jobbers terms](https://www.jobbers.io/terms-and-conditions-of-use/) · [Workana terms](https://help.workana.com/hc/en-us/articles/360041499974-WORKANA-TERMS-AND-CONDITIONS) · [Algora source](https://github.com/algora-io/algora/blob/main/lib/algora_web/controllers/api/bounty_controller.ex) |
+| Feedsen and Adzuna | Feedsen lists a card-required trial. Adzuna requires written agreement for lead generation. Neither was enabled. [Feedsen](https://feedsen.com/jobs) · [Adzuna API terms](https://developer.adzuna.com/docs/terms_of_service) |
+
+The approved local file importer now retains original URLs and optional marketplace metadata, supports evidence refreshes, and distinguishes repeat imports from exact cross-source URL matches. UK procurement sources use same-origin HTTPS, bounded pagination, six-hour source leases and exact OCDS-ID deduplication. Keep procurement in review until bidder eligibility is established.
+
+### Live classification and business results
+
+Across two replays and the due-source run, Gemini `gemini-3.5-flash-lite` returned 3 valid verdicts from 7 requests, Groq `openai/gpt-oss-120b` 29 from 60, Cloudflare `@cf/meta/llama-3.3-70b-instruct-fp8-fast` 29 from 45, and OpenRouter `inclusionai/ling-3.2-flash:free` zero from four HTTP 429 responses. Gemini had four HTTP 503s, Groq had 17 quota and 14 quote failures, and Cloudflare had 16 quote failures. Recent successful validated provider performance informs automatic routing. Cooldowns and a cache keyed by the content, model set and policy versions remain in use. Local Ollama `qwen2.5-coder:3b` previously returned valid diagnostic JSON. It was not used for a freelance verdict in these runs. Provider dashboards did not establish exact free balances.
+
+The offline OSM imports added 698 observations across seven cities, with two duplicates. Overture's refresh found 1,722 existing observations and added zero. The completed enrichment snapshot contains 2,491 saved distinct Worker IDs, 2,314 evaluated, 187 exclusions, 21 qualified, 191 records with verified public contact routes across all outcomes, 14 draft-ready, 219 source retries and zero awaiting first enrichment. Shared publisher lineage and the ID count do not prove distinct businesses or owners. Most remaining records require corroborating evidence. One initial restaurant match was corrected after its official site showed centrally managed operations across several metros.
+
+| City | Saved IDs | Enriched | Excluded | Qualified | Public contact | Draft-ready | Source retry |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Mumbai | 418 | 393 | 28 | 7 | 33 | 4 | 31 |
+| Pune | 346 | 324 | 22 | 2 | 18 | 2 | 50 |
+| Bengaluru | 349 | 316 | 35 | 3 | 39 | 3 | 26 |
+| Hyderabad | 341 | 316 | 25 | 1 | 24 | 1 | 22 |
+| Kolkata | 347 | 319 | 29 | 3 | 23 | 0 | 28 |
+| Delhi | 344 | 325 | 22 | 4 | 23 | 3 | 29 |
+| Chennai | 346 | 321 | 26 | 1 | 31 | 1 | 33 |
+
+Foursquare still requires operator acceptance and an authorized Places Portal Iceberg export. Its rows cannot automatically count as an independent source when provenance matches Overture. Groq Browser Search was not used because zero-cost account eligibility remained unverified. Tavily did not run for this outreach workflow. Keep using the offline OSM import and the verified authorized buyer-brief import while marketplace access is unavailable.
+
+### Verification and next run
+
+Run `npm run test`, `npm run typecheck` and `npm run build` in LeadFlow AI, and `npm run test` and `npm run typecheck` in LeadFlow Leads. In a shell with shadow mode and notifications disabled, `npm run external:run -- --complete --drain --limit=50 --max-candidates=200 --pages=3` respects the stored polling leases. `npm run external:run -- --review-source-guards` reapplies known source exclusions without AI calls. Use `--retry-discovery-ai` for genuine provider failures, and `npm run business:scan -- --enrich-metros --backlog` for eligible business work under existing access policies. Run both local services on ports 5174 and 8787 with the existing profiles.
+
+Current unsent review package is under `outputs/cofounder-review/`. The earlier package was copied to `outputs/cofounder-review-before-cta-20261125-020044/`. All three new CTA drafts were verified with Chromium copy, HTML and logo previews and matching EML/HTML downloads. An optional valid HTTPS `LEADFLOW_CALENDLY_URL` appends a booking link. The current package uses the call invitation because no URL is configured. Revised body fingerprints invalidate any older draft approval.
+
+Verification checkpoint: 261 LeadFlow AI tests and 49 LeadFlow Leads tests passed with both typechecks and the local build. Chromium verified the Contracts Finder source toggle, empty authorized-import gate, state reload and Mumbai/Delhi filters. Producer remote verified at `0620dd1c8485ad94366c5a0c9ed12ab52141a227` on `feature-new-sources-aa`. Both Graphify indexes were refreshed. No external deployment was performed.

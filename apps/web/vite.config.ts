@@ -331,6 +331,7 @@ function localPipeline(): Plugin {
 
               const args = collecting ? [complete?"--complete":"--collect", "--limit=100", `--max-candidates=${target}`] : [];
               if(reclassify)args.push("--retry-discovery-ai");
+              if(pathname.endsWith('/run')&&requested.drain===true&&selected?.length===1&&selected[0]==='authorized_projects')args.push('--refresh-authorized-imports');
               if(complete || requested.drain===true)args.push("--drain");
               const child = spawn(process.execPath, ["--import", "tsx", "scripts/external-pipeline.ts", ...args], {
                 cwd: repoRoot,

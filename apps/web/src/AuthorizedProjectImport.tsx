@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 
-type Preview = { row:number; status:"invalid"|"valid"|"duplicate_in_file"|"already_imported"; title?:string };
+type Preview = { row:number; status:"invalid"|"valid"|"duplicate_in_file"|"already_imported"|"can_refresh"; title?:string };
 
 export function AuthorizedProjectImport({ onImported, busy }: { onImported:()=>Promise<void>; busy:boolean }) {
   const input=useRef<HTMLInputElement>(null);
@@ -27,15 +27,15 @@ export function AuthorizedProjectImport({ onImported, busy }: { onImported:()=>P
       if(previewOnly){setPreview(data.rows);return;}
       setPreview(null);setFile(null);setConfirmed(false);
       if(input.current)input.current.value="";
-      setMessage(`${data.inserted} added, ${data.duplicates+data.duplicatesInFile} duplicates, ${data.rejected} invalid or inactive.`);
-      if(data.inserted>0)await onImported();
+      setMessage(`${data.inserted} added, ${data.duplicates+data.duplicatesInFile+(data.duplicatesOtherSources??0)} already seen, ${data.rejected} invalid or inactive.`);
+      if(data.valid>0)await onImported();
     }catch(cause){setError((cause as Error).message);}
     finally{setPending(false);}
   }
 
   return <details style={{marginBlock:"1rem"}}>
     <summary>Import authorized buyer briefs</summary>
-    <p>Use a CSV file or JSON array with title, description, buyer, url, published_at, active_until and provenance. Use UTC timestamps and one of buyer_shared, authorized_alert or authorized_marketplace_export.</p>
+    <p>Import a CSV or JSON array with title, description, the original URL and provenance (buyer_shared, authorized_alert or authorized_marketplace_export). Include the buyer, publication timestamp and deadline when known. Incomplete briefs are held for evidence. Separate CSV skills with a pipe character.</p>
     <label>Project file <input ref={input} type="file" accept=".csv,.json" disabled={pending} onChange={event=>{
       setFile(event.target.files?.[0]??null);setPreview(null);setMessage("");setError("");
     }} /></label>{" "}
@@ -44,7 +44,7 @@ export function AuthorizedProjectImport({ onImported, busy }: { onImported:()=>P
     }} /> I have permission to use this file for qualification.</label>{" "}
     <button type="button" disabled={!file||!confirmed||pending||busy} onClick={()=>void submit(true)}>Preview import</button>{" "}
     <button type="button" disabled={!file||pending} onClick={()=>{if(input.current)input.current.value="";setFile(null);setPreview(null);setConfirmed(false);setError("");}}>Clear selection</button>{" "}
-    <button type="button" disabled={!preview?.some(row=>row.status==="valid")||pending||busy} onClick={()=>void submit(false)}>Import and qualify</button>
+    <button type="button" disabled={!preview?.some(row=>row.status==="valid"||row.status==="can_refresh")||pending||busy} onClick={()=>void submit(false)}>Import and qualify</button>
     {pending && <p role="status">Processing buyer briefs…</p>}
     {error && <p role="alert">{error}</p>}
     {message && <p role="status">{message}</p>}

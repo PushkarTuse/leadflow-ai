@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { DiscoverySignals } from "../packages/core/scoring";
 import type { DiscoveryContext } from "../packages/core/qualification";
 import { discoveryAiChain, freeDiscoveryBackups } from "../scripts/external-discovery-ai";
@@ -91,6 +91,20 @@ describe("local discovery AI failover", () => {
     CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
     OPENROUTER_API_KEY: "test-openrouter-key",
   } as Record<string, string>)[key] || "");
+
+  it("uses recent validated provider performance without changing the decision cache key", () => {
+    const providers = [{id:'gemini' as const, options}, ...backups];
+    const cache = {};
+    const transport = {json: vi.fn((_url:string) => ({choices:[{message:{content:JSON.stringify(compactRejection)}}]}))};
+    const recent = [{id:'cloudflare' as const,status:'ok' as const,requests:5,verdicts:4,failures:{}}];
+    const sample = {...context,source_hash:'provider-health-test'};
+    const first = discoveryAiChain(providers, transport, 10, {}, () => 1000, cache, recent);
+    expect(first.classify(sample)).toMatchObject({discoveryProvider:'cloudflare'});
+    expect(transport.json.mock.calls[0][0]).toContain('api.cloudflare.com');
+    const later = discoveryAiChain([...providers].reverse(), transport, 10, {}, () => 2000, cache);
+    expect(later.classify(sample)).toMatchObject({discoveryProvider:'cloudflare'});
+    expect(transport.json).toHaveBeenCalledTimes(1);
+  });
 
   it("uses the next valid AI decision and isolates a quota cooldown across runs", () => {
     const providers = [{ id: "gemini" as const, options }, ...backups];

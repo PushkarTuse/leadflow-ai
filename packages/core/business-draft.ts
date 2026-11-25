@@ -1,5 +1,5 @@
 export const agencyUrl = "https://leadflow-agency.pages.dev";
-export const initialOutreachPolicy = "Initial outreach has no prices, rates, discounts, or package offers. Use we and our team. Use a short introductory call as the primary next step. Offer a local meeting only when configured by the application. Do not invent ratings, testimonials, or results. Use verified facts only.";
+export const initialOutreachPolicy = "Initial outreach has no prices, rates, discounts, or package offers. Use we and our team. Invite a short call to explore requirements and discuss tailored solutions. The application supplies the final invitation, any configured local meeting and any booking link. Do not invent ratings, testimonials, or results. Use verified facts only.";
 
 export interface BusinessDraftFacts {
   name: string;
@@ -12,6 +12,7 @@ export interface BusinessDraftFacts {
   serviceIdea?: string;
   subjectIdea?: string;
   meetingCity?: string;
+  bookingUrl?: string;
 }
 
 export type BusinessCopy = { subject: string; proposal: string; question: string };
@@ -21,6 +22,16 @@ const forbiddenOutreach = /[₹$€£]|\b(?:\d[\d,.]*\s*(?:inr|usd|eur|gbp|rupee
 const safeOutreachLine = (value: string | undefined, maximum: number) => value && !forbiddenOutreach.test(value) ? line(value, maximum) : "";
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
+
+function calendlyEventUrl(value?: string): string | undefined {
+  const configured = value?.trim();
+  if (!configured || configured.length > 2048 || !/^https:\/\//i.test(configured) || /\s/.test(configured)) return;
+  try {
+    const url = new URL(configured);
+    if (url.protocol === "https:" && ["calendly.com", "www.calendly.com"].includes(url.hostname) &&
+        !url.username && !url.password && !url.port && url.pathname !== "/") return url.href;
+  } catch { /* Optional settings with invalid URLs use the normal invitation. */ }
+}
 
 function industryCopy(facts: BusinessDraftFacts, name: string): BusinessCopy {
   const category = facts.category ?? "";
@@ -91,24 +102,25 @@ export function businessDraft(facts: BusinessDraftFacts, sender: string, copy?: 
   const useIndustryDetails=genericPhoneIdea&&/hotel|resort|lodging|dent|healthcare|clinic|physio/i.test(facts.category??"");
   const category = facts.category ?? "";
   const proposal = safeOutreachLine(facts.serviceIdea,250);
-  const call = /hotel|resort|lodging/i.test(category) ? "Would a short call help us understand how your team handles stay enquiries?" :
-    /dent|healthcare|clinic|physio/i.test(category) ? "Would your team be open to a short call about how you handle appointment requests?" :
-    "Could we set up a brief introductory call to see whether this would be useful for your team?";
-  const selected = validateBusinessCopy(copy, facts) ?? {...fallback, proposal:proposal&&!useIndustryDetails?proposal:fallback.proposal, question:call};
+  const selected = validateBusinessCopy(copy, facts) ?? {...fallback, proposal:proposal&&!useIndustryDetails?proposal:fallback.proposal};
   const website = safeOutreachLine(facts.opportunity,350) || (facts.website
     ? `We saw the website linked on your listing${city} and had a small idea for it.`
     : `We came across your listing${city} and didn’t see a website linked there.`);
   const subject = safeOutreachLine(facts.subjectIdea,84) || selected.subject;
   const meeting = facts.meetingCity ? ` If meeting in ${line(facts.meetingCity,45)} is easier, we can discuss a time that suits both teams.` : "";
+  const call = `Let's set up a short call to explore your requirements and discuss how we can tailor our solutions to your business.${meeting}`;
+  const bookingUrl = calendlyEventUrl(facts.bookingUrl);
+  const bookingLabel = "Feel free to book a time that works best for you.";
   const paragraphs = [
     `Hi ${name} team,`,
     website + "\n\n" + selected.proposal,
     `We’re LeadFlow AI. We build custom websites and applications around how teams work, including enquiry and booking automation. You can see examples of our work at ${agencyUrl}.`,
-    `${selected.question}${meeting}`,
+    bookingUrl ? `${call} ${bookingLabel}\n${bookingUrl}` : call,
     `Best,\n${line(sender, 60)}\nLeadFlow AI`,
     "To opt out of future emails, reply ‘unsubscribe’.",
   ];
   const html = paragraphs.map(text => `<p>${escapeHtml(text).replaceAll("\n", "<br>").replace(agencyUrl, `<a href="${agencyUrl}">${agencyUrl}</a>`)}</p>`);
+  if (bookingUrl) html[3] = `<p>${escapeHtml(call)} <a href="${escapeHtml(bookingUrl)}">${bookingLabel}</a></p>`;
   html.splice(5, 0, '<img src="cid:leadflow-signature" width="180" height="45" alt="LeadFlow AI" style="display:block">');
   const shortName = line(name, 34);
   const task = /dent|clinic|salon|physio|spa/i.test(category) ? "a booking"

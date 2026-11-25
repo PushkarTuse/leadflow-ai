@@ -38,7 +38,8 @@ export function freeDiscoveryBackups(get: (name: string) => string): DiscoveryPr
 }
 
 export function discoveryAiChain(providers: DiscoveryProvider[], transport: Http, limit: number,
-  cooldowns: Partial<Record<ProviderId, Cooldown>>, now = Date.now, cache:DiscoveryCache={}) {
+  cooldowns: Partial<Record<ProviderId, Cooldown>>, now = Date.now, cache:DiscoveryCache={},
+  recentHealth: ReadonlyArray<ProviderHealth> = []) {
   const coverage = { requests: 0, attempted: 0, succeeded: 0, failed: 0, cacheHits:0 };
   const callsByProvider: Partial<Record<ProviderId, number>> = {};
   const verdictsByProvider: Partial<Record<ProviderId, number>> = {};
@@ -47,10 +48,19 @@ export function discoveryAiChain(providers: DiscoveryProvider[], transport: Http
   const lastStatus = new Map<ProviderId, ProviderHealth['status']>();
   const available = () => providers.some(({ id }) => (cooldowns[id]?.until ?? 0) <= now());
   const exhausted = () => coverage.requests >= limit;
+  const observed = new Map(recentHealth.map(health => [health.id,health]));
+  const preference = (id:ProviderId) => {
+    const health = observed.get(id);
+    if(!health?.requests)return 0;
+    if(health.status==='ok'&&health.verdicts)return 2+health.verdicts/health.requests;
+    return health.verdicts?1:-1;
+  };
+  const ordered = [...providers].sort((a,b)=>preference(b.id)-preference(a.id));
+  const modelKeys = providers.map(p=>[p.id,p.options.model]).sort((a,b)=>a[0].localeCompare(b[0]));
 
   function classify(context: DiscoveryContext) {
     const key=createHash("sha256").update(JSON.stringify([qualificationVersions,context.provider,context.source_hash,
-      context.original_title,context.decoded_text,providers.map(p=>[p.id,p.options.model])])).digest("hex");
+      context.original_title,context.decoded_text,modelKeys])).digest("hex");
     const cached=cache[key];
     if(cached?.expiry>now()&&providers.some(p=>p.id===cached.discoveryProvider)){
       coverage.cacheHits++;
@@ -60,7 +70,7 @@ export function discoveryAiChain(providers: DiscoveryProvider[], transport: Http
     const warnings: string[] = [];
     const retry = new Set<ProviderId>();
     for (const pass of [1, 2]) {
-      for (const { id, options } of providers) {
+      for (const { id, options } of ordered) {
         if (pass === 2 && !retry.has(id)) continue;
         if (exhausted()) {
           warnings.push('Local discovery AI request budget reached');
@@ -122,11 +132,11 @@ export function discoveryAiChain(providers: DiscoveryProvider[], transport: Http
   }
 
   function health(finalizedBy: DiscoveryAiHealth['finalizedBy']): DiscoveryAiHealth {
-    const reports = providers.map(({ id }): ProviderHealth => {
+    const reports = providers.map(({ id,options }): ProviderHealth => {
       const cooldown = cooldowns[id];
       const active = cooldown && cooldown.until > now() ? cooldown : undefined;
       return {
-        id, status: active ? active.reason ?? failureReason(active.warning) : lastStatus.get(id) ?? 'not_called',
+        id, model:options.model, status: active ? active.reason ?? failureReason(active.warning) : lastStatus.get(id) ?? 'not_called',
         requests: callsByProvider[id] ?? 0, verdicts: verdictsByProvider[id] ?? 0,
         failures: { ...failureCounts.get(id) },
         ...(active ? { cooldownUntil: new Date(active.until).toISOString() } : {}),

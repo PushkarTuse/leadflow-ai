@@ -4,7 +4,8 @@ const conclusive = new Set(["FULL_TIME_ONLY","INTERNSHIP","SELLER_SELF_PROMOTION
 
 export function discoveryState(input:Input):DiscoveryState {
   if(input.reason==="UNSAFE_CONTENT"||conclusive.has(input.reason??"")||input.boundary==="ONGOING_SEAT")return "REJECTED";
-  if(input.provider==="uk_tender")return "REVIEW";
+  if(input.provider==="uk_tender"||input.provider==="uk_contracts_finder")return "REVIEW";
+  if(input.provider==="authorized_projects"&&input.incomplete)return "AWAITING_ENRICHMENT";
   if(input.decision==="ACCEPTED")return "QUALIFIED";
   if(input.incomplete)return "AWAITING_ENRICHMENT";
   if(input.source!=="MODEL"&&/no (?:validated )?AI verdict|no approved classifier|budget reached|unavailable|timeout|HTTP (?:429|503)/i.test(input.warning??""))return "RETRY_CLASSIFICATION";

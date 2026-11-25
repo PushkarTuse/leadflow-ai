@@ -873,6 +873,15 @@ describe("Stage C: mandatory gate invariants", () => {
     expect(result.reason).toBeNull();
   });
 
+  it("excludes manual annotation and expired delivery tasks using original text", () => {
+    const audio = makeCtx('Audio Transcription Adjudicator', 'Review annotations for hourly pay.',{provider:'jobicy_rss'});
+    expect(prefilterDiscovery(audio,NOW)).toMatchObject({reason:'OUT_OF_SERVICE_SCOPE',evidence:'Audio Transcription Adjudicator'});
+    const expired = makeCtx('Freelance Software Tester','Available to start ASAP and complete testing by January 1, 2024.');
+    expect(prefilterDiscovery(expired,NOW)).toMatchObject({reason:'STALE_OR_CLOSED',evidence:'complete testing by January 1, 2024'});
+    const engineering = makeCtx('Build an annotation platform','Develop and deploy a web dashboard for transcription data.');
+    expect(prefilterDiscovery(engineering,NOW).pass).toBe(true);
+  });
+
   it("clause-level: No unpaid work seeking a paid contractor is eligible", () => {
     const { record } = classify(
       "",

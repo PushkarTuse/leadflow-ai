@@ -3,6 +3,7 @@ export type ProviderFailure = "quota" | "credits" | "unavailable" | "timeout" | 
 
 export interface ProviderHealth {
   id: DiscoveryProviderId;
+  model?: string;
   status: ProviderFailure | "ok" | "not_called";
   requests: number;
   verdicts: number;
@@ -46,5 +47,5 @@ export function providerHealthLine(provider: ProviderHealth): string {
   const status = provider.status === "ok" ? "OK" : provider.status === "not_called"
     ? "Not called" : failureLabels[provider.status];
   const details = failures.length ? ` · Failures this run: ${failures.join(", ")}` : "";
-  return `${name} · ${status} · ${provider.requests} requests, ${provider.verdicts} verdicts${details}`;
+  return `${name}${provider.model ? ` (${provider.model})` : ""} · ${status} · ${provider.requests} requests, ${provider.verdicts} verdicts${details}`;
 }

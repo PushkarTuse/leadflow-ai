@@ -198,7 +198,7 @@ function labelBusinesses(scan: BusinessScan, evidence: Record<string, BusinessEv
   return scan;
 }
 
-const evidenceRulesVersion=2;
+const evidenceRulesVersion=3;
 type EnrichmentOptions = {backlog?:boolean; cities?:string[]; updatedRules?:boolean; retriesOnly?:boolean; target?:number; discover?:boolean;
   operatorSearchHints?:Record<number,BusinessSearchHint[]>};
 export async function pauseBusinessEnrichment(){ await writeFile(pausePath,"Pause after the current three records.\n"); }
@@ -206,8 +206,9 @@ export async function pauseBusinessEnrichment(){ await writeFile(pausePath,"Paus
 export async function enrichBusinessScan(metros = true, maximum = 18, recheck = false, options:EnrichmentOptions = {}) {
   if(!Number.isInteger(maximum)||maximum<1||maximum>(options.backlog?5000:300))throw new Error("Invalid enrichment limit");
   const searchSettings=options.discover?await settings():undefined;
-  if(options.discover&&(!searchSettings?.TAVILY_API_KEY||searchSettings.TAVILY_RESEARCHER_CONFIRMED!=="true"))
-    throw new Error("Set TAVILY_API_KEY and confirm the free Researcher plan with TAVILY_RESEARCHER_CONFIRMED=true in .env.external");
+  if(options.discover&&(!searchSettings?.TAVILY_API_KEY||searchSettings.TAVILY_RESEARCHER_CONFIRMED!=="true"||
+    !searchSettings.TAVILY_OUTREACH_PERMISSION_REFERENCE?.trim()))
+    throw new Error("Tavily prospect search requires Tavily's written permission (TAVILY_OUTREACH_PERMISSION_REFERENCE), an approved plan, and an API key");
   const discover=searchSettings?tavilyBusinessSearch(searchSettings.TAVILY_API_KEY!,Math.min(20,maximum)):undefined;
   await mkdir(dataDirectory,{recursive:true});
   const lock=enrichmentPath+".lock";
@@ -335,14 +336,17 @@ export async function runBusinessScan(term: string, onCity?: (city: BusinessScan
   const api = await worker();
   await api("/sources");
   const { locations, countrySample } = await placeData<{ locations: Location[]; countrySample: boolean }>({ action: "resolve", location: query });
-  const scan: BusinessScan = { query, countrySample, updatedAt: new Date().toISOString(), cities: [] };
+  const freshOnly = process.env.LEADFLOW_FRESH_ONLY === "true";
+  const existingMetroScan = query === "india-metros" && !freshOnly ? await readBusinessScan(true) : null;
+  const scan: BusinessScan = { query, countrySample, updatedAt: new Date().toISOString(), cities: existingMetroScan?.cities.slice() ?? [] };
   const startedAt = scan.updatedAt;
-  if(process.env.LEADFLOW_FRESH_ONLY==="true")scan.freshSince=startedAt;
+  if(freshOnly)scan.freshSince=startedAt;
   let osmEnabled = (await settings()).LOCAL_BUSINESS_OSM_ENABLED !== "false";
   const evidence = await evidenceRecords();
+  const enrichment = await enrichmentRecords();
   await mkdir(dataDirectory, { recursive: true });
   for (const place of locations) {
-    const osm = async () => !osmEnabled ? {fetched:0,inserted:0,state:"OSM paused for this run"} : api<{ fetched: number; inserted: number; state?: string }>("/collect/osm",
+    const osm = async () => !osmEnabled ? {fetched:0,inserted:0,state:"Using saved OSM inventory"} : api<{ fetched: number; inserted: number; state?: string }>("/collect/osm",
       { city: place.city, lat: place.lat, lng: place.lng, radius: 8500, tag: "business", limit: perSource });
     const [osmResult, prepared] = await Promise.allSettled([osm(),placeData<{rows:object[];manifest:object}>({action:"overture",place,target:budget})]);
     if(osmResult.status==="rejected" && /HTTP 429|HTTP 50[234]|timed out/i.test(String(osmResult.reason)))osmEnabled=false;
@@ -358,7 +362,7 @@ export async function runBusinessScan(term: string, onCity?: (city: BusinessScan
     const batches = await Promise.allSettled(sources.map(async source=>{
       const cap=source==="overture"?overtureBudget:perSource;
       const query=new URLSearchParams({source,category:"local_business",status:"new",verified_prospects:"true",city:place.city,
-        limit:String(Math.min(cap,200)),...(process.env.LEADFLOW_FRESH_ONLY==="true"?{since:startedAt}:{})});
+        limit:String(Math.min(cap,200)),...(freshOnly?{since:startedAt}:{})});
       const first=await api<{leads:Business[];total:number}>("/leads?"+query);
       if(cap>200&&first.total>200){
         query.set("offset","200");query.set("limit",String(cap-200));
@@ -382,13 +386,20 @@ export async function runBusinessScan(term: string, onCity?: (city: BusinessScan
         fetched: result?.status === "fulfilled" ? result.value.fetched : 0,
         inserted: result?.status === "fulfilled" ? result.value.inserted : 0, shown: matching.length };
     });
-    // The Worker merges verified observations where identity matches.
-    const identities = new Map<number, Business>();
-    for (const row of rows) identities.set(row.id, { ...row, country: place.country });
+    // A capped or partially unavailable acquisition must keep previous metro observations visible.
+    const existingIndex = scan.cities.findIndex(city => city.city === place.city && city.country === place.country);
+    const identities = new Map(scan.cities[existingIndex]?.rows.map(row => [row.id, row]));
+    for (const row of rows) {
+      const previous = identities.get(row.id);
+      if (previous?.outreach?.status === "qualified" && qualifyBusiness(row).status !== "excluded") continue;
+      identities.set(row.id, { ...row, country: place.country });
+    }
     const city = { city: place.city, country: place.country, sources: reports, rows: [...identities.values()] };
-    scan.cities.push(city);
+    for (const report of reports) report.shown = city.rows.filter(row => row.source === report.source).length;
+    if (existingIndex === -1) scan.cities.push(city);
+    else scan.cities[existingIndex] = city;
     scan.updatedAt = new Date().toISOString();
-    labelBusinesses(scan, evidence);
+    labelBusinesses(scan, evidence, enrichment);
     if (query === "india-metros") await saveBusinessScan(scan, "metros.json");
     await saveBusinessScan(scan, "latest.json");
     onCity?.(city);
@@ -400,24 +411,35 @@ async function rebuildMetroSnapshot(offlineCity?:string) {
   const scan = await readBusinessScan(true);
   if (!scan) throw new Error("No metro snapshot to rebuild");
   const api = await worker();
-  for (const city of scan.cities) {
-    if(offlineCity && city.city.toLowerCase()!==offlineCity.toLowerCase())continue;
+  const selectedCities = offlineCity && offlineCity.toLowerCase() !== "all"
+    ? scan.cities.filter(city => city.city.toLowerCase() === offlineCity.toLowerCase()) : scan.cities;
+  if (!selectedCities.length) throw new Error("City not found in the metro snapshot");
+  for (const city of selectedCities) {
     const times = city.rows.flatMap(row=>row.found_at?[row.found_at]:[]).sort();
-    if (!times.length) continue;
+    if (!offlineCity && !times.length) continue;
     const saved = new Map(city.rows.map(row=>[row.id,row]));
     for (const report of city.sources.filter(source=>offlineCity?source.source==="osm":source.fetched>0)) {
       const query = new URLSearchParams({source:report.source, category:"local_business", status:"new",
         verified_prospects:"true", city:city.city, ...(offlineCity?{}:{since:times[0]}), limit:"200"});
-      const { leads } = await api<{leads:Business[]}>("/leads?"+query);
-      const matching = leads.filter(row=>row.city?.toLowerCase()===city.city.toLowerCase() &&
-        (row.country===city.country || row.source==="osm" && !row.country));
-      report.shown = matching.length;
-      if(offlineCity)report.status="Local OSM inventory synced";
-      for (const row of matching) if (!saved.has(row.id)) saved.set(row.id,{...row,country:city.country});
+      let offset = 0;
+      for (;;) {
+        query.set("offset", String(offset));
+        const { leads, total } = await api<{leads:Business[];total:number}>("/leads?"+query);
+        for (const row of leads) {
+          if (row.city?.toLowerCase() === city.city.toLowerCase() &&
+            (row.country === city.country || row.source === "osm" && !row.country) && !saved.has(row.id)) {
+            saved.set(row.id, { ...row, country: city.country });
+          }
+        }
+        offset += leads.length;
+        if (!leads.length || offset >= total) break;
+      }
+      report.shown = [...saved.values()].filter(row => row.source === report.source).length;
+      if (offlineCity) report.status = report.shown ? "Local OSM inventory synced" : "No saved OSM inventory";
     }
     city.rows = [...saved.values()];
   }
-  labelBusinesses(scan,await evidenceRecords());
+  labelBusinesses(scan,await evidenceRecords(),await enrichmentRecords());
   scan.updatedAt = new Date().toISOString();
   await saveBusinessScan(scan,"metros.json");
   if ((await readBusinessScan())?.query === "india-metros") await saveBusinessScan(scan,"latest.json");
@@ -530,6 +552,7 @@ export async function makeBusinessDraft(id: number, source: string, sourceId: st
   const allowedMeetingCities=(env.LOCAL_BUSINESS_MEETING_CITIES??"Pune").split(",").map(city=>city.trim().toLowerCase());
   const facts = { ...lead, category: lead.title, opportunity: evidence.opportunity, serviceIdea: evidence.serviceIdea, subjectIdea:evidence.subjectIdea,
     meetingCity:lead.city&&lead.country==="IN"&&allowedMeetingCities.includes(lead.city.toLowerCase())?lead.city:undefined,
+    bookingUrl:env.LEADFLOW_CALENDLY_URL,
     country: lead.country ?? (/^[A-Z]{2}$/.test(country) ? country : null) };
   const local=useAi&&env.OLLAMA_BUSINESS_DRAFT!=="false"?await localDraftCopy(env.OLLAMA_ORIGIN||"http://127.0.0.1:11434",env.OLLAMA_MODEL||"qwen2.5-coder:3b",
     {name:facts.name,category:facts.category,opportunity:facts.opportunity,proposedAngle:facts.serviceIdea}):undefined;

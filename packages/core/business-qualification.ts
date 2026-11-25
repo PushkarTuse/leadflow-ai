@@ -58,6 +58,7 @@ const corporateDomains = [
   "subway.com", "pizzahut.com", "pizzahut.co.in", "lenskart.com", "clovedental.in", "apolloclinic.com",
   "apollopharmacy.in", "marriott.com", "hilton.com", "ihg.com", "decathlon.in", "ikea.com",
   "worldgym.com", "goldsgym.in", "goldsgym.com", "anytimefitness.com",
+  "bastianhospitality.com", // The group's first-party About page documents central operations across five cities.
 ];
 
 export function normalizedBusinessName(name: string): string {

@@ -2,7 +2,7 @@
 
 This is the entry point for any AI (or human) picking up this repository. Read this file first, then open the latest capsule.
 
-The 25 November entry in [the operations ledger](docs/PIPELINE_OPERATIONS.md) records the recovered source runs, provider verdicts, offline Mumbai OSM import, draft policy and co-founder review package. All work was local and the previous databases and drafts were preserved.
+The latest [operations ledger checkpoint](docs/PIPELINE_OPERATIONS.md#source-expansion-and-seven-metro-verification--25-november-2026) records live Contracts Finder and Find a Tender runs, the replay of 104 unresolved freelance records, offline OSM imports for all seven metros and the revised unsent draft package. Dashboard and Worker remain on ports 5174 and 8787. Prior local data and original drafts are preserved.
 
 See [the operational verification ledger](docs/PIPELINE_OPERATIONS.md) for the latest real Mumbai/Pune pilot, enrichment controls, source permissions and remaining verification. Dashboard `http://127.0.0.1:5174/pipeline`, producer `http://127.0.0.1:8787`, Ollama `http://127.0.0.1:11434`.
 

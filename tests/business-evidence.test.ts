@@ -39,6 +39,18 @@ describe("business evidence gates",()=>{
     expect(websiteGuesses({...row,website:"https://facebook.com/x",email:"test@gmail.com"})).toEqual([]);
     expect((await evaluateBusiness(row,async()=>{throw new Error("PUBLIC_HTTP_503");})).status).toBe("retry");
   });
+  it("separates centrally managed multi-city groups from same-city independent outlets", async () => {
+    const independent = "<p>Family-run practice. Call us to book an appointment.</p>";
+    const footprint = "Our group's portfolio spans clinics across Mumbai, Pune, and Bengaluru.";
+    const group = await evaluate(base + independent + `<p>${footprint}</p>`);
+    expect(group).toMatchObject({ status: "excluded", observations: expect.arrayContaining([
+      expect.objectContaining({ field: "corporate", value: footprint, url: row.website }),
+    ]) });
+    expect(await evaluate(base + independent + "<p>Our company's locations are in Kothrud and Baner, Pune.</p>"))
+      .toMatchObject({ status: "qualified" });
+    expect(await evaluate(base + independent + "<p>Our group's portfolio contains staff training projects across India.</p>"))
+      .toMatchObject({ status: "qualified" });
+  });
   it("keeps a matching branch with a declared parent in review",async()=>{
     const schema='<script type="application/ld+json">{"name":"North Lane Dental","branchOf":{"name":"Parent operator"}}</script>';
     expect((await evaluate(base+schema+"<p>Family-run dental practice.</p><p>Call our team to book an appointment.</p>"))).toMatchObject({status:"review"});

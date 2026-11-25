@@ -12,6 +12,8 @@ describe("local business drafts", () => {
     expect(draft.body).not.toMatch(/₹|5,999|pricing|leave it there/i);
     expect(draft.body).toContain("custom websites and applications");
     expect(draft.body).toContain("short call");
+    expect(draft.body).toContain("Let's set up a short call to explore your requirements and discuss how we can tailor our solutions to your business.");
+    expect(draft.body).not.toContain("Feel free to book");
     expect(draft.body).toContain("unsubscribe");
     expect(draft.body).not.toMatch(/ratings|reviews|customer feedback/);
     expect(draft.html).toContain('src="cid:leadflow-signature"');
@@ -39,12 +41,31 @@ describe("local business drafts", () => {
     };
     expect(businessDraft(facts, "Pushkar", copy).subject).toBe(copy.subject);
     expect(businessDraft(facts, "Pushkar", copy).body).toContain(copy.proposal);
+    expect(businessDraft(facts, "Pushkar", copy).body).toContain("a short call to explore your requirements");
+    expect(businessDraft(facts, "Pushkar", copy).body).not.toContain(copy.question);
     expect(validateBusinessCopy({...copy, subject: "RE: Kothrud Dental Care"}, facts)).toBeUndefined();
     expect(validateBusinessCopy({...copy, subject: "A website idea for Kothrud Dental Care"}, facts)).toBeUndefined();
     expect(validateBusinessCopy({...copy, subject: "Kothrud Dental Care Pune appointments"}, facts)).toBeUndefined();
     expect(validateBusinessCopy({...copy, proposal: "We could streamline your operations to improve efficiency."}, facts)).toBeUndefined();
     expect(validateBusinessCopy({...copy, question: "Could you send a sketch of the page you need?"}, facts)).toBeUndefined();
     expect(validateBusinessCopy({...copy, proposal: "We could help now that you are losing 30 customers every week."}, facts)).toBeUndefined();
+  });
+
+  it("includes the configured Calendly booking link with friendly HTML text and a plain-text URL", () => {
+    const bookingUrl = "https://calendly.com/leadflow/intro?utm_source=email&month=2026-11";
+    const draft = businessDraft({ ...facts, bookingUrl, meetingCity: "Pune" }, "Pushkar");
+    expect(draft.body).toContain(`Feel free to book a time that works best for you.\n${bookingUrl}`);
+    expect(draft.body).toContain("meeting in Pune");
+    expect(draft.html).toContain('<a href="https://calendly.com/leadflow/intro?utm_source=email&amp;month=2026-11">Feel free to book a time that works best for you.</a>');
+    expect(draft.html).not.toMatch(/<iframe|<script/);
+  });
+
+  it.each(["http://calendly.com/leadflow/intro", "https://calendly.com.example.test/intro",
+    "https://calendly.com@evil.example/intro", "https://user@calendly.com/leadflow/intro",
+    "https://calendly.com:9000/team/intro", "https://calendly.com/"])("omits an invalid booking URL %s", bookingUrl => {
+    const draft = businessDraft({ ...facts, bookingUrl }, "Pushkar");
+    expect(draft.body).not.toContain("Feel free to book");
+    expect(draft.html).not.toContain(bookingUrl);
   });
 });
 

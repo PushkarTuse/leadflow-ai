@@ -6,7 +6,7 @@ import type { BusinessSearchHint } from "./business-search";
 type Node = DefaultTreeAdapterTypes.Node;
 type HtmlPage = { url:string;html:string };
 export type BusinessObservation = {field:"identity"|"location"|"ownership"|"digital"|"contact"|"corporate";value:string;url:string;observedAt:string};
-export type EvidenceInput = {name:string;city:string|null;title:string|null;website:string|null;email:string|null;phone:string|null;address?:string|null};
+export type EvidenceInput = {name:string;city:string|null;title:string|null;website:string|null;email:string|null;phone:string|null;address?:string|null;country?:string|null};
 export type EvaluatedBusiness = {
   status:"qualified"|"excluded"|"review"|"retry"; reason:string; observations:BusinessObservation[];
   identityHost?:string; websiteObservation?:"not_listed"|"not_found_after_checks"|"social_only"|"official_site"|"parent_site"|"inaccessible"|"unverified";
@@ -110,6 +110,12 @@ const identityName = (name:string) => normalizedBusinessName(name.normalize("NFK
   .replace(/\b(?:dr|doctor|pvt|private|limited|ltd|llp|inc|and|the)\b/g," ").replace(/\s+/g," ").trim();
 const matchesText=(value:string,term:string)=>(" "+normalizedBusinessName(value)+" ").includes(" "+term+" ");
 const phoneDigits=(value:string|null)=>value?.replace(/[^0-9]/g,"").slice(-10);
+function contactPhone(value:string|null, country?:string|null) {
+  if (!value) return;
+  let digits = value.replace(/\D/g, "");
+  if (country === "IN") digits = digits.replace(/^(?:0091|91|0)(?=\d{10}$)/, "");
+  return /^\d{8,15}$/.test(digits) ? digits : undefined;
+}
 const genericNameWords = new Set("clinic dental care dentist hospital health centre center studio salon spa services restaurant cafe store shop gym fitness india mumbai pune".split(" "));
 function identityMatch(expected:string, displayed:string, phoneMatch:boolean) {
   const actual=identityName(displayed);
@@ -131,7 +137,15 @@ const namedOperator=/\b(?:owner|proprietor|practice principal|managing partner|c
 const localOperator=/\b(?:I (?:have been running|run|started|opened|founded)|we (?:opened|founded|started))\b.{0,90}\b(?:practice|classes|restaurant|clinic|business|studio|showroom|salon|boutique|gym|bakery)\b/i;
 const owned = /\b(?:independently (?:owned|operated|run)|(?:family|owner|founder)[ -](?:owned|operated|run|led)|(?:founded|established|run|operated|owned|taken over) by|our (?:founder|owner)\b|founder (?:and|&) (?:owner|director))\b/i;
 const corporate = /\b(?:become (?:our |a )?franchisee|franchise opportunities|franchise locations|franchise enquiry|nationwide chain|global chain|part of (?:the )?.{2,55} (?:group|holdings)|operated by .{2,55} franchis(?:ee|or))\b/i;
-const actionPaths = /\b(?:about|contact|book(?:ing)?|appointments?|menu|visit|services|reservations?|enquir(?:e|ies)|our[- ](?:story|team)|know[- ]us|meet[- ](?:the[- ])?team|why[- ]we[- ]started|co[- ]?founders?)\b/i;
+const organizationFootprint = /\b(?:our (?:own )?(?:brand|group|company|chain|network)|(?:brand|company|group)['’]s)\s+(?:locations?|portfolio|footprint|venues?|branches|stores?|restaurants?)\b/i;
+const physicalOutlets = /\b(?:outlets?|branches|stores?|restaurants?|venues?|caf[eé]s?|clinics?|hotels?|gyms?|showrooms?|salons?|locations?)\b/i;
+const widespreadFootprint = /\b(?:pan[ -]India|nationwide|(?:across|throughout) (?:India|the country)|(?:[3-9]|[1-9]\d+|three|four|five|six|seven|eight|nine|ten) cities)\b/i;
+const metroAliases = [["mumbai", "bombay"], ["pune"], ["delhi"], ["bengaluru", "bangalore"], ["hyderabad"],
+  ["kolkata", "calcutta"], ["chennai", "madras"], ["ahmedabad"], ["goa"]];
+const multiMetroGroup = (line:string) => organizationFootprint.test(line) && physicalOutlets.test(line) &&
+  (widespreadFootprint.test(line) || /\b(?:across|throughout)\b/i.test(line) &&
+    metroAliases.filter(aliases => aliases.some(city => matchesText(line, city))).length >= 3);
+const actionPaths = /\b(?:about|contact|book(?:ing)?|appointments?|menu|visit|services|reservations?|locations?|branches|directions|enquir(?:e|ies)|our[- ](?:story|team)|know[- ]us|meet[- ](?:the[- ])?team|why[- ]we[- ]started|co[- ]?founders?)\b/i;
 const signals=[
   {pattern:/\b(?:call|phone|telephone)\b.{0,65}\b(?:book|reserv|appointment|enquir)|\b(?:booking|reservations?|appointments?)\b.{0,55}\b(?:call|phone|telephone)\b/i,
     fact:"Your site gives customers a phone route for bookings or enquiries.",
@@ -164,7 +178,7 @@ export async function evaluateBusiness(row:EvidenceInput, read:(url:string)=>Pro
           /\.[a-z\d]{2,6}$/i.test(next.pathname)&&!/[.]html?$/i.test(next.pathname))continue;
         const text=next.pathname+" "+link.label;
         const weight=/\b(?:our[- ](?:story|team)|about[- ]us|about[- ]clinic|why[- ]we[- ]started|co[- ]?founders?)\b/i.test(text)?4:
-          /\b(?:about|know[- ]us|meet[- ](?:the[- ])?team)\b/i.test(text)?3:/\bcontact\b/i.test(text)?2:1;
+          /\b(?:about|contact|know[- ]us|meet[- ](?:the[- ])?team)\b/i.test(text)?3:/\b(?:locations?|branches|directions)\b/i.test(text)?2:1;
         next.search="";
         if(next.href!==home.url.href) paths.set(next.href, weight);
       }catch { /* Skip non-web navigation. */ }
@@ -194,7 +208,7 @@ export async function evaluateBusiness(row:EvidenceInput, read:(url:string)=>Pro
     const parent=pages.find(page=>page.entities.some(entity=>identityMatch(name,String(entity.name),false)&&Boolean(entity.branchOf||entity.parentOrganization)));
     if(parent)return {status:"review",reason:"First-party markup shows a parent or branch; purchasing autonomy is unconfirmed",
       identityHost:host(home.url.hostname),websiteObservation:"parent_site",observations:[...observations,evidence("corporate","Matched organization declares a parent or branch relationship",parent.url)]};
-    const corp=pages.flatMap(page=>page.lines.filter(line=>corporate.test(line)).map(line=>({line,page}))).at(0);
+    const corp=pages.flatMap(page=>page.lines.filter(line=>corporate.test(line)||multiMetroGroup(line)).map(line=>({line,page}))).at(0);
     if(corp)return {status:"excluded",reason:"Official site shows corporate or franchise control",
       identityHost:host(home.url.hostname), observations:[...observations,evidence("corporate",corp.line,corp.page.url)]};
     const owner=pages.flatMap(page=>page.lines.filter(line=>owned.test(line)||namedOperator.test(line)||
@@ -230,7 +244,12 @@ export async function evaluateBusiness(row:EvidenceInput, read:(url:string)=>Pro
         return url.protocol==="https:"&&phone&&/^\+?\d{10,15}$/.test(phone)?[{page,kind:"phone" as const,label:link.label||"WhatsApp link"}]:[];
       }catch{return [];}
     })).at(0);
-    const contact=contacts.find(route=>route.kind==="email")??(listed?{page:listed,kind:"email" as const}:undefined)??contacts[0]??chat;
+    const directoryContact=contactPhone(row.phone, row.country);
+    const publishedPhone=directoryContact && pages.find(page=>page.lines.some(line =>
+      /\b(?:phone|telephone|mobile|tel|call|contact number)\b/i.test(line) &&
+      [...line.matchAll(/(?<![\d+])\+?\d(?:[ .()-]{0,3}\d){7,14}(?!\d)/g)].some(([value])=>contactPhone(value, row.country)===directoryContact)));
+    const contact=contacts.find(route=>route.kind==="email")??(listed?{page:listed,kind:"email" as const}:undefined)??contacts[0]??chat??
+      (publishedPhone?{page:publishedPhone,kind:"phone" as const}:undefined);
     if(contact)observations.push(evidence("contact",`Official page publishes a business ${contact.kind} route`,contact.page.url));
     if(!owner)return {status:"review",reason:"Official domain matched; local ownership is not documented",
       identityHost:host(home.url.hostname),websiteObservation:"official_site",observations};
