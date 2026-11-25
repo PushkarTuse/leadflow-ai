@@ -15,7 +15,7 @@
 | Hacker News | 19 posts, eighteen seller offers and one ambiguous monthly-thread post. Zero buyer imports. |
 | UK Find a Tender | HTTP 200 through the local Worker. 74 notices screened, zero eligible. |
 | UK Contracts Finder | HTTP 200 through the local Worker. 90 notices screened, zero eligible. |
-| Jobicy RSS | 117 raw, 114 passed collector checks, two new imports. Both received valid Cloudflare verdicts and neither qualified. |
+| Jobicy RSS | 117 raw, 114 passed collector checks, two new imports. Cloudflare returned valid verdicts for both. Both were rejected for unclear engagement. |
 | Remotive | HTTP 200, publisher unchanged. |
 | Himalayas | Existing Worker lease deferred collection until 26 November at 00:47 IST. |
 
@@ -51,3 +51,26 @@ The focused Foursquare trial imported 35 previously unseen appointments-category
 npm run business:scan -- --sync-foursquare=all
 npm run business:scan -- --enrich-metros --cities=Pune,Kolkata --source=fsq_os --unevaluated-only --limit=70
 ```
+
+Of 70 newly imported records, five were excluded by corporate screening. The worker evaluated all 65 remaining businesses. It qualified one, held 60 for evidence, and scheduled four source retries. The new Kolkata salon had a first-party About page documenting local ownership, a verified business contact route, and a phone-based enquiry flow. Its saved email draft proposes a mobile booking path, includes three alternative subjects, and has an empty recipient, no price, and both logo assets.
+
+| Metro | Inventory | Qualified | Verified contact | Saved drafts |
+| --- | ---: | ---: | ---: | ---: |
+| Mumbai | 468 | 7 | 6 | 4 |
+| Pune | 430 | 3 | 3 | 2 |
+| Bengaluru | 399 | 3 | 3 | 3 |
+| Hyderabad | 391 | 1 | 1 | 1 |
+| Kolkata | 432 | 5 | 5 | 2 |
+| Delhi | 392 | 4 | 4 | 3 |
+| Chennai | 396 | 1 | 1 | 1 |
+| Total | 2,908 | 24 | 23 | 16 |
+
+There are 207 exclusions, 2,424 evidence reviews, zero awaiting initial enrichment, and 253 scheduled retries. None were due at the end of verification. The earliest retry was 18:29 IST on 25 November. The three largest review reasons are missing corroborated independent evidence (1,100), identity not corroborated (485), and matched official domain with undocumented owner or operator (236). Source inventory with qualified records is Overture 1,722/13, offline OSM 769/8, and Foursquare 417/3.
+
+Use `npm run business:scan -- --enrich-metros --retry-eligible --backlog` after retries become due. The existing Worker leases and enrichment deadlines determine when each record can be retried. The current evidence yield does not support the 50-qualified-per-metro target without stronger authorized evidence discovery.
+
+## Verification and Git
+
+- Chromium exercised desktop and mobile widths, qualified defaults, review links, pagination, source and keyword filters, description expansion, Upwork query link and clipboard behavior, draft focus, subject/body clipboard, sandboxed HTML, EML/HTML downloads, and the dated review ZIP/PDF. Local screenshots are under `outputs/pipeline-dashboard-verification`.
+- LeadFlow AI: 264 tests, typecheck and production build passed. LeadFlow Leads: 49 tests and typecheck passed. Both servers were left up on the existing ports. Graphify was refreshed.
+- Marketplace implementation checkpoint is `622f768a9f6c62990e69224897233e7491709c77`. LeadFlow Leads stayed at the verified remote `0620dd1c8485ad94366c5a0c9ed12ab52141a227` on `feature-new-sources-aa`.

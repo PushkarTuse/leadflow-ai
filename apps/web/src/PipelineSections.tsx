@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const outreachPath = "/api/local/pipeline/outreach";
 type BusinessSummary = {
@@ -40,7 +40,7 @@ export function PipelineOverview({ counts, business }: {
       <article className="note-panel">
         <h3><a href="#marketplace">Marketplace discovery</a></h3>
         <p>Account-scoped Upwork search via Codex</p>
-        <p>Open Marketplace discovery for the search workflow and your previous session.</p>
+        <p>Previous owner session covered 101 listings across 20 searches. Open Marketplace discovery for the authorized search workflow.</p>
       </article>
       <article className="note-panel">
         <h3><a href="#businesses">Local businesses</a></h3>
@@ -91,8 +91,14 @@ export function OutreachLibrary({ library }: { library: ReturnType<typeof useOut
   const [open, setOpen] = useState<{ id: number; draft: SavedDraft } | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState("");
+  const previewPanel = useRef<HTMLElement>(null);
+  const previewButton = useRef<HTMLButtonElement>(null);
   const { data, error } = library;
   const cities = [...new Set(data?.drafts.map(entry=>entry.city).filter(Boolean) ?? [])];
+
+  useEffect(() => {
+    if (open) previewPanel.current?.focus();
+  }, [open]);
 
   async function preview(id: number) {
     setLoading(true);
@@ -140,13 +146,16 @@ export function OutreachLibrary({ library }: { library: ReturnType<typeof useOut
       <ul className="pipeline-drafts">
         {data.drafts.filter(entry=>!city || entry.city===city).map(entry=><li key={entry.id}>
           <span><strong>{entry.name}</strong>{entry.city && ` · ${entry.city}`}</span>
-          <button type="button" aria-label={`Preview ${entry.name}`} disabled={loading} onClick={()=>void preview(entry.id)}>Preview</button>
+          <button type="button" aria-label={`Preview ${entry.name}`} disabled={loading} onClick={event=>{
+            previewButton.current=event.currentTarget;
+            void preview(entry.id);
+          }}>Preview</button>
         </li>)}
       </ul>
     </>}
     {loading && <p role="status">Opening draft…</p>}
     {result && <p role="status">{result}</p>}
-    {open && <article className="pipeline-draft-preview">
+    {open && <article className="pipeline-draft-preview" ref={previewPanel} tabIndex={-1} aria-label="Selected outreach draft">
       <h3>{open.draft.subject}</h3>
       {open.draft.alternatives.length>0 && <details><summary>Alternative subjects</summary><ul>{open.draft.alternatives.map(subject=><li key={subject}>{subject}</li>)}</ul></details>}
       <div className="pipeline-filters">
@@ -154,7 +163,7 @@ export function OutreachLibrary({ library }: { library: ReturnType<typeof useOut
         <button type="button" onClick={()=>copy(open.draft.body,"Body")}>Copy body</button>
         <button type="button" onClick={()=>download("eml")}>Download EML</button>
         <button type="button" onClick={()=>download("html")}>Download HTML</button>
-        <button type="button" onClick={()=>setOpen(null)}>Close preview</button>
+        <button type="button" onClick={()=>{setOpen(null);previewButton.current?.focus();}}>Close preview</button>
       </div>
       <pre>{open.draft.body}</pre>
       <details><summary>HTML preview</summary><iframe title="Saved outreach HTML preview" sandbox=""
